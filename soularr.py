@@ -884,7 +884,10 @@ def grab_most_wanted(albums):
             else:  # Only runs if all files are successfully moved
                 for rm_dir in rm_dirs:
                     if not rm_dir == import_folder_fullpath:
-                        os.rmdir(rm_dir)
+                        try:
+                            os.rmdir(rm_dir)
+                        except OSError:
+                            logger.warning(f"Skipping removal of {rm_dir} because it's not empty.")
                 logger.info(f"Attempting Lidarr import of {done_albums[album_id]['artist']} - {done_albums[album_id]['title']}")
                 for file in done_albums[album_id]["files"]:
                     try:  # This sometimes fails. No idea why. Nor do we care. We try and that's what matters
