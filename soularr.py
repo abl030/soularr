@@ -9,7 +9,6 @@ import time
 import shutil
 import difflib
 import operator
-import traceback
 import configparser
 import logging
 import json
@@ -32,7 +31,6 @@ class EnvInterpolation(configparser.ExtendedInterpolation):
         return os.path.expandvars(value)
 
 
-logger = logging.getLogger("soularr")
 # Allows backwards compatibility for users updating an older version of Soularr
 # without using the new [Logging] section in the config.ini file.
 DEFAULT_LOGGING_CONF = {
@@ -40,6 +38,54 @@ DEFAULT_LOGGING_CONF = {
     "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
     "datefmt": "%Y-%m-%dT%H:%M:%S%z",
 }
+
+# === API Clients & Logging ===
+lidarr = None
+slskd = None
+config = None
+logger = logging.getLogger("soularr")
+
+# === Configuration Constants ===
+slskd_api_key = None
+lidarr_api_key = None
+lidarr_download_dir = None
+lidarr_disable_sync = None
+slskd_download_dir = None
+lidarr_host_url = None
+slskd_host_url = None
+stalled_timeout = None
+remote_queue_timeout = None
+delete_searches = None
+slskd_url_base = None
+ignored_users = []
+search_type = None
+search_source = None
+download_filtering = None
+use_extension_whitelist = None
+extensions_whitelist = []
+search_sources = []
+minimum_match_ratio = None
+page_size = None
+remove_wanted_on_failure = None
+enable_search_denylist = None
+max_search_failures = None
+use_most_common_tracknum = None
+allow_multi_disc = None
+accepted_countries = []
+skip_region_check = None
+accepted_formats = []
+allowed_filetypes = []
+lock_file_path = None
+config_file_path = None
+failure_file_path = None
+current_page_file_path = None
+denylist_file_path = None
+search_blacklist = []
+
+# === Runtime State & Caches ===
+search_cache = {}
+folder_cache = {}
+broken_user = []
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype):
@@ -316,7 +362,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                 else:
                     directory = slskd.users.directory(username=username, directory=file_dir)
             except Exception:
-                logger.info(f'Error getting directory from user: "{username}"\n{traceback.format_exc()}')
+                logger.exception(f'Error getting directory from user: "{username}"')
                 broken_user.append(username)
                 logger.debug(f"Updated broken users {broken_user}")
                 return False, {}, ""
@@ -383,6 +429,20 @@ def search_for_album(album):
         query = artist_name + " " + album_title
     else:
         query = artist_name + " " + album_title if config.getboolean("Search Settings", "album_prepend_artist", fallback=False) else album_title
+
+    original_query = query
+    for word in search_blacklist:
+        if word:
+            # Case-insensitive replacement
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            query = pattern.sub("", query)
+
+    # Clean up double spaces
+    query = " ".join(query.split())
+
+    if query != original_query:
+        logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
+
     logger.info(f"Searching for album: {query}")
     try:
         search = slskd.searches.search_text(
@@ -393,7 +453,7 @@ def search_for_album(album):
             minimumPeerUploadSpeed=config.getint("Search Settings", "minimum_peer_upload_speed", fallback=0),
         )
     except Exception:
-        logger.error(f"Failed to perform search via SLSKD: {query}\n{traceback.format_exc()}")
+        logger.exception(f"Failed to perform search via SLSKD: {query}")
         return False
 
     # Add timeout here to increase reliability with Slskd. Sometimes it doesn't update search status fast enough. More of an issue with lots of historical searches in slskd
@@ -445,7 +505,8 @@ def slskd_do_enqueue(username, files, file_dir):
     downloads = []
     try:
         enqueue = slskd.transfers.enqueue(username=username, files=files)
-    except:
+    except Exception:
+        logger.debug("Enqueue failed", exc_info=True)
         return None
     if enqueue:
         time.sleep(5)
@@ -476,9 +537,8 @@ def slskd_download_status(downloads):
         try:
             status = slskd.transfers.get_download(file["username"], file["id"])
             file["status"] = status
-        except Exception as e:
-            logger.error(f"Error getting download status of {file['filename']}. Traceback to follow:")
-            logger.info(e)
+        except Exception:
+            logger.exception(f"Error getting download status of {file['filename']}")
             file["status"] = None
             ok = False
     return ok
@@ -501,6 +561,7 @@ def downloads_all_done(downloads):
                 "Completed, TimedOut",
                 "Completed, Errored",
                 "Completed, Rejected",
+                "Completed, Aborted",
             ]:
                 error_list.append(file)
             if file["status"]["state"] == "Queued, Remotely":
@@ -608,12 +669,12 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
                     if len(all_downloads) > 0:
                         cancel_and_delete(all_downloads)
                         return False, None
-            except Exception as e:
+            except Exception:
                 album = lidarr.get_album(all_tracks[0]["albumId"])
                 album_name = album["title"]
                 artist_name = album["artist"]["artistName"]
 
-                logger.warning(f"Exception enqueueing tracks: {e}")
+                logger.exception("Exception enqueueing tracks")
                 logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
                 # Delete all other downloads in all_downloads list
                 if len(all_downloads) > 0:
@@ -675,18 +736,7 @@ def find_download(album, grab_list):
     return False
 
 
-def grab_most_wanted(albums):
-    """
-    This is the "main loop" that calls all the functions to do all the work.
-    Basic flow per item is as follows:
-    Perform coarse search
-    Check search results for a match
-    enqueue download
-    After that has happened for all the downloads it then shifts to monitoring the downloads:
-    Monitor download and perform retries and/or requeues.
-    When all completed, call lidarr to import
-    """
-
+def search_and_queue(albums):
     grab_list = {}
     failed_grab = []
     failed_search = []
@@ -697,19 +747,90 @@ def grab_most_wanted(albums):
 
         else:
             failed_search.append(album)
-    total_albums = len(grab_list)
-    logger.info(f"Total Downloads added: {total_albums}")
-    for album_id in grab_list:
-        logger.info(f"Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
-    logger.info(f"Failed to grab: {len(failed_grab)}")
-    for album in failed_grab:
-        logger.info(f"Album: {album['title']} Artist: {album['artist']['artistName']}")
+    return grab_list, failed_search, failed_grab
 
-    logger.info("-------------------")
-    logger.info(f"Waiting for downloads... monitor at: {''.join([slskd_host_url, slskd_url_base, 'downloads'])}")
 
-    done_albums = {}
+def process_completed_album(album_data, failed_grab):
+    os.chdir(slskd_download_dir)
+    import_folder_name = sanitize_folder_name(album_data["artist"] + " - " + album_data["title"] + " (" + album_data["year"] + ")")
+    import_folder_fullpath = os.path.join(slskd_download_dir, import_folder_name)
+    lidarr_import_fullpath = os.path.join(lidarr_download_dir, import_folder_name)
+    album_data["import_folder"] = lidarr_import_fullpath
+    rm_dirs = []
+    moved_files_history = []
+    if not os.path.exists(import_folder_fullpath):
+        os.mkdir(import_folder_fullpath)
+    for file in album_data["files"]:
+        file_folder = file["file_dir"].split("\\")[-1]
+        filename = file["filename"].split("\\")[-1]
+        src_folder = os.path.join(slskd_download_dir, file_folder)
+        if src_folder not in rm_dirs:
+            rm_dirs.append(src_folder)  # Multi disk albums are sometimes in multiple folders. eg. CD01 CD02. So we need to clean up both
+        src_file = os.path.join(src_folder, filename)
+        if "disk_no" in file and "disk_count" in file and file["disk_count"] > 1:
+            filename = f"Disk {file['disk_no']} - {filename}"
+        dst_file = os.path.join(import_folder_fullpath, filename)
+        file["import_path"] = dst_file
+        try:
+            shutil.move(src_file, dst_file)
+            moved_files_history.append((src_file, dst_file))
+        except Exception:
+            logger.exception(f"Failed to move: {file['filename']} to temp location for import into Lidarr. Rolling back...")
+            for src, dst in reversed(moved_files_history):
+                try:
+                    shutil.move(dst, src)
+                except Exception:
+                    logger.exception(f"Critical failure during rollback: could not move {dst} back to {src}")
+            try:
+                os.rmdir(import_folder_fullpath)
+            except OSError:
+                logger.warning(f"Could not remove temp import directory {import_folder_fullpath}")
+            failed_grab.append(lidarr.get_album(album_data["album_id"]))
+            return
+    else:  # Only runs if all files are successfully moved
+        for rm_dir in rm_dirs:
+            if not rm_dir == import_folder_fullpath:
+                try:
+                    os.rmdir(rm_dir)
+                except OSError:
+                    logger.warning(f"Skipping removal of {rm_dir} because it's not empty.")
+        logger.info(f"Attempting Lidarr import of {album_data['artist']} - {album_data['title']}")
+        for file in album_data["files"]:
+            try:  # This sometimes fails. No idea why. Nor do we care. We try and that's what matters
+                song = music_tag.load_file(file["import_path"])
+                if "disk_no" in file:
+                    song["discnumber"] = file["disk_no"]
+                    song["totaldiscs"] = file["disk_count"]
 
+                song["albumartist"] = album_data["artist"]
+                song["album"] = album_data["title"]
+                song.save()
+            except Exception:
+                logger.exception("Error writing tags")
+        command = lidarr.post_command(
+            name="DownloadedAlbumsScan",
+            path=album_data["import_folder"],
+        )  # Album all tagged up and in a correctly named folder. This should work more reliably
+        logger.info(f"Starting Lidarr import for: {album_data['title']} ID: {command['id']}")
+
+        while True:
+            current_task = lidarr.get_command(command["id"])
+            if current_task["status"] == "completed" or current_task["status"] == "failed":
+                break
+            time.sleep(2)
+
+        try:
+            logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
+
+            if "Failed" in current_task["message"]:
+                move_failed_import(current_task["body"]["path"])
+                failed_grab.append(lidarr.get_album(album_data["album_id"]))
+        except Exception:
+            logger.exception("Error printing lidarr task message")
+            logger.error(current_task)
+
+
+def monitor_downloads(grab_list, failed_grab):
     def delete_album(reason):
         cancel_and_delete(grab_list[album_id]["files"])
         logger.info(f"{reason} Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
@@ -722,6 +843,7 @@ def grab_most_wanted(albums):
         #    "Completed, Cancelled", Abort album as failed
         #    "Completed, TimedOut",  Abort album as failed
         #    "Completed, Errored",   Abort album as failed
+        #    "Completed, Aborted",   Abort album as failed
         #    "Completed, Rejected",  Retry. Some users have a max grab count. We need to check if ALL files are Rejected first.
         # We're going to need to drop items out of the list. So we might have to resort to enumerating the keys so we don't hit issues.
         done_count = 0
@@ -743,7 +865,9 @@ def grab_most_wanted(albums):
                     for file in problems:
                         logger.debug(f"Checking {file['filename']}")
                         match file["status"]["state"]:
-                            case "Completed, Cancelled" | "Completed, TimedOut" | "Completed, Errored":  # Normal errors. We'll retry a few times as sometumes the error is transient
+                            case (
+                                "Completed, Cancelled" | "Completed, TimedOut" | "Completed, Errored" | "Completed, Aborted"
+                            ):  # Normal errors. We'll retry a few times as sometumes the error is transient
                                 abort = False
                                 if len(problems) == len(grab_list[album_id]["files"]):
                                     delete_album("Failed grab of")
@@ -795,7 +919,11 @@ def grab_most_wanted(albums):
                                         grab_list[album_id]["rejected_retries"] = 0
                                     working_count = len(grab_list[album_id]["files"]) - len(problems)
                                     for gfile in grab_list[album_id]["files"]:
-                                        if gfile["status"]["state"] in ["Completed, Succeeded", "Queued, Remotely", "Queued, Locally"]:
+                                        if gfile["status"]["state"] in [
+                                            "Completed, Succeeded",
+                                            "Queued, Remotely",
+                                            "Queued, Locally",
+                                        ]:
                                             working_count -= 1
                                     if working_count == 0:
                                         if grab_list[album_id]["rejected_retries"] < int(len(grab_list[album_id]["files"]) * 1.2):  # Little bit of wiggle room here
@@ -839,9 +967,11 @@ def grab_most_wanted(albums):
                                 )  # This really should be impossible to reach. But is required to round out the case statement.
                 else:
                     if album_done:
-                        done_albums[album_id] = grab_list[album_id]
+                        album_data = grab_list[album_id]
+                        album_data["album_id"] = album_id
+                        logger.info(f"Completed download of Album: {album_data['title']} Artist: {album_data['artist']}")
+                        process_completed_album(album_data, failed_grab)
                         del grab_list[album_id]
-                        logger.info(f"Completed download of Album: {done_albums[album_id]['title']} Artist: {done_albums[album_id]['artist']}")
 
             else:
                 if "error_count" not in grab_list[album_id]:
@@ -855,82 +985,33 @@ def grab_most_wanted(albums):
 
         time.sleep(5)  # Wait for things to progress and start the checks again.
 
-    if len(done_albums) > 0:
-        commands = []
-        for album_id in done_albums:  # Loop through the albums. Move them into folders with the naming structure as follows: Artist - Album Title (year) This triggers better import logic
-            os.chdir(slskd_download_dir)
-            import_folder_name = sanitize_folder_name(done_albums[album_id]["artist"] + " - " + done_albums[album_id]["title"] + " (" + done_albums[album_id]["year"] + ")")
-            import_folder_fullpath = os.path.join(slskd_download_dir, import_folder_name)
-            lidarr_import_fullpath = os.path.join(lidarr_download_dir, import_folder_name)
-            done_albums[album_id]["import_folder"] = lidarr_import_fullpath
-            rm_dirs = []
-            if not os.path.exists(import_folder_fullpath):
-                os.mkdir(import_folder_fullpath)
-            for file in done_albums[album_id]["files"]:
-                file_folder = file["file_dir"].split("\\")[-1]
-                filename = file["filename"].split("\\")[-1]
-                src_folder = os.path.join(slskd_download_dir, file_folder)
-                if src_folder not in rm_dirs:
-                    rm_dirs.append(src_folder)  # Multi disk albums are sometimes in multiple folders. eg. CD01 CD02. So we need to clean up both
-                src_file = os.path.join(src_folder, filename)
-                dst_file = os.path.join(import_folder_fullpath, filename)
-                file["import_path"] = dst_file
-                try:
-                    shutil.move(src_file, dst_file)
-                except Exception as e:
-                    logger.error(f"Failed to move: {file['filename']} to temp location for import into Lidarr. Full error message:")
-                    logger.error(e)
-                    break
-            else:  # Only runs if all files are successfully moved
-                for rm_dir in rm_dirs:
-                    if not rm_dir == import_folder_fullpath:
-                        try:
-                            os.rmdir(rm_dir)
-                        except OSError:
-                            logger.warning(f"Skipping removal of {rm_dir} because it's not empty.")
-                logger.info(f"Attempting Lidarr import of {done_albums[album_id]['artist']} - {done_albums[album_id]['title']}")
-                for file in done_albums[album_id]["files"]:
-                    try:  # This sometimes fails. No idea why. Nor do we care. We try and that's what matters
-                        song = music_tag.load_file(file["import_path"])
-                        if "disk_no" in file:
-                            song["discnumber"] = file["disk_no"]
-                            song["totaldiscs"] = file["disk_count"]
 
-                        song["albumartist"] = done_albums[album_id]["artist"]
-                        song["album"] = done_albums[album_id]["title"]
-                        song.save()
-                    except:
-                        logger.error("Error writing tags")
-                command = lidarr.post_command(
-                    name="DownloadedAlbumsScan",
-                    path=done_albums[album_id]["import_folder"],
-                )  # Album all tagged up and in a correctly named folder. This should work more reliably
-                done_albums[album_id]["lidarr_id"] = command["id"]  # This is just for the info message
-                commands.append(command)
-                logger.info(f"Starting Lidarr import for: {done_albums[album_id]['title']} ID: {command['id']}")
-        while True:
-            completed_count = 0
-            for task in commands:
-                current_task = lidarr.get_command(task["id"])
-                if current_task["status"] == "completed" or current_task["status"] == "failed":
-                    completed_count += 1
-            if completed_count == len(commands):
-                break
-            time.sleep(2)
+def grab_most_wanted(albums):
+    """
+    This is the "main loop" that calls all the functions to do all the work.
+    Basic flow per item is as follows:
+    Perform coarse search
+    Check search results for a match
+    enqueue download
+    After that has happened for all the downloads it then shifts to monitoring the downloads:
+    Monitor download and perform retries and/or requeues.
+    When all completed, call lidarr to import
+    """
 
-        for task in commands:
-            current_task = lidarr.get_command(task["id"])
-            try:
-                logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
+    grab_list, failed_search, failed_grab = search_and_queue(albums)
 
-                if "Failed" in current_task["message"]:
-                    move_failed_import(current_task["body"]["path"])
-                    for album_id in done_albums:
-                        if done_albums[album_id]["lidarr_id"] == task["id"]:
-                            failed_grab.append(lidarr.get_album(album_id))
-            except:
-                logger.error("Error printing lidarr task message. Printing full unparsed message.")
-                logger.error(current_task)
+    total_albums = len(grab_list)
+    logger.info(f"Total Downloads added: {total_albums}")
+    for album_id in grab_list:
+        logger.info(f"Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
+    logger.info(f"Failed to grab: {len(failed_grab)}")
+    for album in failed_grab:
+        logger.info(f"Album: {album['title']} Artist: {album['artist']['artistName']}")
+
+    logger.info("-------------------")
+    logger.info(f"Waiting for downloads... monitor at: {''.join([slskd_host_url, slskd_url_base, 'downloads'])}")
+
+    monitor_downloads(grab_list, failed_grab)
 
     count = len(failed_search) + len(failed_grab)
     for album in failed_search:
@@ -1153,179 +1234,229 @@ def update_search_denylist(denylist, album_id, success):
             }
 
 
-# Let's allow some overrides to be passed to the script
-parser = argparse.ArgumentParser(description="""Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
+def main():
+    global \
+        slskd_api_key, \
+        lidarr_api_key, \
+        lidarr_download_dir, \
+        lidarr_disable_sync, \
+        slskd_download_dir, \
+        lidarr_host_url, \
+        slskd_host_url, \
+        stalled_timeout, \
+        remote_queue_timeout, \
+        delete_searches, \
+        slskd_url_base, \
+        ignored_users, \
+        search_type, \
+        search_source, \
+        download_filtering, \
+        use_extension_whitelist, \
+        extensions_whitelist, \
+        search_sources, \
+        minimum_match_ratio, \
+        page_size, \
+        remove_wanted_on_failure, \
+        enable_search_denylist, \
+        max_search_failures, \
+        use_most_common_tracknum, \
+        allow_multi_disc, \
+        accepted_countries, \
+        skip_region_check, \
+        accepted_formats, \
+        allowed_filetypes, \
+        lock_file_path, \
+        config_file_path, \
+        failure_file_path, \
+        current_page_file_path, \
+        denylist_file_path, \
+        search_blacklist, \
+        lidarr, \
+        slskd, \
+        config, \
+        logger, \
+        search_cache, \
+        folder_cache, \
+        broken_user
 
-default_data_directory = os.getcwd()
+    # Let's allow some overrides to be passed to the script
+    parser = argparse.ArgumentParser(description="""Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
-if is_docker():
-    default_data_directory = "/data"
+    default_data_directory = os.getcwd()
 
-parser.add_argument(
-    "-c",
-    "--config-dir",
-    default=default_data_directory,
-    const=default_data_directory,
-    nargs="?",
-    type=str,
-    help="Config directory (default: %(default)s)",
-)
+    if is_docker():
+        default_data_directory = "/data"
 
-parser.add_argument(
-    "-v",
-    "--var-dir",
-    default=default_data_directory,
-    const=default_data_directory,
-    nargs="?",
-    type=str,
-    help="Var directory (default: %(default)s)",
-)
+    parser.add_argument(
+        "-c",
+        "--config-dir",
+        default=default_data_directory,
+        const=default_data_directory,
+        nargs="?",
+        type=str,
+        help="Config directory (default: %(default)s)",
+    )
 
-parser.add_argument(
-    "--no-lock-file",
-    action="store_false",
-    dest="lock_file",
-    default=True,
-    help="Disable lock file creation",
-)
+    parser.add_argument(
+        "-v",
+        "--var-dir",
+        default=default_data_directory,
+        const=default_data_directory,
+        nargs="?",
+        type=str,
+        help="Var directory (default: %(default)s)",
+    )
 
-args = parser.parse_args()
+    parser.add_argument(
+        "--no-lock-file",
+        action="store_false",
+        dest="lock_file",
+        default=True,
+        help="Disable lock file creation",
+    )
 
-lock_file_path = os.path.join(args.var_dir, ".soularr.lock")
-config_file_path = os.path.join(args.config_dir, "config.ini")
-failure_file_path = os.path.join(args.var_dir, "failure_list.txt")
-current_page_file_path = os.path.join(args.var_dir, ".current_page.txt")
-denylist_file_path = os.path.join(args.var_dir, "search_denylist.json")
+    args = parser.parse_args()
 
-if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-    logger.info(f"Soularr instance is already running.")
-    sys.exit(1)
+    lock_file_path = os.path.join(args.var_dir, ".soularr.lock")
+    config_file_path = os.path.join(args.config_dir, "config.ini")
+    failure_file_path = os.path.join(args.var_dir, "failure_list.txt")
+    current_page_file_path = os.path.join(args.var_dir, ".current_page.txt")
+    denylist_file_path = os.path.join(args.var_dir, "search_denylist.json")
 
-try:
-    if not is_docker() and args.lock_file:
-        with open(lock_file_path, "w") as lock_file:
-            lock_file.write("locked")
+    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
+        logger.info(f"Soularr instance is already running.")
+        sys.exit(1)
 
-    # Disable interpolation to make storing logging formats in the config file much easier
-    config = configparser.ConfigParser(interpolation=EnvInterpolation())
-
-    if os.path.exists(config_file_path):
-        config.read(config_file_path)
-    else:
-        if is_docker():
-            logger.error(
-                'Config file does not exist! Please mount "/data" and place your "config.ini" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
-            )
-            logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
-        else:
-            logger.error(
-                "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
-            )
-            logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
-        if os.path.exists(lock_file_path) and not is_docker():
-            os.remove(lock_file_path)
-        sys.exit(0)
-
-    slskd_api_key = config["Slskd"]["api_key"]
-    lidarr_api_key = config["Lidarr"]["api_key"]
-
-    lidarr_download_dir = config["Lidarr"]["download_dir"]
-    lidarr_disable_sync = config.getboolean("Lidarr", "disable_sync", fallback=False)
-
-    slskd_download_dir = config["Slskd"]["download_dir"]
-
-    lidarr_host_url = config["Lidarr"]["host_url"]
-    slskd_host_url = config["Slskd"]["host_url"]
-
-    stalled_timeout = config.getint("Slskd", "stalled_timeout", fallback=3600)
-    remote_queue_timeout = config.getint("Slskd", "remote_queue_timeout", fallback=300)
-
-    delete_searches = config.getboolean("Slskd", "delete_searches", fallback=True)
-
-    slskd_url_base = config.get("Slskd", "url_base", fallback="/")
-
-    ignored_users = config.get("Search Settings", "ignored_users", fallback="").split(",")
-    search_type = config.get("Search Settings", "search_type", fallback="first_page").lower().strip()
-    search_source = config.get("Search Settings", "search_source", fallback="missing").lower().strip()
-
-    download_filtering = config.getboolean("Download Settings", "download_filtering", fallback=False)
-    use_extension_whitelist = config.getboolean("Download Settings", "use_extension_whitelist", fallback=False)
-    extensions_whitelist = config.get("Download Settings", "extensions_whitelist", fallback="txt,nfo,jpg").split(",")
-
-    search_sources = [search_source]
-    if search_sources[0] == "all":
-        search_sources = ["missing", "cutoff_unmet"]
-
-    minimum_match_ratio = config.getfloat("Search Settings", "minimum_filename_match_ratio", fallback=0.5)
-    page_size = config.getint("Search Settings", "number_of_albums_to_grab", fallback=10)
-    remove_wanted_on_failure = config.getboolean("Search Settings", "remove_wanted_on_failure", fallback=True)
-    enable_search_denylist = config.getboolean("Search Settings", "enable_search_denylist", fallback=False)
-    max_search_failures = config.getint("Search Settings", "max_search_failures", fallback=3)
-
-    use_most_common_tracknum = config.getboolean("Release Settings", "use_most_common_tracknum", fallback=True)
-    allow_multi_disc = config.getboolean("Release Settings", "allow_multi_disc", fallback=True)
-
-    default_accepted_countries = "Europe,Japan,United Kingdom,United States,[Worldwide],Australia,Canada"
-    default_accepted_formats = "CD,Digital Media,Vinyl"
-    accepted_countries = config.get("Release Settings", "accepted_countries", fallback=default_accepted_countries).split(",")
-    skip_region_check = config.getboolean("Release Settings", "skip_region_check", fallback=False)
-    accepted_formats = config.get("Release Settings", "accepted_formats", fallback=default_accepted_formats).split(",")
-
-    raw_filetypes = config.get("Search Settings", "allowed_filetypes", fallback="flac,mp3")
-
-    if "," in raw_filetypes:
-        allowed_filetypes = raw_filetypes.split(",")
-    else:
-        allowed_filetypes = [raw_filetypes]
-
-    setup_logging(config)
-
-    # Init directory cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
-    search_cache = {}
-    folder_cache = {}
-    broken_user = []
-
-    slskd = slskd_api.SlskdClient(host=slskd_host_url, api_key=slskd_api_key, url_base=slskd_url_base)
-    lidarr = LidarrAPI(lidarr_host_url, lidarr_api_key)
-    wanted_records = []
     try:
-        for source in search_sources:
-            logging.debug(f"Getting records from {source}")
-            missing = source == "missing"
-            wanted_records.extend(get_records(missing))
-    except ValueError as ex:
-        logger.error(f"An error occurred: {ex}")
-        logger.error("Exiting...")
-        sys.exit(0)
+        if not is_docker() and args.lock_file:
+            with open(lock_file_path, "w") as lock_file:
+                lock_file.write("locked")
 
-    if len(wanted_records) > 0:
-        try:
-            filtered = filter_list(wanted_records)
-            if filtered is not None:
-                failed = grab_most_wanted(filtered)
+        # Disable interpolation to make storing logging formats in the config file much easier
+        config = configparser.ConfigParser(interpolation=EnvInterpolation())
+
+        if os.path.exists(config_file_path):
+            config.read(config_file_path)
+        else:
+            if is_docker():
+                logger.error(
+                    'Config file does not exist! Please mount "/data" and place your "config.ini" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
+                )
+                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
             else:
-                failed = 0
-                logger.info("No releases wanted that aren't on the deny list and/or blacklisted")
-        except Exception:
-            logger.error(traceback.format_exc())
-            logger.error("\n Fatal error! Exiting...")
-
+                logger.error(
+                    "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
+                )
+                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
             if os.path.exists(lock_file_path) and not is_docker():
                 os.remove(lock_file_path)
             sys.exit(0)
-        if failed == 0:
-            logger.info("Soularr finished. Exiting...")
-            slskd.transfers.remove_completed_downloads()
-        else:
-            if remove_wanted_on_failure:
-                logger.info(f'{failed}: releases failed to find a match in the search results. View "failure_list.txt" for list of failed albums.')
-            else:
-                logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
-            slskd.transfers.remove_completed_downloads()
-    else:
-        logger.info("No releases wanted. Exiting...")
 
-finally:
-    # Remove the lock file after activity is done
-    if os.path.exists(lock_file_path) and not is_docker():
-        os.remove(lock_file_path)
+        slskd_api_key = config["Slskd"]["api_key"]
+        lidarr_api_key = config["Lidarr"]["api_key"]
+
+        lidarr_download_dir = config["Lidarr"]["download_dir"]
+        lidarr_disable_sync = config.getboolean("Lidarr", "disable_sync", fallback=False)
+
+        slskd_download_dir = config["Slskd"]["download_dir"]
+
+        lidarr_host_url = config["Lidarr"]["host_url"]
+        slskd_host_url = config["Slskd"]["host_url"]
+
+        stalled_timeout = config.getint("Slskd", "stalled_timeout", fallback=3600)
+        remote_queue_timeout = config.getint("Slskd", "remote_queue_timeout", fallback=300)
+
+        delete_searches = config.getboolean("Slskd", "delete_searches", fallback=True)
+
+        slskd_url_base = config.get("Slskd", "url_base", fallback="/")
+
+        ignored_users = config.get("Search Settings", "ignored_users", fallback="").split(",")
+        search_blacklist = config.get("Search Settings", "search_blacklist", fallback="").split(",")
+        search_blacklist = [word.strip() for word in search_blacklist if word.strip()]
+        search_type = config.get("Search Settings", "search_type", fallback="first_page").lower().strip()
+        search_source = config.get("Search Settings", "search_source", fallback="missing").lower().strip()
+
+        download_filtering = config.getboolean("Download Settings", "download_filtering", fallback=False)
+        use_extension_whitelist = config.getboolean("Download Settings", "use_extension_whitelist", fallback=False)
+        extensions_whitelist = config.get("Download Settings", "extensions_whitelist", fallback="txt,nfo,jpg").split(",")
+
+        search_sources = [search_source]
+        if search_sources[0] == "all":
+            search_sources = ["missing", "cutoff_unmet"]
+
+        minimum_match_ratio = config.getfloat("Search Settings", "minimum_filename_match_ratio", fallback=0.5)
+        page_size = config.getint("Search Settings", "number_of_albums_to_grab", fallback=10)
+        remove_wanted_on_failure = config.getboolean("Search Settings", "remove_wanted_on_failure", fallback=True)
+        enable_search_denylist = config.getboolean("Search Settings", "enable_search_denylist", fallback=False)
+        max_search_failures = config.getint("Search Settings", "max_search_failures", fallback=3)
+
+        use_most_common_tracknum = config.getboolean("Release Settings", "use_most_common_tracknum", fallback=True)
+        allow_multi_disc = config.getboolean("Release Settings", "allow_multi_disc", fallback=True)
+
+        default_accepted_countries = "Europe,Japan,United Kingdom,United States,[Worldwide],Australia,Canada"
+        default_accepted_formats = "CD,Digital Media,Vinyl"
+        accepted_countries = config.get("Release Settings", "accepted_countries", fallback=default_accepted_countries).split(",")
+        skip_region_check = config.getboolean("Release Settings", "skip_region_check", fallback=False)
+        accepted_formats = config.get("Release Settings", "accepted_formats", fallback=default_accepted_formats).split(",")
+
+        raw_filetypes = config.get("Search Settings", "allowed_filetypes", fallback="flac,mp3")
+
+        if "," in raw_filetypes:
+            allowed_filetypes = raw_filetypes.split(",")
+        else:
+            allowed_filetypes = [raw_filetypes]
+
+        setup_logging(config)
+
+        # Init directory cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
+        search_cache = {}
+        folder_cache = {}
+        broken_user = []
+
+        slskd = slskd_api.SlskdClient(host=slskd_host_url, api_key=slskd_api_key, url_base=slskd_url_base)
+        lidarr = LidarrAPI(lidarr_host_url, lidarr_api_key)
+        wanted_records = []
+        try:
+            for source in search_sources:
+                logging.debug(f"Getting records from {source}")
+                missing = source == "missing"
+                wanted_records.extend(get_records(missing))
+        except ValueError as ex:
+            logger.error(f"An error occurred: {ex}")
+            logger.error("Exiting...")
+            sys.exit(0)
+
+        if len(wanted_records) > 0:
+            try:
+                filtered = filter_list(wanted_records)
+                if filtered is not None:
+                    failed = grab_most_wanted(filtered)
+                else:
+                    failed = 0
+                    logger.info("No releases wanted that aren't on the deny list and/or blacklisted")
+            except Exception:
+                logger.exception("Fatal error! Exiting...")
+
+                if os.path.exists(lock_file_path) and not is_docker():
+                    os.remove(lock_file_path)
+                sys.exit(0)
+            if failed == 0:
+                logger.info("Soularr finished. Exiting...")
+                slskd.transfers.remove_completed_downloads()
+            else:
+                if remove_wanted_on_failure:
+                    logger.info(f'{failed}: releases failed to find a match in the search results. View "failure_list.txt" for list of failed albums.')
+                else:
+                    logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
+                slskd.transfers.remove_completed_downloads()
+        else:
+            logger.info("No releases wanted. Exiting...")
+
+    finally:
+        # Remove the lock file after activity is done
+        if os.path.exists(lock_file_path) and not is_docker():
+            os.remove(lock_file_path)
+
+
+if __name__ == "__main__":
+    main()

@@ -17,7 +17,7 @@ Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them
 
 ![Soularr_small](https://github.com/user-attachments/assets/15c47a82-ddf2-40e3-b143-2ad7f570730f)
 
-After the downloads are complete in Slskd the script will tell Lidarr to import the downloaded files, making it a truly hands off process.
+As downloads complete in Slskd the script will automatically tell Lidarr to import the files, making it a truly hands off process.
 
 # Setup
 
@@ -223,6 +223,8 @@ number_of_albums_to_grab = 10
 remove_wanted_on_failure = False
 # Blacklist words in album or track titles (case-insensitive)
 title_blacklist = Word1,word2
+# Blacklist words in search query (case-insensitive)
+search_blacklist = WordToStripFromSearch1,WordToStripFromSearch2
 # Lidarr search source: "missing" or "cutoff_unmet"
 search_source = missing
 # Enable search denylist to skip albums that repeatedly fail
