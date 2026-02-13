@@ -176,7 +176,10 @@ def sanitize_folder_name(folder_name):
 
 def cancel_and_delete(files):
     for file in files:
-        slskd.transfers.cancel_download(username=file["username"], id=file["id"])
+        try:
+            slskd.transfers.cancel_download(username=file["username"], id=file["id"])
+        except Exception:
+            logger.warning(f"Failed to cancel download {file['filename']} for {file['username']}", exc_info=True)
         delete_dir = file["file_dir"].split("\\")[-1]
         os.chdir(slskd_download_dir)
 
@@ -510,7 +513,11 @@ def slskd_do_enqueue(username, files, file_dir):
         return None
     if enqueue:
         time.sleep(5)
-        download_list = slskd.transfers.get_downloads(username=username)
+        try:
+            download_list = slskd.transfers.get_downloads(username=username)
+        except Exception:
+            logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
+            return None
         for file in files:
             for directory in download_list["directories"]:
                 if directory["directory"] == file_dir:
