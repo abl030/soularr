@@ -813,7 +813,7 @@ def process_completed_album(album_data, failed_grab):
                 song["album"] = album_data["title"]
                 song.save()
             except Exception:
-                logger.exception("Error writing tags")
+                logger.exception(f"Error writing tags for: {file['import_path']}")
         command = lidarr.post_command(
             name="DownloadedAlbumsScan",
             path=album_data["import_folder"],
