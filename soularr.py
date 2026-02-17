@@ -88,6 +88,46 @@ folder_cache = {}
 broken_user = []
 
 
+def normalize_track(filename, artist_name=None, album_name=None):
+    """Strip a music filename down to just the track title for fuzzy matching."""
+    # Strip extension
+    name = re.sub(r'\.[a-zA-Z0-9]{2,4}$', '', filename)
+
+    # Strip date prefixes: [2026-01-30], (2026)
+    name = re.sub(r'\[?\d{4}[-/]\d{2}[-/]\d{2}\]?\s*', '', name)
+    name = re.sub(r'\(\d{4}\)', '', name)
+
+    # Strip leading track numbers: "01 - ", "01. ", "1-", "01 "
+    name = re.sub(r'^\d{1,3}[\s._-]+', '', name)
+
+    # Strip quality/format brackets: [MP3 320], (FLAC 24/192), [V0]
+    name = re.sub(
+        r'[\(\[][^\)\]]*(?:320|256|192|128|V0|FLAC|MP3|AAC|OGG|OPUS|'
+        r'kbps|CBR|VBR|16.?BIT|24.?BIT|WEB)[^\)\]]*[\)\]]',
+        '', name, flags=re.IGNORECASE
+    )
+
+    # Strip featuring: (feat. Someone), [ft. Someone], feat. Someone
+    name = re.sub(
+        r'[\(\[]?\s*(?:feat(?:uring)?\.?|ft\.?)\s+[^\)\]]*[\)\]]?',
+        '', name, flags=re.IGNORECASE
+    )
+
+    # Strip known artist name (case-insensitive)
+    if artist_name:
+        name = re.sub(re.escape(artist_name), '', name, flags=re.IGNORECASE)
+
+    # Strip known album name
+    if album_name:
+        name = re.sub(re.escape(album_name), '', name, flags=re.IGNORECASE)
+
+    # Normalize separators: underscores, dots, dashes → spaces
+    name = re.sub(r'[\s_.\-]+', ' ', name)
+
+    # Collapse and strip
+    return name.strip().lower()
+
+
 def album_match(lidarr_tracks, slskd_tracks, username, filetype):
     counted = []
     total_match = 0.0
@@ -103,18 +143,22 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype):
         for slskd_track in slskd_tracks:
             slskd_filename = slskd_track["filename"]
 
-            # Try to match the ratio with the exact filenames
+            # === Pass 1: Original matching (upstream behavior) ===
             ratio = difflib.SequenceMatcher(None, lidarr_filename, slskd_filename).ratio()
-
-            # If ratio is a bad match try and split off (with " " as the separator) the garbage at the start of the slskd_filename and try again
             ratio = check_ratio(" ", ratio, lidarr_filename, slskd_filename)
-            # Same but with "_" as the separator
             ratio = check_ratio("_", ratio, lidarr_filename, slskd_filename)
-
-            # Same checks but preappend album name.
             ratio = check_ratio("", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
             ratio = check_ratio(" ", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
             ratio = check_ratio("_", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
+
+            # === Pass 2: Normalized matching (strip noise, compare titles) ===
+            if ratio < minimum_match_ratio:
+                lidarr_norm = normalize_track(lidarr_filename, lidarr_artist_name, lidarr_album_name)
+                slskd_norm = normalize_track(slskd_filename, lidarr_artist_name, lidarr_album_name)
+                if lidarr_norm and slskd_norm:
+                    norm_ratio = difflib.SequenceMatcher(None, lidarr_norm, slskd_norm).ratio()
+                    if norm_ratio > ratio:
+                        ratio = norm_ratio
 
             if ratio > best_match:
                 best_match = ratio
@@ -123,7 +167,9 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype):
             counted.append(lidarr_filename)
             total_match += best_match
         else:
-            logger.info(f"No match for track '{lidarr_filename}' from {username} (best_ratio={best_match:.3f}, min={minimum_match_ratio})")
+            # Log both raw and normalized for diagnostics
+            lidarr_norm = normalize_track(lidarr_filename, lidarr_artist_name, lidarr_album_name)
+            logger.info(f"No match for track '{lidarr_filename}' (normalized: '{lidarr_norm}') from {username} (best_ratio={best_match:.3f}, min={minimum_match_ratio})")
 
     if len(counted) == len(lidarr_tracks) and username not in ignored_users:
         logger.info(f"Found match from user: {username} for {len(counted)} tracks! Track attributes: {filetype}")
