@@ -122,6 +122,8 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype):
         if best_match > minimum_match_ratio:
             counted.append(lidarr_filename)
             total_match += best_match
+        else:
+            logger.info(f"No match for track '{lidarr_filename}' from {username} (best_ratio={best_match:.3f}, min={minimum_match_ratio})")
 
     if len(counted) == len(lidarr_tracks) and username not in ignored_users:
         logger.info(f"Found match from user: {username} for {len(counted)} tracks! Track attributes: {filetype}")
@@ -376,11 +378,13 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
 
         track_num = len(tracks)
         tracks_info = album_track_num(directory)
+        logger.info(f"User: {username} track_num={track_num} dir_count={tracks_info['count']} dir_filetype='{tracks_info['filetype']}' dir_files={len(directory.get('files', []))}")
 
         if tracks_info["count"] == track_num and tracks_info["filetype"] != "":
             if album_match(tracks, directory["files"], username, allowed_filetype):
                 return True, directory, file_dir
             else:
+                logger.info(f"User: {username} album_match returned False (sequence matching failed)")
                 continue
     return False, {}, ""
 
@@ -578,16 +582,31 @@ def downloads_all_done(downloads):
     return all_done, error_list, remote_queue
 
 
-def try_enqueue(all_tracks, results, allowed_filetype):
+def try_enqueue(all_tracks, results, allowed_filetype, skip_users=None):
     """
     Single album match and enqueue.
     Iterates over all users and enqueues a found match
     """
+    # Build the set of file_dirs to check per user.
+    # If allowed_filetype has attributes (e.g. "mp3 320"), also include dirs
+    # from the generic base type (e.g. "mp3") since many soulseek clients
+    # don't report bitrate in search results.
+    base_filetype = allowed_filetype.split(" ")[0] if " " in allowed_filetype else None
     for username in results:
-        if allowed_filetype not in results[username]:
+        if skip_users and username in skip_users:
+            continue
+        # Collect file_dirs from the specific filetype and/or the generic base
+        file_dirs = []
+        if allowed_filetype in results[username]:
+            file_dirs.extend(results[username][allowed_filetype])
+        if base_filetype and base_filetype in results[username]:
+            for d in results[username][base_filetype]:
+                if d not in file_dirs:
+                    file_dirs.append(d)
+        if not file_dirs:
             continue
         logger.debug(f"Parsing result from user: {username}")
-        file_dirs = results[username][allowed_filetype]
+
         found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username)
         if found:
             directory = download_filter(allowed_filetype, directory)
@@ -616,7 +635,7 @@ def try_enqueue(all_tracks, results, allowed_filetype):
     return False, None
 
 
-def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
+def try_multi_enqueue(release, all_tracks, results, allowed_filetype, skip_users=None):
     """
     This is the multi-disk/media path for locating and enqueueing an album
     It does a flat search first. Then it does a split search.
@@ -636,11 +655,21 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
         split_release.append(disk)
     total = len(split_release)
     count_found = 0
+    base_filetype = allowed_filetype.split(" ")[0] if " " in allowed_filetype else None
     for disk in split_release:
         for username in tmp_results:
-            if allowed_filetype not in tmp_results[username]:
+            if skip_users and username in skip_users:
                 continue
-            file_dirs = results[username][allowed_filetype]
+            # Collect file_dirs from specific and generic base filetype
+            file_dirs = []
+            if allowed_filetype in tmp_results[username]:
+                file_dirs.extend(tmp_results[username][allowed_filetype])
+            if base_filetype and base_filetype in tmp_results[username]:
+                for d in tmp_results[username][base_filetype]:
+                    if d not in file_dirs:
+                        file_dirs.append(d)
+            if not file_dirs:
+                continue
             found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
             if found:
                 directory = download_filter(allowed_filetype, directory)
@@ -699,7 +728,47 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
         return False, None
 
 
-def find_download(album, grab_list):
+def get_existing_quality(album_id):
+    """Get the quality name of existing track files for an album."""
+    try:
+        track_files = lidarr.get_track_file(albumId=album_id)
+        if track_files:
+            return track_files[0].get("quality", {}).get("quality", {}).get("name", "")
+    except Exception:
+        logger.warning("Could not get existing quality for album %s", album_id, exc_info=True)
+    return ""
+
+
+def filetype_matches_existing(allowed_filetype, existing_quality_name):
+    """Check if downloading this filetype would give us what Lidarr already has.
+
+    For FLAC: any FLAC tier is skipped if Lidarr already has any FLAC,
+    since re-downloading a different FLAC tier won't satisfy a cutoff
+    that FLAC already didn't satisfy.
+
+    For MP3: matches on bitrate (e.g. "mp3 320" matches "MP3-320").
+    Generic "mp3" matches any existing MP3.
+    """
+    existing = existing_quality_name.lower().replace("-", " ")
+    ft = allowed_filetype.lower()
+    ft_base = ft.split(" ")[0]
+
+    if ft_base not in existing:
+        return False
+
+    # Any FLAC tier matches any existing FLAC — re-downloading won't help
+    if ft_base == "flac":
+        return True
+
+    # For MP3: generic "mp3" matches any MP3, "mp3 320" matches "mp3 320"
+    if " " not in ft:
+        return True
+    return ft.split(" ")[1] in existing
+
+    return False
+
+
+def find_download(album, grab_list, skip_users=None):
     """
     This does the main loop over search results and user directories
     It has two paths it can take. One is the "single album" path
@@ -709,7 +778,27 @@ def find_download(album, grab_list):
     artist_name = album["artist"]["artistName"]
     artist_id = album["artistId"]
     results = search_cache[album_id]
-    for allowed_filetype in allowed_filetypes:
+
+    # Skip filetypes matching what Lidarr already has (prevents re-download loops with cutoff_unmet)
+    existing_quality = ""
+    if "cutoff_unmet" in search_sources:
+        existing_quality = get_existing_quality(album_id)
+
+    # For cutoff_unmet albums (existing_quality is set), only try the preferred
+    # quality tier. Falling through to lower tiers is pointless — the album already
+    # has files, and downloading a different quality that still doesn't meet the
+    # cutoff just wastes bandwidth (or worse, creates an infinite re-download loop).
+    filetypes_to_try = allowed_filetypes
+    if existing_quality:
+        filetypes_to_try = [ft for ft in allowed_filetypes if not filetype_matches_existing(ft, existing_quality)]
+        if filetypes_to_try:
+            filetypes_to_try = [filetypes_to_try[0]]  # Only try the most preferred non-matching type
+            logger.info(f"Cutoff upgrade: only trying {filetypes_to_try[0]} (Lidarr has {existing_quality})")
+        else:
+            logger.info(f"No upgrade possible for {artist_name} - all filetypes match existing {existing_quality}")
+            return False
+
+    for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
         releases = lidarr.get_album(album_id)["releases"]
         num_releases = len(releases)
@@ -720,7 +809,7 @@ def find_download(album, grab_list):
             releases.remove(release)
             release_id = release["id"]
             all_tracks = lidarr.get_tracks(artistId=artist_id, albumId=album_id, albumReleaseId=release_id)
-            found, downloads = try_enqueue(all_tracks, results, allowed_filetype)
+            found, downloads = try_enqueue(all_tracks, results, allowed_filetype, skip_users=skip_users)
 
             if found:
                 grab_list[album_id] = {}
@@ -729,9 +818,10 @@ def find_download(album, grab_list):
                 grab_list[album_id]["title"] = album["title"]
                 grab_list[album_id]["artist"] = artist_name
                 grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                grab_list[album_id]["album"] = album
                 return True
             elif len(release["media"]) > 1:
-                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype)
+                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype, skip_users=skip_users)
                 if found:
                     grab_list[album_id] = {}
                     grab_list[album_id]["files"] = downloads
@@ -739,6 +829,7 @@ def find_download(album, grab_list):
                     grab_list[album_id]["title"] = album["title"]
                     grab_list[album_id]["artist"] = artist_name
                     grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                    grab_list[album_id]["album"] = album
                     return True
     return False
 
@@ -839,9 +930,35 @@ def process_completed_album(album_data, failed_grab):
 
 def monitor_downloads(grab_list, failed_grab):
     def delete_album(reason):
+        grab_list_title = grab_list[album_id]["title"]
+        grab_list_artist = grab_list[album_id]["artist"]
         cancel_and_delete(grab_list[album_id]["files"])
-        logger.info(f"{reason} Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
-        del grab_list[album_id]
+
+        # Try fallback to another user before giving up
+        if "skip_users" not in grab_list[album_id]:
+            grab_list[album_id]["skip_users"] = set()
+
+        # Extract failed username(s) from the download files
+        for f in grab_list[album_id]["files"]:
+            if "username" in f:
+                grab_list[album_id]["skip_users"].add(f["username"])
+
+        skip_users = grab_list[album_id]["skip_users"]
+        album = grab_list[album_id].get("album")
+
+        if album and len(skip_users) < 3:  # Max 3 user attempts
+            del grab_list[album_id]  # Clear old entry before find_download repopulates
+            logger.info(f"Trying next user for {grab_list_title} (skipping: {', '.join(skip_users)})")
+            if find_download(album, grab_list, skip_users=skip_users):
+                # Preserve skip_users and album in the new grab_list entry
+                grab_list[album_id]["skip_users"] = skip_users
+                grab_list[album_id]["album"] = album
+                return  # Continue monitoring with new user
+
+        # No fallback possible — truly failed
+        if album_id in grab_list:
+            del grab_list[album_id]
+        logger.info(f"{reason} Album: {grab_list_title} Artist: {grab_list_artist}")
         failed_grab.append(lidarr.get_album(album_id))
 
     while True:
