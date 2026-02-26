@@ -757,17 +757,37 @@ def get_existing_quality_tier(album_id):
         mapped = quality_name.lower().replace("-", " ")
 
         # Exact match first (e.g. "mp3 320" in allowed_filetypes)
+        matched_index = None
         for i, ft in enumerate(allowed_filetypes):
             if ft.strip().lower() == mapped:
-                return i
+                matched_index = i
+                break
 
         # Bare-format fallback (e.g. "mp3 192" not in list → match bare "mp3")
-        bare_format = mapped.split()[0] if " " in mapped else mapped
-        for i, ft in enumerate(allowed_filetypes):
-            if ft.strip().lower() == bare_format:
-                return i
+        if matched_index is None:
+            bare_format = mapped.split()[0] if " " in mapped else mapped
+            for i, ft in enumerate(allowed_filetypes):
+                if ft.strip().lower() == bare_format:
+                    matched_index = i
+                    break
 
-        return len(allowed_filetypes)
+        if matched_index is None:
+            return len(allowed_filetypes)
+
+        # When Lidarr reports a bare format (e.g. "FLAC" with no bitrate/depth),
+        # it can't distinguish sub-variants (flac 24/192 vs flac 16/44.1).
+        # Downloading any FLAC variant would import as "FLAC" again → infinite
+        # loop.  Prevent this by returning the index of the FIRST entry with the
+        # same base format, so all same-format variants are excluded.
+        if " " not in mapped:
+            for i in range(matched_index):
+                if allowed_filetypes[i].strip().lower().split()[0] == mapped:
+                    logger.info(
+                        f"Bare format '{quality_name}' detected — excluding "
+                        f"all '{mapped}' variants (indices {i}-{matched_index})"
+                    )
+                    return i
+        return matched_index
     except Exception:
         logger.debug(
             f"Could not determine existing quality for album {album_id}",
