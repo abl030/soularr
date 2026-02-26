@@ -211,6 +211,24 @@ def release_trackcount_mode(releases):
 def choose_release(artist_name, releases):
     most_common_trackcount = release_trackcount_mode(releases)
 
+    # Prefer the release Lidarr has marked as monitored — this is the one the
+    # user explicitly selected in the UI and represents the edition they want.
+    for release in releases:
+        if not release.get("monitored", False):
+            continue
+        country = release["country"][0] if release["country"] else None
+        if release["format"][1] == "x" and allow_multi_disc:
+            format_accepted = release["format"].split("x", 1)[1] in accepted_formats
+        else:
+            format_accepted = release["format"] in accepted_formats
+        if (skip_region_check or country in accepted_countries) and format_accepted and release["status"] == "Official":
+            logger.info(
+                f"Selected monitored release for {artist_name}: {release['status']}, "
+                f"{country}, {release['format']}, Mediums: {release['mediumCount']}, "
+                f"Tracks: {release['trackCount']}, ID: {release['id']}"
+            )
+            return release
+
     for release in releases:
         country = release["country"][0] if release["country"] else None
 
