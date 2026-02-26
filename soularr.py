@@ -14,6 +14,7 @@ import logging
 import json
 from datetime import datetime
 import copy
+import requests
 import music_tag
 import slskd_api
 from pyarr import LidarrAPI
@@ -717,6 +718,64 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
         return False, None
 
 
+def get_existing_quality_tier(album_id):
+    """
+    For cutoff_unmet albums, determine which allowed_filetypes index matches
+    the existing files' quality.  Only filetypes at a LOWER index (higher
+    priority) would be a genuine upgrade.
+
+    Returns the index into allowed_filetypes, or len(allowed_filetypes) when
+    quality can't be determined (safe fallback — all filetypes are tried).
+
+    Lidarr quality names look like "MP3-320", "MP3-192", "FLAC", "FLAC 24bit".
+    We map them to allowed_filetypes format: "mp3 320", "mp3 192", "flac", etc.
+    """
+    try:
+        response = requests.get(
+            f"{lidarr_host_url}/api/v1/trackfile",
+            params={"albumId": album_id},
+            headers={"X-Api-Key": lidarr_api_key},
+            timeout=10,
+        )
+        response.raise_for_status()
+        track_files = response.json()
+
+        if not track_files:
+            return len(allowed_filetypes)
+
+        # Use the quality reported by Lidarr for the first track file
+        quality_name = (
+            track_files[0]
+            .get("quality", {})
+            .get("quality", {})
+            .get("name", "")
+        )
+        if not quality_name:
+            return len(allowed_filetypes)
+
+        # "MP3-320" -> "mp3 320", "FLAC" -> "flac", "FLAC 24bit" -> "flac 24bit"
+        mapped = quality_name.lower().replace("-", " ")
+
+        # Exact match first (e.g. "mp3 320" in allowed_filetypes)
+        for i, ft in enumerate(allowed_filetypes):
+            if ft.strip().lower() == mapped:
+                return i
+
+        # Bare-format fallback (e.g. "mp3 192" not in list → match bare "mp3")
+        bare_format = mapped.split()[0] if " " in mapped else mapped
+        for i, ft in enumerate(allowed_filetypes):
+            if ft.strip().lower() == bare_format:
+                return i
+
+        return len(allowed_filetypes)
+    except Exception:
+        logger.debug(
+            f"Could not determine existing quality for album {album_id}",
+            exc_info=True,
+        )
+        return len(allowed_filetypes)
+
+
 def find_download(album, grab_list):
     """
     This does the main loop over search results and user directories
@@ -727,7 +786,29 @@ def find_download(album, grab_list):
     artist_name = album["artist"]["artistName"]
     artist_id = album["artistId"]
     results = search_cache[album_id]
-    for allowed_filetype in allowed_filetypes:
+
+    # For cutoff_unmet albums, only try filetypes that are strictly better
+    # than what Lidarr already has.  This prevents re-downloading the same
+    # quality in an endless loop (e.g. mp3-192 replacing mp3-192).
+    is_cutoff = album.get("_is_cutoff", False)
+    filetypes_to_try = allowed_filetypes
+    if is_cutoff:
+        existing_tier = get_existing_quality_tier(album_id)
+        if existing_tier == 0:
+            logger.info(
+                f"Already at highest quality tier, skipping cutoff upgrade: "
+                f"{artist_name} - {album['title']}"
+            )
+            return False
+        if existing_tier < len(allowed_filetypes):
+            filetypes_to_try = allowed_filetypes[:existing_tier]
+            logger.info(
+                f"Cutoff upgrade for {artist_name} - {album['title']}: "
+                f"existing quality '{allowed_filetypes[existing_tier]}', "
+                f"only trying {len(filetypes_to_try)} higher-priority formats"
+            )
+
+    for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
         releases = lidarr.get_album(album_id)["releases"]
         num_releases = len(releases)
@@ -1447,7 +1528,10 @@ def main():
             for source in search_sources:
                 logging.debug(f"Getting records from {source}")
                 missing = source == "missing"
-                wanted_records.extend(get_records(missing))
+                records = get_records(missing)
+                for record in records:
+                    record["_is_cutoff"] = not missing
+                wanted_records.extend(records)
         except ValueError as ex:
             logger.error(f"An error occurred: {ex}")
             logger.error("Exiting...")
