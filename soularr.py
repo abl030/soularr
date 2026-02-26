@@ -1144,7 +1144,9 @@ def get_records(missing: bool) -> list:
             page += 1
 
     elif search_type == "incrementing_page":
-        page = get_current_page(current_page_file_path)
+        source_suffix = "missing" if missing else "cutoff"
+        page_file = current_page_file_path.replace(".current_page.txt", f".current_page_{source_suffix}.txt")
+        page = get_current_page(page_file)
         try:
             wanted_records = lidarr.get_wanted(
                 page=page,
@@ -1156,7 +1158,7 @@ def get_records(missing: bool) -> list:
         except ConnectionError as ex:
             logger.error(f"Failed to grab record: {ex}")
         page = 1 if page >= math.ceil(total_wanted / page_size) else page + 1
-        update_current_page(current_page_file_path, str(page))
+        update_current_page(page_file, str(page))
 
     elif search_type == "first_page":
         wanted_records = wanted["records"]
