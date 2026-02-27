@@ -81,6 +81,7 @@ config_file_path = None
 failure_file_path = None
 current_page_file_path = None
 denylist_file_path = None
+cutoff_denylist_file_path = None
 search_blacklist = []
 
 # === Runtime State & Caches ===
@@ -983,11 +984,12 @@ def process_completed_album(album_data, failed_grab):
                         f"Cutoff upgrade failed for {album_data['artist']} - {album_data['title']}: "
                         f"quality still '{post_quality}' after import (tier {post_tier} >= {pre_tier}). "
                         f"Source users likely had mislabeled files: {', '.join(usernames)}. "
-                        f"Denylisting user/album pairs for remainder of this run."
+                        f"Denylisting user/album pairs permanently."
                     )
                     if aid not in cutoff_denylist:
                         cutoff_denylist[aid] = set()
                     cutoff_denylist[aid].update(usernames)
+                    save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
                 else:
                     logger.info(
                         f"Cutoff upgrade verified for {album_data['artist']} - {album_data['title']}: "
@@ -1404,6 +1406,29 @@ def update_search_denylist(denylist, album_id, success):
             }
 
 
+def load_cutoff_denylist(file_path):
+    """Load persistent cutoff denylist from JSON. Format: {album_id_str: [username, ...]}"""
+    if not os.path.exists(file_path):
+        return {}
+    try:
+        with open(file_path, "r") as f:
+            raw = json.load(f)
+            # Convert lists back to sets
+            return {int(k): set(v) for k, v in raw.items()}
+    except (json.JSONDecodeError, IOError) as ex:
+        logger.warning(f"Error loading cutoff denylist: {ex}. Starting with empty denylist.")
+        return {}
+
+
+def save_cutoff_denylist(file_path, denylist):
+    """Save cutoff denylist to JSON. Converts sets to lists for serialization."""
+    try:
+        with open(file_path, "w") as f:
+            json.dump({str(k): list(v) for k, v in denylist.items()}, f, indent=2)
+    except IOError as ex:
+        logger.error(f"Error saving cutoff denylist: {ex}")
+
+
 def main():
     global \
         slskd_api_key, \
@@ -1440,6 +1465,7 @@ def main():
         failure_file_path, \
         current_page_file_path, \
         denylist_file_path, \
+        cutoff_denylist_file_path, \
         search_blacklist, \
         lidarr, \
         slskd, \
@@ -1493,6 +1519,7 @@ def main():
     failure_file_path = os.path.join(args.var_dir, "failure_list.txt")
     current_page_file_path = os.path.join(args.var_dir, ".current_page.txt")
     denylist_file_path = os.path.join(args.var_dir, "search_denylist.json")
+    cutoff_denylist_file_path = os.path.join(args.var_dir, "cutoff_denylist.json")
 
     if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
         logger.info(f"Soularr instance is already running.")
@@ -1583,7 +1610,9 @@ def main():
         search_cache = {}
         folder_cache = {}
         broken_user = []
-        cutoff_denylist = {}
+        cutoff_denylist = load_cutoff_denylist(cutoff_denylist_file_path)
+        if cutoff_denylist:
+            logger.info(f"Loaded cutoff denylist with {len(cutoff_denylist)} album(s) from {cutoff_denylist_file_path}")
 
         slskd = slskd_api.SlskdClient(host=slskd_host_url, api_key=slskd_api_key, url_base=slskd_url_base)
         lidarr = LidarrAPI(lidarr_host_url, lidarr_api_key)
