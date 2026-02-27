@@ -850,6 +850,9 @@ def find_download(album, grab_list):
                 grab_list[album_id]["title"] = album["title"]
                 grab_list[album_id]["artist"] = artist_name
                 grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                if is_cutoff:
+                    grab_list[album_id]["_is_cutoff"] = True
+                    grab_list[album_id]["_pre_tier"] = existing_tier
                 return True
             elif len(release["media"]) > 1:
                 found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype)
@@ -860,6 +863,9 @@ def find_download(album, grab_list):
                     grab_list[album_id]["title"] = album["title"]
                     grab_list[album_id]["artist"] = artist_name
                     grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                    if is_cutoff:
+                        grab_list[album_id]["_is_cutoff"] = True
+                        grab_list[album_id]["_pre_tier"] = existing_tier
                     return True
     return False
 
@@ -953,6 +959,28 @@ def process_completed_album(album_data, failed_grab):
             if "Failed" in current_task["message"]:
                 move_failed_import(current_task["body"]["path"])
                 failed_grab.append(lidarr.get_album(album_data["album_id"]))
+            elif album_data.get("_is_cutoff"):
+                # Post-import quality check: verify the upgrade actually improved quality.
+                # If Soulseek sources had mislabeled bitrates, Lidarr will import at the
+                # original quality and the album stays cutoff_unmet → infinite loop.
+                post_tier, post_quality = get_existing_quality_tier(album_data["album_id"])
+                pre_tier = album_data.get("_pre_tier", len(allowed_filetypes))
+                if post_tier >= pre_tier:
+                    usernames = set(f["username"] for f in album_data.get("files", []))
+                    logger.warning(
+                        f"Cutoff upgrade failed for {album_data['artist']} - {album_data['title']}: "
+                        f"quality still '{post_quality}' after import (tier {post_tier} >= {pre_tier}). "
+                        f"Source users likely had mislabeled files: {', '.join(usernames)}. "
+                        f"Denylisting users for remainder of this run."
+                    )
+                    for u in usernames:
+                        if u not in broken_user:
+                            broken_user.append(u)
+                else:
+                    logger.info(
+                        f"Cutoff upgrade verified for {album_data['artist']} - {album_data['title']}: "
+                        f"quality improved to '{post_quality}' (tier {pre_tier} → {post_tier})"
+                    )
         except Exception:
             logger.exception("Error printing lidarr task message")
             logger.error(current_task)
