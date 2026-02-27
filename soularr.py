@@ -607,7 +607,7 @@ def try_enqueue(all_tracks, results, allowed_filetype):
     denied_users = cutoff_denylist.get(album_id, set())
     for username in results:
         if username in denied_users:
-            logger.info(f"Skipping user {username} for album {album_id}: previously provided bad quality")
+            logger.info(f"Skipping user '{username}' for album ID {album_id}: denylisted (previously provided mislabeled quality)")
             continue
         if allowed_filetype not in results[username]:
             continue
@@ -666,6 +666,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
     for disk in split_release:
         for username in tmp_results:
             if username in denied_users:
+                logger.info(f"Skipping user '{username}' for album ID {album_id} (multi-disc): denylisted (previously provided mislabeled quality)")
                 continue
             if allowed_filetype not in tmp_results[username]:
                 continue
