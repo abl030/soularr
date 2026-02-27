@@ -724,12 +724,14 @@ def get_existing_quality_tier(album_id):
     the existing files' quality.  Only filetypes at a LOWER index (higher
     priority) would be a genuine upgrade.
 
-    Returns the index into allowed_filetypes, or len(allowed_filetypes) when
-    quality can't be determined (safe fallback — all filetypes are tried).
+    Returns (index, quality_name) where index is into allowed_filetypes, or
+    len(allowed_filetypes) when quality can't be determined (safe fallback —
+    all filetypes are tried).  quality_name is the raw Lidarr quality string.
 
     Lidarr quality names look like "MP3-320", "MP3-192", "FLAC", "FLAC 24bit".
     We map them to allowed_filetypes format: "mp3 320", "mp3 192", "flac", etc.
     """
+    fallback = (len(allowed_filetypes), "Unknown")
     try:
         response = requests.get(
             f"{lidarr_host_url}/api/v1/trackfile",
@@ -741,7 +743,7 @@ def get_existing_quality_tier(album_id):
         track_files = response.json()
 
         if not track_files:
-            return len(allowed_filetypes)
+            return fallback
 
         # Use the quality reported by Lidarr for the first track file
         quality_name = (
@@ -751,7 +753,7 @@ def get_existing_quality_tier(album_id):
             .get("name", "")
         )
         if not quality_name:
-            return len(allowed_filetypes)
+            return fallback
 
         # "MP3-320" -> "mp3 320", "FLAC" -> "flac", "FLAC 24bit" -> "flac 24bit"
         mapped = quality_name.lower().replace("-", " ")
@@ -772,7 +774,7 @@ def get_existing_quality_tier(album_id):
                     break
 
         if matched_index is None:
-            return len(allowed_filetypes)
+            return fallback
 
         # When Lidarr reports a bare format (e.g. "FLAC" with no bitrate/depth),
         # it can't distinguish sub-variants (flac 24/192 vs flac 16/44.1).
@@ -786,14 +788,14 @@ def get_existing_quality_tier(album_id):
                         f"Bare format '{quality_name}' detected — excluding "
                         f"all '{mapped}' variants (indices {i}-{matched_index})"
                     )
-                    return i
-        return matched_index
+                    return (i, quality_name)
+        return (matched_index, quality_name)
     except Exception:
         logger.debug(
             f"Could not determine existing quality for album {album_id}",
             exc_info=True,
         )
-        return len(allowed_filetypes)
+        return fallback
 
 
 def find_download(album, grab_list):
@@ -813,18 +815,18 @@ def find_download(album, grab_list):
     is_cutoff = album.get("_is_cutoff", False)
     filetypes_to_try = allowed_filetypes
     if is_cutoff:
-        existing_tier = get_existing_quality_tier(album_id)
+        existing_tier, lidarr_quality = get_existing_quality_tier(album_id)
         if existing_tier == 0:
             logger.info(
                 f"Already at highest quality tier, skipping cutoff upgrade: "
-                f"{artist_name} - {album['title']}"
+                f"{artist_name} - {album['title']} (Lidarr quality: {lidarr_quality})"
             )
             return False
         if existing_tier < len(allowed_filetypes):
             filetypes_to_try = allowed_filetypes[:existing_tier]
             logger.info(
                 f"Cutoff upgrade for {artist_name} - {album['title']}: "
-                f"existing quality '{allowed_filetypes[existing_tier]}', "
+                f"Lidarr quality '{lidarr_quality}' → tier '{allowed_filetypes[existing_tier]}', "
                 f"only trying {len(filetypes_to_try)} higher-priority formats"
             )
 
