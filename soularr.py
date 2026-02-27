@@ -87,6 +87,7 @@ search_blacklist = []
 search_cache = {}
 folder_cache = {}
 broken_user = []
+cutoff_denylist = {}  # album_id → set of usernames that provided bad quality
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype):
@@ -602,7 +603,12 @@ def try_enqueue(all_tracks, results, allowed_filetype):
     Single album match and enqueue.
     Iterates over all users and enqueues a found match
     """
+    album_id = all_tracks[0]["albumId"]
+    denied_users = cutoff_denylist.get(album_id, set())
     for username in results:
+        if username in denied_users:
+            logger.info(f"Skipping user {username} for album {album_id}: previously provided bad quality")
+            continue
         if allowed_filetype not in results[username]:
             continue
         logger.debug(f"Parsing result from user: {username}")
@@ -655,8 +661,12 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
         split_release.append(disk)
     total = len(split_release)
     count_found = 0
+    album_id = all_tracks[0]["albumId"]
+    denied_users = cutoff_denylist.get(album_id, set())
     for disk in split_release:
         for username in tmp_results:
+            if username in denied_users:
+                continue
             if allowed_filetype not in tmp_results[username]:
                 continue
             file_dirs = results[username][allowed_filetype]
@@ -967,15 +977,16 @@ def process_completed_album(album_data, failed_grab):
                 pre_tier = album_data.get("_pre_tier", len(allowed_filetypes))
                 if post_tier >= pre_tier:
                     usernames = set(f["username"] for f in album_data.get("files", []))
+                    aid = album_data["album_id"]
                     logger.warning(
                         f"Cutoff upgrade failed for {album_data['artist']} - {album_data['title']}: "
                         f"quality still '{post_quality}' after import (tier {post_tier} >= {pre_tier}). "
                         f"Source users likely had mislabeled files: {', '.join(usernames)}. "
-                        f"Denylisting users for remainder of this run."
+                        f"Denylisting user/album pairs for remainder of this run."
                     )
-                    for u in usernames:
-                        if u not in broken_user:
-                            broken_user.append(u)
+                    if aid not in cutoff_denylist:
+                        cutoff_denylist[aid] = set()
+                    cutoff_denylist[aid].update(usernames)
                 else:
                     logger.info(
                         f"Cutoff upgrade verified for {album_data['artist']} - {album_data['title']}: "
@@ -1435,7 +1446,8 @@ def main():
         logger, \
         search_cache, \
         folder_cache, \
-        broken_user
+        broken_user, \
+        cutoff_denylist
 
     # Let's allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
@@ -1570,6 +1582,7 @@ def main():
         search_cache = {}
         folder_cache = {}
         broken_user = []
+        cutoff_denylist = {}
 
         slskd = slskd_api.SlskdClient(host=slskd_host_url, api_key=slskd_api_key, url_base=slskd_url_base)
         lidarr = LidarrAPI(lidarr_host_url, lidarr_api_key)
