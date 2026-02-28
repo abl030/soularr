@@ -885,6 +885,18 @@ def find_download(album, grab_list):
     for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
         releases = lidarr.get_album(album_id)["releases"]
+
+        # Check if any release is explicitly monitored by the user.
+        # When a monitored release exists, we ONLY try that release and skip
+        # all others. Rationale: Lidarr imports against the monitored release,
+        # so downloading a non-monitored release (different track count/edition)
+        # will always fail at import time. This avoids wasted downloads and
+        # bandwidth — e.g. downloading an 11-track edition when Lidarr expects
+        # a 20-track deluxe. If the monitored release isn't available on
+        # Soulseek, the album simply fails and can be retried later or the
+        # user can manually select a different release in Lidarr.
+        has_monitored = any(r.get("monitored", False) for r in releases)
+
         num_releases = len(releases)
         for _ in range(0, num_releases):
             if len(releases) == 0:
@@ -919,6 +931,25 @@ def find_download(album, grab_list):
                         grab_list[album_id]["_is_cutoff"] = True
                         grab_list[album_id]["_pre_tier"] = existing_tier
                     return True
+
+            # If a monitored release was tried and didn't match, stop here.
+            # Don't fall through to other releases — Lidarr will reject them
+            # at import because they won't match the monitored edition.
+            if has_monitored and not release.get("monitored", False):
+                # We already tried the monitored release (choose_release
+                # returns it first) and we're now on a non-monitored one.
+                # This shouldn't happen because we break below, but guard
+                # against it defensively.
+                break
+            if has_monitored and release.get("monitored", False):
+                # The monitored release was tried and didn't match.
+                # Skip remaining releases for this quality tier.
+                logger.info(
+                    f"Monitored release ({release['trackCount']} tracks) not found on "
+                    f"Soulseek for {artist_name} - {album['title']} at quality "
+                    f"{allowed_filetype}, skipping non-monitored releases"
+                )
+                break
     return False
 
 
