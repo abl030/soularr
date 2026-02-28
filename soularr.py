@@ -449,8 +449,13 @@ def search_for_album(album):
     album_title = album["title"]
     artist_name = album["artist"]["artistName"]
     album_id = album["id"]
-    if len(album_title) == 1:  # Need to add some code to wrangle specific artist names in here.. ;)
+    if len(album_title) == 1:
         query = artist_name + " " + album_title
+    elif len(artist_name) <= 3:
+        # Short artist names (e.g. "AFI", "REM") poison Soulseek searches —
+        # the short token gets dropped or mismatched, causing 0 results.
+        # Skip prepending and search by album title alone.
+        query = album_title
     else:
         query = artist_name + " " + album_title if config.getboolean("Search Settings", "album_prepend_artist", fallback=False) else album_title
 
