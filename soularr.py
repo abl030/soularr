@@ -487,6 +487,35 @@ def search_for_album(album):
             query = stripped
         tokens = query.split()
 
+    # Soulseek's distributed search returns 0 results when queries have
+    # too many tokens (typically > 4). Common words like "Post" appear in
+    # millions of paths; intersecting too many token result sets causes
+    # server-side timeouts. Cap at 4 tokens, dropping the shortest
+    # (most common/ambiguous) ones first.
+    # e.g. "Animal Collective Merriweather Post Pavilion"
+    #    → "Animal Collective Merriweather Pavilion" (drops "Post")
+    MAX_SEARCH_TOKENS = 4
+    if len(tokens) > MAX_SEARCH_TOKENS:
+        # Sort by length descending, keep the longest (most distinctive) tokens
+        kept = sorted(tokens, key=len, reverse=True)[:MAX_SEARCH_TOKENS]
+        # Restore original word order
+        capped = [t for t in tokens if t in kept]
+        # Handle duplicates: only keep as many as we selected
+        seen = {}
+        ordered = []
+        for t in capped:
+            count = seen.get(t, 0)
+            if count < kept.count(t):
+                ordered.append(t)
+                seen[t] = count + 1
+        capped_query = " ".join(ordered[:MAX_SEARCH_TOKENS])
+        logger.info(
+            f"Capped search tokens ({len(tokens)} -> {MAX_SEARCH_TOKENS}): "
+            f"'{query}' -> '{capped_query}'"
+        )
+        query = capped_query
+        tokens = query.split()
+
     # When ALL tokens are short (e.g. "AFI AFI", "REM Up"), the search
     # returns 0 results. Fall back to searching for the longest track
     # title from the album — the existing check_for_match logic will
