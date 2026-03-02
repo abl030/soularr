@@ -472,12 +472,25 @@ def search_for_album(album):
     if query != original_query:
         logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
 
-    # Soulseek silently drops search tokens with <= 3 characters.
+    # Soulseek silently drops search tokens with <= 3 characters, and
+    # their presence can poison results (causing 0 results even when
+    # longer tokens would match). Strip them proactively.
+    # e.g. "The Mountain Goats All Hail West Texas" → "Mountain Goats Hail West Texas"
+    tokens = query.split()
+    long_tokens = [t for t in tokens if len(t) > 3]
+    if long_tokens:
+        stripped = " ".join(long_tokens)
+        if stripped != query:
+            logger.info(
+                f"Stripped short tokens from search: '{query}' -> '{stripped}'"
+            )
+            query = stripped
+        tokens = query.split()
+
     # When ALL tokens are short (e.g. "AFI AFI", "REM Up"), the search
     # returns 0 results. Fall back to searching for the longest track
     # title from the album — the existing check_for_match logic will
     # still validate that the returned directories contain the full album.
-    tokens = query.split()
     if tokens and all(len(t) <= 3 for t in tokens):
         try:
             releases = lidarr.get_album(album_id)["releases"]
