@@ -850,7 +850,10 @@ def get_existing_quality_tier(album_id):
             return fallback
 
         # "MP3-320" -> "mp3 320", "FLAC" -> "flac", "FLAC 24bit" -> "flac 24bit"
+        # "ALAC" -> "m4a" (ALAC is Apple Lossless in an m4a container)
         mapped = quality_name.lower().replace("-", " ")
+        if mapped.startswith("alac"):
+            mapped = "m4a" + mapped[4:]  # "alac" -> "m4a", "alac 16/44.1" -> "m4a 16/44.1"
 
         # Exact match first (e.g. "mp3 320" in allowed_filetypes)
         matched_index = None
