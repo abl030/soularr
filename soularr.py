@@ -1121,10 +1121,18 @@ def process_completed_album(album_data, failed_grab):
                 move_failed_import(import_folder_fullpath)
                 log_validation_result(album_data, bv_result)
                 failed_grab.append(lidarr.get_album(album_data["album_id"]))
+                # Denylist the source user(s) so we try a different source next run
+                usernames = set(f["username"] for f in album_data.get("files", []))
+                aid = album_data["album_id"]
+                if aid not in cutoff_denylist:
+                    cutoff_denylist[aid] = set()
+                cutoff_denylist[aid].update(usernames)
+                save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
                 logger.warning(f"REJECTED: {album_data['artist']} - {album_data['title']} "
                               f"(distance={bv_result.get('distance')}, "
                               f"mbid_found={bv_result['mbid_found']}, "
-                              f"error={bv_result.get('error')})")
+                              f"error={bv_result.get('error')}) "
+                              f"| denylisted users: {', '.join(usernames)}")
         else:
             # === Lidarr DownloadedAlbumsScan path (original) ===
             command = lidarr.post_command(
