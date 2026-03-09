@@ -3,6 +3,7 @@
 import argparse
 import math
 import re
+import unicodedata
 import os
 import sys
 import time
@@ -1118,7 +1119,8 @@ def process_completed_album(album_data, failed_grab):
                 log_validation_result(album_data, bv_result, dest)
                 unmonitor_album(album_data["album_id"])
                 logger.info(f"STAGED: {album_data['artist']} - {album_data['title']} "
-                            f"(distance={bv_result['distance']:.4f}) → {dest}")
+                            f"(scenario={bv_result.get('scenario')}, "
+                            f"distance={bv_result['distance']:.4f}) → {dest}")
             else:
                 move_failed_import(import_folder_fullpath)
                 log_validation_result(album_data, bv_result)
@@ -1131,9 +1133,9 @@ def process_completed_album(album_data, failed_grab):
                 cutoff_denylist[aid].update(usernames)
                 save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
                 logger.warning(f"REJECTED: {album_data['artist']} - {album_data['title']} "
-                              f"(distance={bv_result.get('distance')}, "
-                              f"mbid_found={bv_result['mbid_found']}, "
-                              f"error={bv_result.get('error')}) "
+                              f"(scenario={bv_result.get('scenario')}, "
+                              f"distance={bv_result.get('distance')}, "
+                              f"detail={bv_result.get('detail')}) "
                               f"| denylisted users: {', '.join(usernames)}")
         else:
             # === Lidarr DownloadedAlbumsScan path (original) ===
@@ -1398,10 +1400,193 @@ def move_failed_import(src_path):
         logger.info(f"Failed import moved to: {target_path}")
 
 
+def _normalize_title(s):
+    """Normalize a title for comparison: lowercase, strip punctuation, collapse whitespace."""
+    s = unicodedata.normalize("NFKD", s)
+    s = s.lower().strip()
+    s = re.sub(r"[''`]", "'", s)
+    s = re.sub(r"[^\w\s'&]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _tracks_are_trivial_match(local_items, candidate):
+    """Check if local items and candidate tracks match after normalization."""
+    cand_tracks = candidate.get("tracks", [])
+    if not cand_tracks or not local_items:
+        return False
+    local_sorted = sorted(local_items, key=lambda x: x.get("track", 0))
+    cand_sorted = sorted(cand_tracks, key=lambda x: x.get("index", 0) or 0)
+    if len(local_sorted) != len(cand_sorted):
+        return False
+    mismatches = 0
+    for local, cand in zip(local_sorted, cand_sorted):
+        lt = _normalize_title(local.get("title", ""))
+        ct = _normalize_title(cand.get("title", ""))
+        if lt != ct:
+            if lt in ct or ct in lt:
+                continue
+            mismatches += 1
+    return mismatches <= max(1, len(local_sorted) // 5)
+
+
+def _pick_best_candidate(candidates, cur_artist, cur_album, item_count):
+    """Pick best candidate with US edition preference."""
+    matching = []
+    for i, c in enumerate(candidates):
+        ca = c.get("artist", "").lower().strip()
+        cn = c.get("album", "").lower().strip()
+        ct = c.get("track_count", 0)
+        ei = c.get("extra_items", 0)
+        et = c.get("extra_tracks", 0)
+        if (ca == cur_artist.lower().strip()
+                and cn == cur_album.lower().strip()
+                and ct == item_count
+                and ei == 0 and et == 0):
+            country = (c.get("country", "") or "").upper()
+            prio = 0 if country == "US" else (1 if country == "" else 2)
+            matching.append((prio, c["distance"], i, c))
+    if not matching:
+        return None, None
+    matching.sort()
+    _, _, idx, cand = matching[0]
+    return idx, cand
+
+
+def classify_for_staging(msg, mb_release_id):
+    """Classify a choose_match message using batch_import decision rules.
+
+    Adapted from batch_import.py's classify_and_decide(). Instead of "skip for
+    LLM review", uncertain cases are rejected — soularr will try a different
+    source next run.
+
+    Returns: {"valid": bool, "distance": float|None, "mbid_found": bool,
+              "scenario": str, "detail": str, "error": None}
+    """
+    result = {"valid": False, "distance": None, "mbid_found": False,
+              "scenario": "unknown", "detail": "", "error": None}
+
+    candidates = msg.get("candidates", [])
+    logger.info(f"CLASSIFY: {len(candidates)} candidates for mbid={mb_release_id}")
+    if not candidates:
+        result["scenario"] = "no_candidates"
+        result["detail"] = "No candidates returned"
+        logger.info(f"CLASSIFY: → {result['scenario']}")
+        return result
+
+    # Find the candidate matching our target MBID
+    target_cand = None
+    for i, cand in enumerate(candidates):
+        if cand.get("album_id") == mb_release_id:
+            target_cand = cand
+            result["mbid_found"] = True
+            result["distance"] = cand["distance"]
+            logger.info(f"CLASSIFY: found target MBID at candidate[{i}], distance={cand['distance']}")
+            break
+
+    if not target_cand:
+        result["scenario"] = "mbid_not_found"
+        result["detail"] = f"Target MBID {mb_release_id} not in candidates"
+        logger.info(f"CLASSIFY: → {result['scenario']}")
+        return result
+
+    cur_artist = msg.get("cur_artist", "")
+    cur_album = msg.get("cur_album", "")
+    item_count = msg.get("item_count", 0)
+    local_items = msg.get("items", [])
+
+    best = target_cand
+    best_dist = best["distance"]
+    best_artist = best.get("artist", "")
+    best_album = best.get("album", "")
+    best_tracks = best.get("track_count", 0)
+    extra_items = best.get("extra_items", 0)
+    extra_tracks = best.get("extra_tracks", 0)
+
+    artist_match = cur_artist.lower().strip() == best_artist.lower().strip()
+    album_match = cur_album.lower().strip() == best_album.lower().strip()
+    track_match = (item_count == best_tracks)
+
+    logger.info(f"CLASSIFY: local='{cur_artist}' / '{cur_album}' ({item_count} tracks)")
+    logger.info(f"CLASSIFY: MB='{best_artist}' / '{best_album}' ({best_tracks} tracks, "
+                f"extra_items={extra_items}, extra_tracks={extra_tracks})")
+    logger.info(f"CLASSIFY: artist_match={artist_match}, album_match={album_match}, "
+                f"track_match={track_match}, distance={best_dist}")
+
+    # Non-Official: reject (soularr can't do LLM review)
+    best_status = (best.get("albumstatus", "") or "").lower().strip()
+    if best_status != "official":
+        result["scenario"] = "non_official_release"
+        result["detail"] = f"Release status '{best_status}' — not Official"
+        logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+        return result
+
+    # Extra tracks means MB has more than local — reject
+    if extra_tracks > 0:
+        result["scenario"] = "extra_tracks"
+        result["detail"] = f"MB has {extra_tracks} more tracks than local files"
+        logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+        return result
+
+    # --- Artist mismatch ---
+    if not artist_match:
+        norm_local = _normalize_title(cur_artist)
+        norm_best = _normalize_title(best_artist)
+        logger.info(f"CLASSIFY: artist mismatch — normalized: '{norm_local}' vs '{norm_best}'")
+        if (norm_local == norm_best
+                and track_match and best_dist < 0.30
+                and _tracks_are_trivial_match(local_items, best)):
+            result["valid"] = True
+            result["scenario"] = "artist_name_variant"
+            result["detail"] = f"'{cur_artist}' → '{best_artist}', distance={best_dist}"
+            logger.info(f"CLASSIFY: → ACCEPT {result['scenario']}: {result['detail']}")
+            return result
+        result["scenario"] = "artist_mismatch"
+        result["detail"] = f"'{cur_artist}' → '{best_artist}'"
+        logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+        return result
+
+    # --- Artist matches ---
+    if album_match:
+        if track_match:
+            if best_dist < 0.30:
+                result["valid"] = True
+                result["scenario"] = "strong_match" if best_dist < 0.15 else "good_match"
+                result["detail"] = f"distance={best_dist}, country={best.get('country', '?')}"
+                logger.info(f"CLASSIFY: → ACCEPT {result['scenario']}: {result['detail']}")
+                return result
+            else:
+                result["scenario"] = "high_distance"
+                result["detail"] = f"distance={best_dist}"
+                logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+                return result
+        else:
+            result["scenario"] = "track_count_mismatch"
+            result["detail"] = f"Have {item_count}, MB has {best_tracks}, distance={best_dist}"
+            logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+            return result
+
+    # Album name doesn't match
+    logger.info(f"CLASSIFY: album name mismatch — checking tracks trivial match")
+    if track_match and best_dist < 0.30 and _tracks_are_trivial_match(local_items, best):
+        result["valid"] = True
+        result["scenario"] = "album_name_variant_tracks"
+        result["detail"] = f"'{cur_album}' → '{best_album}', distance={best_dist}"
+        logger.info(f"CLASSIFY: → ACCEPT {result['scenario']}: {result['detail']}")
+        return result
+
+    result["scenario"] = "album_name_mismatch"
+    result["detail"] = f"'{cur_album}' → '{best_album}', distance={best_dist}"
+    logger.info(f"CLASSIFY: → REJECT {result['scenario']}: {result['detail']}")
+    return result
+
+
 def beets_validate(album_path, mb_release_id, distance_threshold=0.15):
     """Dry-run beets import with specific MBID. Returns validation result.
 
-    Returns: {"valid": bool, "distance": float|None, "mbid_found": bool, "error": str|None}
+    Uses the same decision matrix as batch_import.py to classify matches.
+    Returns: {"valid": bool, "distance": float|None, "mbid_found": bool,
+              "scenario": str, "detail": str, "error": str|None}
     """
     cmd = [beets_harness_path, "--pretend", "--noincremental",
            "--search-id", mb_release_id, album_path]
@@ -1444,10 +1629,10 @@ def beets_validate(album_path, mb_release_id, distance_threshold=0.15):
                     cand_album = cand.get("album", "?")
                     logger.info(f"BEETS_VALIDATE:   candidate[{i}]: "
                                 f"mbid={cand_mbid}, dist={cand_dist}, album={cand_album}")
-                    if cand_mbid == mb_release_id:
-                        result["mbid_found"] = True
-                        result["distance"] = cand["distance"]
-                        result["valid"] = cand["distance"] <= distance_threshold
+                # Run decision matrix (same logic as batch_import.py)
+                result = classify_for_staging(msg, mb_release_id)
+                logger.info(f"BEETS_VALIDATE: classify → valid={result['valid']}, "
+                            f"scenario={result['scenario']}, detail={result['detail']}")
                 # Always skip (dry-run)
                 proc.stdin.write('{"action":"skip"}\n')
                 proc.stdin.flush()
@@ -1525,7 +1710,9 @@ def log_validation_result(album_data, result, dest_path=None):
         "mb_release_id": album_data.get("mb_release_id", ""),
         "lidarr_album_id": album_data.get("album_id"),
         "status": "staged" if result["valid"] else "rejected",
+        "scenario": result.get("scenario", ""),
         "distance": result.get("distance"),
+        "detail": result.get("detail", ""),
         "dest_path": dest_path,
         "error": result.get("error"),
     }
