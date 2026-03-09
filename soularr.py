@@ -1038,7 +1038,9 @@ def search_and_queue(albums):
     grab_list = {}
     failed_grab = []
     failed_search = []
-    for album in albums:
+    total = len(albums)
+    for i, album in enumerate(albums, 1):
+        logger.info(f"Album {i}/{total}: {album['artist']['artistName']} - {album['title']}")
         if search_for_album(album):
             if not find_download(album, grab_list):
                 failed_grab.append(album)
