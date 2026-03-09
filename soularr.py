@@ -6,6 +6,7 @@ import re
 import os
 import sys
 import time
+import subprocess as sp
 import shutil
 import difflib
 import operator
@@ -83,6 +84,13 @@ current_page_file_path = None
 denylist_file_path = None
 cutoff_denylist_file_path = None
 search_blacklist = []
+
+# === Beets Validation Config ===
+beets_validation_enabled = False
+beets_harness_path = ""
+beets_distance_threshold = 0.15
+beets_staging_dir = "/mnt/virtio/Music/AI"
+beets_tracking_file = "/mnt/virtio/Music/Re-download/beets-validated.jsonl"
 
 # === Runtime State & Caches ===
 search_cache = {}
@@ -985,6 +993,7 @@ def find_download(album, grab_list):
                 grab_list[album_id]["title"] = album["title"]
                 grab_list[album_id]["artist"] = artist_name
                 grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                grab_list[album_id]["mb_release_id"] = release.get("foreignReleaseId", "")
                 if is_cutoff:
                     grab_list[album_id]["_is_cutoff"] = True
                     grab_list[album_id]["_pre_tier"] = existing_tier
@@ -998,6 +1007,7 @@ def find_download(album, grab_list):
                     grab_list[album_id]["title"] = album["title"]
                     grab_list[album_id]["artist"] = artist_name
                     grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                    grab_list[album_id]["mb_release_id"] = release.get("foreignReleaseId", "")
                     if is_cutoff:
                         grab_list[album_id]["_is_cutoff"] = True
                         grab_list[album_id]["_pre_tier"] = existing_tier
@@ -1095,51 +1105,70 @@ def process_completed_album(album_data, failed_grab):
                 song.save()
             except Exception:
                 logger.exception(f"Error writing tags for: {file['import_path']}")
-        command = lidarr.post_command(
-            name="DownloadedAlbumsScan",
-            path=album_data["import_folder"],
-        )  # Album all tagged up and in a correctly named folder. This should work more reliably
-        logger.info(f"Starting Lidarr import for: {album_data['title']} ID: {command['id']}")
+        if beets_validation_enabled and album_data.get("mb_release_id"):
+            # === Beets validation path ===
+            bv_result = beets_validate(import_folder_fullpath,
+                                       album_data["mb_release_id"],
+                                       beets_distance_threshold)
 
-        while True:
-            current_task = lidarr.get_command(command["id"])
-            if current_task["status"] == "completed" or current_task["status"] == "failed":
-                break
-            time.sleep(2)
-
-        try:
-            logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
-
-            if "Failed" in current_task["message"]:
-                move_failed_import(current_task["body"]["path"])
+            if bv_result["valid"]:
+                dest = stage_to_ai(album_data, import_folder_fullpath, beets_staging_dir)
+                log_validation_result(album_data, bv_result, dest)
+                unmonitor_album(album_data["album_id"])
+                logger.info(f"STAGED: {album_data['artist']} - {album_data['title']} "
+                            f"(distance={bv_result['distance']:.4f}) → {dest}")
+            else:
+                move_failed_import(import_folder_fullpath)
+                log_validation_result(album_data, bv_result)
                 failed_grab.append(lidarr.get_album(album_data["album_id"]))
-            elif album_data.get("_is_cutoff"):
-                # Post-import quality check: verify the upgrade actually improved quality.
-                # If Soulseek sources had mislabeled bitrates, Lidarr will import at the
-                # original quality and the album stays cutoff_unmet → infinite loop.
-                post_tier, post_quality = get_existing_quality_tier(album_data["album_id"])
-                pre_tier = album_data.get("_pre_tier", len(allowed_filetypes))
-                if post_tier >= pre_tier:
-                    usernames = set(f["username"] for f in album_data.get("files", []))
-                    aid = album_data["album_id"]
-                    logger.warning(
-                        f"Cutoff upgrade failed for {album_data['artist']} - {album_data['title']}: "
-                        f"quality still '{post_quality}' after import (tier {post_tier} >= {pre_tier}). "
-                        f"Source users likely had mislabeled files: {', '.join(usernames)}. "
-                        f"Denylisting user/album pairs permanently."
-                    )
-                    if aid not in cutoff_denylist:
-                        cutoff_denylist[aid] = set()
-                    cutoff_denylist[aid].update(usernames)
-                    save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
-                else:
-                    logger.info(
-                        f"Cutoff upgrade verified for {album_data['artist']} - {album_data['title']}: "
-                        f"quality improved to '{post_quality}' (tier {pre_tier} → {post_tier})"
-                    )
-        except Exception:
-            logger.exception("Error printing lidarr task message")
-            logger.error(current_task)
+                logger.warning(f"REJECTED: {album_data['artist']} - {album_data['title']} "
+                              f"(distance={bv_result.get('distance')}, "
+                              f"mbid_found={bv_result['mbid_found']}, "
+                              f"error={bv_result.get('error')})")
+        else:
+            # === Lidarr DownloadedAlbumsScan path (original) ===
+            command = lidarr.post_command(
+                name="DownloadedAlbumsScan",
+                path=album_data["import_folder"],
+            )
+            logger.info(f"Starting Lidarr import for: {album_data['title']} ID: {command['id']}")
+
+            while True:
+                current_task = lidarr.get_command(command["id"])
+                if current_task["status"] == "completed" or current_task["status"] == "failed":
+                    break
+                time.sleep(2)
+
+            try:
+                logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
+
+                if "Failed" in current_task["message"]:
+                    move_failed_import(current_task["body"]["path"])
+                    failed_grab.append(lidarr.get_album(album_data["album_id"]))
+                elif album_data.get("_is_cutoff"):
+                    post_tier, post_quality = get_existing_quality_tier(album_data["album_id"])
+                    pre_tier = album_data.get("_pre_tier", len(allowed_filetypes))
+                    if post_tier >= pre_tier:
+                        usernames = set(f["username"] for f in album_data.get("files", []))
+                        aid = album_data["album_id"]
+                        logger.warning(
+                            f"Cutoff upgrade failed for {album_data['artist']} - {album_data['title']}: "
+                            f"quality still '{post_quality}' after import (tier {post_tier} >= {pre_tier}). "
+                            f"Source users likely had mislabeled files: {', '.join(usernames)}. "
+                            f"Denylisting user/album pairs permanently."
+                        )
+                        if aid not in cutoff_denylist:
+                            cutoff_denylist[aid] = set()
+                        cutoff_denylist[aid].update(usernames)
+                        save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
+                    else:
+                        logger.info(
+                            f"Cutoff upgrade verified for {album_data['artist']} - {album_data['title']}: "
+                            f"quality improved to '{post_quality}' (tier {pre_tier} → {post_tier})"
+                        )
+            except Exception:
+                logger.exception("Error printing lidarr task message")
+                logger.error(current_task)
 
 
 def monitor_downloads(grab_list, failed_grab):
@@ -1357,6 +1386,113 @@ def move_failed_import(src_path):
     if os.path.exists(folder_name):
         shutil.move(folder_name, target_path)
         logger.info(f"Failed import moved to: {target_path}")
+
+
+def beets_validate(album_path, mb_release_id, distance_threshold=0.15):
+    """Dry-run beets import with specific MBID. Returns validation result.
+
+    Returns: {"valid": bool, "distance": float|None, "mbid_found": bool, "error": str|None}
+    """
+    cmd = [beets_harness_path, "--pretend", "--noincremental",
+           "--search-id", mb_release_id, album_path]
+    result = {"valid": False, "distance": None, "mbid_found": False, "error": None}
+
+    try:
+        proc = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE, text=True)
+    except Exception as e:
+        result["error"] = f"Failed to start harness: {e}"
+        return result
+
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type", "")
+
+            if msg_type == "choose_match":
+                # Find candidate by MBID (NEVER by index)
+                for cand in msg.get("candidates", []):
+                    if cand.get("album_id") == mb_release_id:
+                        result["mbid_found"] = True
+                        result["distance"] = cand["distance"]
+                        result["valid"] = cand["distance"] <= distance_threshold
+                        break
+                # Always skip (dry-run)
+                proc.stdin.write('{"action":"skip"}\n')
+                proc.stdin.flush()
+
+            elif msg_type in ("choose_item", "resolve_duplicate", "should_resume"):
+                proc.stdin.write('{"action":"skip"}\n')
+                proc.stdin.flush()
+
+            elif msg_type == "session_end":
+                break
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except sp.TimeoutExpired:
+            proc.kill()
+
+    return result
+
+
+def stage_to_ai(album_data, source_path, staging_dir):
+    """Move validated files from slskd download area to /AI/{Artist}/{Album}/."""
+    artist_dir = sanitize_folder_name(album_data["artist"])
+    album_dir = sanitize_folder_name(album_data["title"])
+    dest = os.path.join(staging_dir, artist_dir, album_dir)
+    os.makedirs(dest, exist_ok=True)
+
+    for f in os.listdir(source_path):
+        src = os.path.join(source_path, f)
+        dst = os.path.join(dest, f)
+        shutil.move(src, dst)
+
+    shutil.rmtree(source_path, ignore_errors=True)
+    return dest
+
+
+def unmonitor_album(album_id):
+    """Unmonitor album in Lidarr so Soularr doesn't re-download it."""
+    try:
+        # Use raw requests PUT — pyarr doesn't expose album update
+        resp = requests.put(
+            f"{lidarr_host_url}/api/v1/album/monitor",
+            headers={"X-Api-Key": lidarr_api_key},
+            json={"albumIds": [album_id], "monitored": False},
+        )
+        resp.raise_for_status()
+    except Exception:
+        logger.exception(f"Failed to unmonitor album {album_id}")
+
+
+def log_validation_result(album_data, result, dest_path=None):
+    """Append beets validation result to tracking JSONL."""
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "artist": album_data.get("artist", ""),
+        "album": album_data.get("title", ""),
+        "mb_release_id": album_data.get("mb_release_id", ""),
+        "lidarr_album_id": album_data.get("album_id"),
+        "status": "staged" if result["valid"] else "rejected",
+        "distance": result.get("distance"),
+        "dest_path": dest_path,
+        "error": result.get("error"),
+    }
+    try:
+        with open(beets_tracking_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        logger.exception(f"Failed to write beets tracking entry")
 
 
 def is_docker():
@@ -1616,7 +1752,12 @@ def main():
         search_cache, \
         folder_cache, \
         broken_user, \
-        cutoff_denylist
+        cutoff_denylist, \
+        beets_validation_enabled, \
+        beets_harness_path, \
+        beets_distance_threshold, \
+        beets_staging_dir, \
+        beets_tracking_file
 
     # Let's allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
@@ -1747,6 +1888,18 @@ def main():
             allowed_filetypes = [raw_filetypes]
 
         setup_logging(config)
+
+        # Beets validation config
+        beets_validation_enabled = config.getboolean("Beets Validation", "enabled", fallback=False)
+        beets_harness_path = config.get("Beets Validation", "harness_path",
+                                        fallback="/mnt/virtio/Music/harness/run_beets_harness.sh")
+        beets_distance_threshold = config.getfloat("Beets Validation", "distance_threshold", fallback=0.15)
+        beets_staging_dir = config.get("Beets Validation", "staging_dir", fallback="/mnt/virtio/Music/AI")
+        beets_tracking_file = config.get("Beets Validation", "tracking_file",
+                                         fallback="/mnt/virtio/Music/Re-download/beets-validated.jsonl")
+        if beets_validation_enabled:
+            logger.info(f"Beets validation ENABLED: harness={beets_harness_path}, "
+                        f"threshold={beets_distance_threshold}, staging={beets_staging_dir}")
 
         # Init directory cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
         search_cache = {}
