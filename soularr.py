@@ -233,7 +233,7 @@ def choose_release(artist_name, releases):
             format_accepted = release["format"].split("x", 1)[1] in accepted_formats
         else:
             format_accepted = release["format"] in accepted_formats
-        if format_accepted and release["status"] == "Official":
+        if format_accepted:
             logger.info(
                 f"Selected monitored release for {artist_name}: {release['status']}, "
                 f"{country}, {release['format']}, Mediums: {release['mediumCount']}, "
