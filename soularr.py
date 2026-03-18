@@ -990,7 +990,11 @@ def find_download(album, grab_list):
 
     for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
-        releases = lidarr.get_album(album_id)["releases"]
+        # DB records carry releases inline; Lidarr records fetch from API
+        if album.get("_db_request_id"):
+            releases = album.get("releases", [])
+        else:
+            releases = lidarr.get_album(album_id)["releases"]
 
         # Check if any release is explicitly monitored by the user.
         # When a monitored release exists, we ONLY try that release and skip
@@ -1223,7 +1227,8 @@ def monitor_downloads(grab_list, failed_grab):
         cancel_and_delete(grab_list[album_id]["files"])
         logger.info(f"{reason} Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
         del grab_list[album_id]
-        failed_grab.append(lidarr.get_album(album_id))
+        if album_id > 0:  # Lidarr IDs are positive; DB IDs are negative
+            failed_grab.append(lidarr.get_album(album_id))
 
     while True:
         total_albums = len(grab_list)
@@ -1341,7 +1346,8 @@ def monitor_downloads(grab_list, failed_grab):
                                                         cancel_and_delete(grab_list[album_id]["files"])
                                                         logger.info(f"Failed grab of Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
                                                         del grab_list[album_id]
-                                                        failed_grab.append(lidarr.get_album(album_id))  # Not sure if returns an array or not
+                                                        if album_id > 0:
+                                                            failed_grab.append(lidarr.get_album(album_id))  # Not sure if returns an array or not
                                                         abort = True
                                                         break
                                             if abort:
