@@ -101,6 +101,7 @@ pipeline_db_source = None  # DatabaseSource instance when enabled
 # === Runtime State & Caches ===
 search_cache = {}
 folder_cache = {}
+user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
 cutoff_denylist = {}  # album_id → set of usernames that provided bad quality
 
@@ -640,6 +641,10 @@ def search_for_album(album):
         if username not in search_cache[album_id]:
             # If we don't currently have a cache for a user set one up
             search_cache[album_id][username] = {}
+        # Cache upload speed for sorting — prefer faster peers
+        speed = result.get("uploadSpeed", 0)
+        if speed and (username not in user_upload_speed or speed > user_upload_speed[username]):
+            user_upload_speed[username] = speed
         logger.info(f"Caching and truncating results for user: {username}")
         init_files = result["files"]  # init_files short for initial files. Before truncating
         # Search the returned files and only cache files that are of the allowed_filetypes
@@ -739,7 +744,9 @@ def try_enqueue(all_tracks, results, allowed_filetype):
     """
     album_id = all_tracks[0]["albumId"]
     denied_users = cutoff_denylist.get(album_id, set())
-    for username in results:
+    # Sort users by upload speed (fastest first) for quicker downloads
+    sorted_users = sorted(results.keys(), key=lambda u: user_upload_speed.get(u, 0), reverse=True)
+    for username in sorted_users:
         if username in denied_users:
             logger.info(f"Skipping user '{username}' for album ID {album_id}: denylisted (previously provided mislabeled quality)")
             continue
@@ -2179,6 +2186,7 @@ def main():
         logger, \
         search_cache, \
         folder_cache, \
+        user_upload_speed, \
         broken_user, \
         cutoff_denylist, \
         beets_validation_enabled, \
@@ -2343,6 +2351,7 @@ def main():
         # Init directory cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
         search_cache = {}
         folder_cache = {}
+        user_upload_speed = {}
         broken_user = []
         cutoff_denylist = load_cutoff_denylist(cutoff_denylist_file_path)
         if cutoff_denylist:
