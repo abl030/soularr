@@ -95,16 +95,12 @@ class DatabaseSource:
 
     def _get_db(self):
         if self._db is None:
-            # Import here to avoid circular dependency — pipeline_db.py is in
-            # the tagging-workspace scripts/ dir, but also copied to the shared
-            # harness path. We add the path at runtime.
+            # Import pipeline_db from the lib/ directory in the same repo.
+            # At runtime this is the Nix store path (e.g., /nix/store/.../lib/).
             import sys
-            for p in [
-                "/home/abl030/tagging-workspace/scripts",
-                "/mnt/virtio/Music/harness",
-            ]:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
+            lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+            if lib_dir not in sys.path:
+                sys.path.insert(0, lib_dir)
             from pipeline_db import PipelineDB
             self._db = PipelineDB(self.db_path)
         return self._db

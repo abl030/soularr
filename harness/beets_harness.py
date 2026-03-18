@@ -1,0 +1,363 @@
+"""Beets Interactive Import Harness
+
+Subclasses ImportSession to communicate match decisions over JSON via
+stdin/stdout. This allows external processes (like Claude Code) to
+programmatically control beets' interactive import.
+
+Protocol (newline-delimited JSON):
+  stdout → controller:  task descriptions with candidates
+  stdin  ← controller:  decision objects
+
+Must run inside beets' Python environment. Use the wrapper:
+  ./scripts/run_beets_harness.sh /path/to/import
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+from typing import TYPE_CHECKING
+
+from beets import config, library, plugins
+from beets.importer.session import ImportSession
+from beets.importer.tasks import Action
+from beets.ui import get_path_formats, get_replacements
+
+if TYPE_CHECKING:
+    from beets.importer.tasks import ImportTask
+
+
+# Redirect beets logging to stderr so stdout stays clean for JSON protocol
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.WARNING,
+    format="%(levelname)s: %(message)s",
+)
+# Suppress noisy musicbrainzngs XML parser warnings
+logging.getLogger("musicbrainzngs").setLevel(logging.ERROR)
+
+
+def _serialize_item(item) -> dict:
+    """Serialize a beets Item to a JSON-safe dict."""
+    path = item.path
+    if isinstance(path, bytes):
+        path = path.decode("utf-8", errors="replace")
+    return {
+        "path": os.path.basename(path),
+        "title": getattr(item, "title", None) or "",
+        "artist": getattr(item, "artist", None) or "",
+        "album": getattr(item, "album", None) or "",
+        "track": getattr(item, "track", 0),
+        "disc": getattr(item, "disc", 0),
+        "length": round(getattr(item, "length", 0) or 0, 1),
+    }
+
+
+def _serialize_track_info(ti) -> dict:
+    """Serialize a TrackInfo to a JSON-safe dict."""
+    return {
+        "title": getattr(ti, "title", None) or "",
+        "artist": getattr(ti, "artist", None) or "",
+        "index": getattr(ti, "index", None),
+        "medium": getattr(ti, "medium", None),
+        "length": round(getattr(ti, "length", 0) or 0, 1),
+        "track_id": getattr(ti, "track_id", None) or "",
+    }
+
+
+def _serialize_album_candidate(idx: int, candidate) -> dict:
+    """Serialize an AlbumMatch to a JSON-safe dict."""
+    info = candidate.info
+    return {
+        "index": idx,
+        "distance": round(float(candidate.distance), 4),
+        "artist": getattr(info, "artist", None) or "",
+        "album": getattr(info, "album", None) or "",
+        "album_id": getattr(info, "album_id", None) or "",
+        "year": getattr(info, "year", None),
+        "country": getattr(info, "country", None) or "",
+        "label": getattr(info, "label", None) or "",
+        "mediums": getattr(info, "mediums", None),
+        "albumtype": getattr(info, "albumtype", None) or "",
+        "albumstatus": getattr(info, "albumstatus", None) or "",
+        "track_count": len(getattr(info, "tracks", []) or []),
+        "extra_items": len(candidate.extra_items),
+        "extra_tracks": len(candidate.extra_tracks),
+        "tracks": [
+            _serialize_track_info(t) for t in (getattr(info, "tracks", []) or [])
+        ],
+    }
+
+
+def _serialize_track_candidate(idx: int, candidate) -> dict:
+    """Serialize a TrackMatch to a JSON-safe dict."""
+    info = candidate.info
+    return {
+        "index": idx,
+        "distance": round(float(candidate.distance), 4),
+        "title": getattr(info, "title", None) or "",
+        "artist": getattr(info, "artist", None) or "",
+        "track_id": getattr(info, "track_id", None) or "",
+        "length": round(getattr(info, "length", 0) or 0, 1),
+    }
+
+
+def _send(msg: dict):
+    """Write a JSON message to stdout."""
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+
+def _recv() -> dict:
+    """Read a JSON message from stdin. Blocks until a line is available."""
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError("stdin closed — controller disconnected")
+    return json.loads(line.strip())
+
+
+def _path_str(path) -> str:
+    """Convert a path (bytes or str) to str."""
+    if isinstance(path, bytes):
+        return path.decode("utf-8", errors="replace")
+    return str(path)
+
+
+class HarnessImportSession(ImportSession):
+    """ImportSession that communicates decisions over JSON stdin/stdout."""
+
+    def __init__(self, lib, loghandler, paths, query=None, pretend=False):
+        super().__init__(lib, loghandler, paths, query)
+        self._task_counter = 0
+        self._pretend = pretend
+
+    def choose_match(self, task: ImportTask):
+        """Present album match candidates as JSON; read decision from stdin."""
+        task_id = self._task_counter
+        self._task_counter += 1
+
+        # Build the task description
+        msg = {
+            "type": "choose_match",
+            "task_id": task_id,
+            "path": _path_str(task.paths[0]) if task.paths else "",
+            "cur_artist": task.cur_artist or "",
+            "cur_album": task.cur_album or "",
+            "item_count": len(task.items),
+            "items": [_serialize_item(item) for item in task.items],
+            "recommendation": task.rec.name if task.rec else "none",
+            "candidate_count": len(task.candidates),
+            "candidates": [
+                _serialize_album_candidate(i, c)
+                for i, c in enumerate(task.candidates)
+            ],
+        }
+        _send(msg)
+
+        # Wait for decision
+        decision = _recv()
+        return self._apply_decision(task, decision)
+
+    def choose_item(self, task: ImportTask):
+        """Present singleton track candidates as JSON; read decision from stdin."""
+        task_id = self._task_counter
+        self._task_counter += 1
+
+        msg = {
+            "type": "choose_item",
+            "task_id": task_id,
+            "path": _path_str(task.paths[0]) if task.paths else "",
+            "cur_artist": getattr(task, "cur_artist", "") or "",
+            "cur_title": getattr(task.item, "title", "") if hasattr(task, "item") else "",
+            "item": _serialize_item(task.item) if hasattr(task, "item") else {},
+            "recommendation": task.rec.name if task.rec else "none",
+            "candidate_count": len(task.candidates),
+            "candidates": [
+                _serialize_track_candidate(i, c)
+                for i, c in enumerate(task.candidates)
+            ],
+        }
+        _send(msg)
+
+        decision = _recv()
+        return self._apply_decision(task, decision)
+
+    def _apply_decision(self, task, decision: dict):
+        """Convert a JSON decision into a beets Action or match object."""
+        action = decision.get("action", "skip")
+
+        if action == "apply":
+            idx = decision.get("candidate_index", 0)
+            if 0 <= idx < len(task.candidates):
+                if self._pretend:
+                    # In pretend mode, DON'T return the candidate — that would
+                    # cause beets to apply it (DB write + scrub plugin strips
+                    # tags from source files). Just skip after reporting.
+                    return Action.SKIP
+                return task.candidates[idx]
+            else:
+                _send({
+                    "type": "error",
+                    "message": f"candidate_index {idx} out of range (0-{len(task.candidates)-1}), skipping",
+                })
+                return Action.SKIP
+        elif action == "skip":
+            return Action.SKIP
+        elif action == "asis":
+            return Action.ASIS
+        elif action == "tracks":
+            return Action.TRACKS
+        elif action == "albums":
+            return Action.ALBUMS
+        else:
+            _send({
+                "type": "error",
+                "message": f"unknown action '{action}', skipping",
+            })
+            return Action.SKIP
+
+    def resolve_duplicate(self, task: ImportTask, found_duplicates):
+        """Ask controller how to handle duplicates."""
+        msg = {
+            "type": "resolve_duplicate",
+            "path": _path_str(task.paths[0]) if task.paths else "",
+            "cur_artist": task.cur_artist or "",
+            "cur_album": task.cur_album or "",
+            "duplicate_count": len(found_duplicates),
+        }
+        _send(msg)
+
+        decision = _recv()
+        resolution = decision.get("action", "skip")
+
+        if resolution == "skip":
+            task.set_choice(Action.SKIP)
+        elif resolution == "keep":
+            pass  # Keep both — do nothing
+        elif resolution == "remove":
+            task.should_remove_duplicates = True
+        elif resolution == "merge":
+            task.should_merge_duplicates = True
+        else:
+            task.set_choice(Action.SKIP)
+
+    def should_resume(self, path):
+        """Ask controller whether to resume a previously interrupted import."""
+        msg = {
+            "type": "should_resume",
+            "path": _path_str(path),
+        }
+        _send(msg)
+
+        decision = _recv()
+        return decision.get("resume", False)
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Beets interactive import harness — JSON over stdin/stdout"
+    )
+    parser.add_argument(
+        "paths",
+        nargs="+",
+        help="Paths to import (directories or files)",
+    )
+    parser.add_argument(
+        "--pretend",
+        action="store_true",
+        help="Dry run — don't actually import, just show what would happen",
+    )
+    parser.add_argument(
+        "--quiet-fallback",
+        choices=["skip", "asis"],
+        default=None,
+        help="If set, auto-decide for strong matches and only ask for uncertain ones",
+    )
+    parser.add_argument(
+        "--noincremental",
+        action="store_true",
+        help="Disable incremental import (re-process previously seen directories)",
+    )
+    parser.add_argument(
+        "--search-id",
+        dest="search_ids",
+        action="append",
+        default=[],
+        help="Force beets to look up a specific MB release ID (can be repeated)",
+    )
+    parser.add_argument(
+        "--upstream",
+        action="store_true",
+        help="Use upstream musicbrainz.org instead of local mirror (for newly-seeded releases)",
+    )
+    args = parser.parse_args()
+
+    # Load beets configuration
+    config.read()
+
+    # Config overrides MUST happen before plugins.load_plugins() because the
+    # musicbrainz plugin reads host/https settings at load time.
+    if args.noincremental:
+        config["import"]["incremental"] = False
+
+    if args.search_ids:
+        config["import"]["search_ids"] = args.search_ids
+
+    if args.upstream:
+        config["musicbrainz"]["host"] = "musicbrainz.org"
+        config["musicbrainz"]["https"] = True
+        config["musicbrainz"]["ratelimit"] = 1
+        print("Using upstream musicbrainz.org (rate-limited)", file=sys.stderr)
+
+    # Load plugins (critical — chroma, fetchart, etc. participate in lookups)
+    # Must happen AFTER config overrides so musicbrainz plugin sees correct host.
+    plugins.load_plugins()
+
+    # Pretend mode is handled in HarnessImportSession._apply_decision():
+    # we return Action.SKIP instead of the candidate, so beets never calls
+    # apply() — no DB writes, no file moves, no scrub plugin side effects.
+    # The old approach (copy=False, move=False, write=False) still let beets
+    # write to the DB and run scrub, which poisoned the source files.
+
+    # Open the beets library — must pass ALL four args to match what the beet CLI
+    # does in beets.ui._open_library(). Without path_formats and replacements,
+    # Library() falls back to its hardcoded default "$artist/$album/$track $title"
+    # which ignores the user's config (wrong folder structure, no year, splits
+    # multi-artist albums by track artist instead of albumartist).
+    lib = library.Library(
+        config["library"].as_filename(),
+        config["directory"].as_filename(),
+        get_path_formats(),
+        get_replacements(),
+    )
+    plugins.send("library_opened", lib=lib)
+
+    # Convert paths to bytes (beets convention)
+    paths = [p.encode("utf-8") if isinstance(p, str) else p for p in args.paths]
+
+    # Signal that we're starting
+    _send({
+        "type": "session_start",
+        "paths": [_path_str(p) for p in paths],
+        "pretend": args.pretend,
+        "library": config["library"].as_filename(),
+        "directory": config["directory"].as_filename(),
+    })
+
+    # Create and run the session
+    session = HarnessImportSession(lib, None, paths, pretend=args.pretend)
+    try:
+        session.run()
+    except EOFError:
+        print("Controller disconnected — aborting.", file=sys.stderr)
+        sys.exit(1)
+
+    _send({"type": "session_end"})
+
+
+if __name__ == "__main__":
+    main()
