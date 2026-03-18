@@ -120,14 +120,11 @@ class PipelineDB:
 
     def __init__(self, db_path=DEFAULT_DB_PATH):
         self.db_path = db_path
-        self._lock_file = None
-        self.conn = sqlite3.connect(db_path, timeout=30)
+        self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.execute("PRAGMA busy_timeout = 30000")
         if db_path != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
-            self.conn.execute("PRAGMA synchronous = NORMAL")
         self.init_schema()
 
     def init_schema(self):
@@ -138,24 +135,7 @@ class PipelineDB:
         self.conn.close()
 
     def _execute(self, sql, params=()):
-        """Execute SQL with retry for transient virtiofs/locking errors."""
-        import time
-        for attempt in range(3):
-            try:
-                return self.conn.execute(sql, params)
-            except sqlite3.DatabaseError as e:
-                if "malformed" in str(e) and attempt < 2:
-                    # Index corruption from virtiofs — try REINDEX
-                    try:
-                        self.conn.execute("REINDEX")
-                        self.conn.commit()
-                    except Exception:
-                        pass
-                    continue
-                elif "locked" in str(e) and attempt < 2:
-                    time.sleep(1)
-                    continue
-                raise
+        return self.conn.execute(sql, params)
 
     # --- album_requests CRUD ---
 
