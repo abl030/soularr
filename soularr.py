@@ -518,8 +518,9 @@ def search_for_album(album):
         logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
 
     # Strip special characters that poison Soulseek searches.
-    # Apostrophes (e.g. "Pink's") and other punctuation cause 0 results.
-    clean = re.sub(r"['\"\(\)\[\]\{\}!@#$%^&*]", "", query)
+    # Apostrophes (e.g. "Pink's"), underscores (e.g. "Euro_EP"),
+    # and other punctuation cause 0 results or wrong matches.
+    clean = re.sub(r"['\"\(\)\[\]\{\}!@#$%^&*_]", " ", query)
     clean = " ".join(clean.split())  # collapse any double spaces
     if clean != query:
         logger.info(f"Stripped special characters from search: '{query}' -> '{clean}'")
