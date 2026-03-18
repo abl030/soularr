@@ -749,18 +749,18 @@ def try_enqueue(all_tracks, results, allowed_filetype):
                 if downloads is not None:
                     return True, downloads
                 else:
-                    album = lidarr.get_album(all_tracks[0]["albumId"])
+                    album = get_album_by_id(all_tracks[0]["albumId"])
                     album_name = album["title"]
                     artist_name = album["artist"]["artistName"]
                     logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
             except Exception as e:
-                album = lidarr.get_album(all_tracks[0]["albumId"])
+                album = get_album_by_id(all_tracks[0]["albumId"])
                 album_name = album["title"]
                 artist_name = album["artist"]["artistName"]
 
                 logger.warning(f"Exception enqueueing tracks: {e}")
                 logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
-    album = lidarr.get_album(all_tracks[0]["albumId"])
+    album = get_album_by_id(all_tracks[0]["albumId"])
     album_name = album["title"]
     artist_name = album["artist"]["artistName"]
     logger.info(f"Failed to enqueue {artist_name} - {album_name}")
@@ -824,7 +824,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
                     all_downloads.extend(downloads)
                     enqueued += 1
                 else:
-                    album = lidarr.get_album(all_tracks[0]["albumId"])
+                    album = get_album_by_id(all_tracks[0]["albumId"])
                     album_name = album["title"]
                     artist_name = album["artist"]["artistName"]
                     logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
@@ -833,7 +833,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
                         cancel_and_delete(all_downloads)
                         return False, None
             except Exception:
-                album = lidarr.get_album(all_tracks[0]["albumId"])
+                album = get_album_by_id(all_tracks[0]["albumId"])
                 album_name = album["title"]
                 artist_name = album["artist"]["artistName"]
 
@@ -956,6 +956,17 @@ def get_album_tracks(album, release_id=None):
     )
 
 
+# Cache for current album being processed — avoids lidarr.get_album() for DB records
+_current_album_cache = {}
+
+
+def get_album_by_id(album_id):
+    """Get album data by ID — from cache (DB mode) or Lidarr API."""
+    if album_id in _current_album_cache:
+        return _current_album_cache[album_id]
+    return lidarr.get_album(album_id)
+
+
 def find_download(album, grab_list):
     """
     This does the main loop over search results and user directories
@@ -966,6 +977,9 @@ def find_download(album, grab_list):
     artist_name = album["artist"]["artistName"]
     artist_id = album["artistId"]
     results = search_cache[album_id]
+
+    # Cache album for DB mode so try_enqueue doesn't need lidarr.get_album()
+    _current_album_cache[album_id] = album
 
     # For cutoff_unmet albums, only try filetypes that are strictly better
     # than what Lidarr already has.  This prevents re-downloading the same
@@ -1116,7 +1130,8 @@ def process_completed_album(album_data, failed_grab):
                 os.rmdir(import_folder_fullpath)
             except OSError:
                 logger.warning(f"Could not remove temp import directory {import_folder_fullpath}")
-            failed_grab.append(lidarr.get_album(album_data["album_id"]))
+            if album_data["album_id"] > 0:
+                failed_grab.append(lidarr.get_album(album_data["album_id"]))
             return
     else:  # Only runs if all files are successfully moved
         for rm_dir in rm_dirs:
