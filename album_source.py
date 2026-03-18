@@ -135,6 +135,7 @@ class DatabaseSource:
 
         db = self._get_db()
         tracks = db.get_tracks(request_id)
+        album_id = request_id * -1  # Negative ID space
         return [
             {
                 "title": t["title"],
@@ -142,6 +143,7 @@ class DatabaseSource:
                 "mediumNumber": t["disc_number"],
                 "duration": int((t.get("length_seconds") or 0) * 10000000),  # Lidarr uses ticks
                 "id": 0,
+                "albumId": album_id,
             }
             for t in tracks
         ]
