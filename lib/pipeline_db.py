@@ -220,7 +220,7 @@ class PipelineDB:
             SELECT * FROM album_requests
             WHERE status = 'wanted'
               AND (next_retry_after IS NULL OR next_retry_after <= ?)
-            ORDER BY created_at ASC
+            ORDER BY RANDOM()
         """
         if limit:
             sql += f" LIMIT {int(limit)}"
