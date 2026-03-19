@@ -123,8 +123,10 @@ class PipelineDB:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        if db_path != ":memory:":
-            self.conn.execute("PRAGMA journal_mode = WAL")
+        # Use delete journal mode (NOT WAL) — WAL uses mmap which
+        # corrupts on virtiofs. Delete mode uses plain file I/O,
+        # same as beets which runs fine on the same filesystem.
+        self.conn.execute("PRAGMA journal_mode = DELETE")
         self.init_schema()
 
     def init_schema(self):
