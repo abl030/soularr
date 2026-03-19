@@ -2375,9 +2375,6 @@ def main():
             logger.info("Getting wanted records from pipeline DB...")
             wanted_records = pipeline_db_source.get_wanted(limit=page_size)
             logger.info(f"Pipeline DB: {len(wanted_records)} wanted record(s)")
-            # Mark them as searching in the DB
-            for record in wanted_records:
-                pipeline_db_source.update_status(record, "searching")
         else:
             # === Lidarr mode (original): get wanted from Lidarr API ===
             try:
