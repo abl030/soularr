@@ -1329,6 +1329,15 @@ def monitor_downloads(grab_list, failed_grab):
                     if (time.time() - grab_list[album_id]["count_start"]) >= remote_queue_timeout:
                         delete_album("Timeout waiting for download of")
                         continue
+                # Also timeout when most files are done but some are stuck queued remotely
+                if queued > 0 and done_count > 0:
+                    completed = sum(1 for f in grab_list[album_id]["files"]
+                                    if f.get("status") and f["status"]["state"] == "Completed, Succeeded")
+                    if completed + queued == len(grab_list[album_id]["files"]):
+                        # All files are either done or stuck — apply remote_queue_timeout
+                        if (time.time() - grab_list[album_id]["count_start"]) >= remote_queue_timeout:
+                            delete_album("Timeout waiting for stuck remote queue file in")
+                            continue
                 done_count += album_done
                 if problems is not None:
                     logger.debug("We got problems!")
