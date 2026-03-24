@@ -1878,7 +1878,25 @@ def validate_audio(folder_path, mode="normal"):
                 capture_output=True, text=True, timeout=300
             )
             if result.returncode != 0 or result.stderr.strip():
-                err = result.stderr.strip()[:200]
+                stderr = result.stderr.strip()
+                # FLAC missing MD5: re-encode in place to fix, then re-test
+                if filepath.lower().endswith(".flac") and "cannot check MD5 signature" in stderr:
+                    logger.info(f"AUDIO_CHECK: fixing unset MD5: {os.path.basename(filepath)}")
+                    fix = sp.run(
+                        ["flac", "-f", "--verify", filepath],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    if fix.returncode == 0:
+                        retest = sp.run(
+                            ["ffmpeg", "-v", "error", "-i", filepath, "-f", "null", "-"],
+                            capture_output=True, text=True, timeout=300,
+                        )
+                        if retest.returncode == 0 and not retest.stderr.strip():
+                            continue  # fixed and clean
+                        stderr = retest.stderr.strip()
+                    else:
+                        stderr = f"MD5 fix failed: {fix.stderr.strip()[:150]}"
+                err = stderr[:200]
                 failed.append((os.path.basename(filepath), err))
         except sp.TimeoutExpired:
             failed.append((os.path.basename(filepath), "ffmpeg timeout"))
