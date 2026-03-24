@@ -105,6 +105,7 @@ folder_cache = {}
 user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
 cutoff_denylist = {}  # album_id → set of usernames that provided bad quality
+download_fail_counts = {}  # "album_id:username" → int, denylist after 3 failures
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype):
@@ -1323,13 +1324,19 @@ def monitor_downloads(grab_list, failed_grab):
     def delete_album(reason):
         cancel_and_delete(grab_list[album_id]["files"])
         usernames = set(f.get("username") for f in grab_list[album_id].get("files", []) if f.get("username"))
-        logger.info(f"{reason} Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}"
-                    + (f" | denylisted users: {', '.join(usernames)}" if usernames else ""))
-        if usernames:
-            if album_id not in cutoff_denylist:
-                cutoff_denylist[album_id] = set()
-            cutoff_denylist[album_id].update(usernames)
-            save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
+        logger.info(f"{reason} Album: {grab_list[album_id]['title']} Artist: {grab_list[album_id]['artist']}")
+        for username in usernames:
+            key = f"{album_id}:{username}"
+            download_fail_counts[key] = download_fail_counts.get(key, 0) + 1
+            save_download_fail_counts(cutoff_denylist_file_path, download_fail_counts)
+            if download_fail_counts[key] >= 3:
+                if album_id not in cutoff_denylist:
+                    cutoff_denylist[album_id] = set()
+                cutoff_denylist[album_id].add(username)
+                save_cutoff_denylist(cutoff_denylist_file_path, cutoff_denylist)
+                logger.info(f"Denylisted user '{username}' for album {album_id} after {download_fail_counts[key]} failures")
+            else:
+                logger.info(f"Download failure {download_fail_counts[key]}/3 for user '{username}' on album {album_id}")
         del grab_list[album_id]
         if album_id > 0:  # Lidarr IDs are positive; DB IDs are negative
             failed_grab.append(lidarr.get_album(album_id))
@@ -2246,6 +2253,27 @@ def load_cutoff_denylist(file_path):
         return {}
 
 
+def load_download_fail_counts(file_path):
+    """Load persistent download failure counts. Format: {"album_id:username": count}"""
+    p = file_path.replace("cutoff_denylist", "download_fail_counts")
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def save_download_fail_counts(file_path, counts):
+    p = file_path.replace("cutoff_denylist", "download_fail_counts")
+    try:
+        with open(p, "w") as f:
+            json.dump(counts, f, indent=2)
+    except IOError as ex:
+        logger.error(f"Error saving download fail counts: {ex}")
+
+
 def save_cutoff_denylist(file_path, denylist):
     """Save cutoff denylist to JSON. Converts sets to lists for serialization."""
     try:
@@ -2302,6 +2330,7 @@ def main():
         user_upload_speed, \
         broken_user, \
         cutoff_denylist, \
+        download_fail_counts, \
         beets_validation_enabled, \
         beets_harness_path, \
         beets_distance_threshold, \
@@ -2471,6 +2500,7 @@ def main():
         cutoff_denylist = load_cutoff_denylist(cutoff_denylist_file_path)
         if cutoff_denylist:
             logger.info(f"Loaded cutoff denylist with {len(cutoff_denylist)} album(s) from {cutoff_denylist_file_path}")
+        download_fail_counts = load_download_fail_counts(cutoff_denylist_file_path)
 
         slskd = slskd_api.SlskdClient(host=slskd_host_url, api_key=slskd_api_key, url_base=slskd_url_base)
         lidarr = LidarrAPI(lidarr_host_url, lidarr_api_key)
