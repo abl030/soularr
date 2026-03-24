@@ -199,7 +199,7 @@ class TestBeetsValidate(unittest.TestCase):
 
     @patch("soularr.sp.Popen")
     def test_just_above_threshold(self, mock_popen):
-        """Distance 0.1501 is above 0.15 but below 0.30 → valid=True (good_match)."""
+        """Distance 0.1501 is above 0.15 → valid=False."""
         mbid = "12345678-1234-1234-1234-123456789abc"
         proc = MagicMock()
         proc.stdout = iter([
@@ -212,8 +212,8 @@ class TestBeetsValidate(unittest.TestCase):
 
         result = soularr.beets_validate("/test/album", mbid, 0.15)
 
-        self.assertTrue(result["valid"])
-        self.assertEqual(result["scenario"], "good_match")
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["scenario"], "high_distance")
 
     @patch("soularr.sp.Popen")
     def test_above_hard_limit(self, mock_popen):
@@ -260,7 +260,7 @@ class TestBeetsValidate(unittest.TestCase):
 
     @patch("soularr.sp.Popen")
     def test_artist_collab_match(self, mock_popen):
-        """Collab credit where local artist is substring of MB artist → valid=True."""
+        """Collab credit — MBID matches and distance is good → valid=True."""
         mbid = "12345678-1234-1234-1234-123456789abc"
         proc = MagicMock()
         candidates = [{
@@ -281,7 +281,7 @@ class TestBeetsValidate(unittest.TestCase):
         result = soularr.beets_validate("/test/album", mbid, 0.15)
 
         self.assertTrue(result["valid"])
-        self.assertEqual(result["scenario"], "artist_collab_match")
+        self.assertEqual(result["scenario"], "strong_match")
 
 
 class TestStageToAi(unittest.TestCase):
