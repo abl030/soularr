@@ -1797,7 +1797,11 @@ def beets_validate(album_path, mb_release_id, distance_threshold=0.15):
                     if cand.get("album_id") == mb_release_id:
                         result["mbid_found"] = True
                         result["distance"] = cand["distance"]
-                        if cand["distance"] <= distance_threshold:
+                        extra_tracks = cand.get("extra_tracks", 0)
+                        if extra_tracks > 0:
+                            result["scenario"] = "extra_tracks"
+                            result["detail"] = f"MB has {extra_tracks} more tracks than local files"
+                        elif cand["distance"] <= distance_threshold:
                             result["valid"] = True
                             result["scenario"] = "strong_match"
                             result["detail"] = f"distance={cand['distance']}"

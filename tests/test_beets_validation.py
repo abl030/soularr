@@ -235,6 +235,32 @@ class TestBeetsValidate(unittest.TestCase):
 
 
     @patch("soularr.sp.Popen")
+    def test_extra_tracks_rejected(self, mock_popen):
+        """MB has more tracks than local files → valid=False even at low distance."""
+        mbid = "12345678-1234-1234-1234-123456789abc"
+        proc = MagicMock()
+        candidates = [{
+            "index": 0, "distance": 0.02, "artist": "Test Artist",
+            "album": "Test Album", "album_id": mbid, "year": 2020,
+            "country": "US", "track_count": 12, "extra_tracks": 2,
+            "albumstatus": "Official",
+        }]
+        msg = json.dumps({
+            "type": "choose_match", "task_id": 0, "path": "/test/path",
+            "cur_artist": "Test Artist", "cur_album": "Test Album",
+            "item_count": 10, "candidates": candidates,
+        })
+        proc.stdout = iter([msg + "\n", make_session_end() + "\n"])
+        proc.stdin = MagicMock()
+        proc.wait.return_value = 0
+        mock_popen.return_value = proc
+
+        result = soularr.beets_validate("/test/album", mbid, 0.15)
+
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["scenario"], "extra_tracks")
+
+    @patch("soularr.sp.Popen")
     def test_non_official_accepted_if_match(self, mock_popen):
         """Non-official release (bootleg/promo) with good match → valid=True."""
         mbid = "12345678-1234-1234-1234-123456789abc"
