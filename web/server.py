@@ -46,7 +46,7 @@ def get_library_artist(artist_name):
         return []
     conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
     rows = conn.execute(
-        "SELECT album, albumartist, year, mb_albumid, disc_total, "
+        "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
         "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
         "FROM albums WHERE albumartist LIKE ? COLLATE NOCASE "
         "ORDER BY year, album",
@@ -55,16 +55,16 @@ def get_library_artist(artist_name):
     conn.close()
     results = []
     for r in rows:
-        # Check for discogs — beets stores it in the 'data_source' flexible attr
-        # or we can check if mb_albumid is empty
         has_mb = bool(r[3])
+        has_discogs = bool(r[4])
+        source = "musicbrainz" if has_mb else ("discogs" if has_discogs else "unknown")
         results.append({
             "album": r[0],
             "albumartist": r[1],
             "year": r[2],
             "mb_albumid": r[3],
             "track_count": r[5],
-            "source": "musicbrainz" if has_mb else "discogs",
+            "source": source,
         })
     return results
 
