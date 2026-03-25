@@ -287,7 +287,7 @@ async function loadReleaseGroup(id, el) {
         <div class="release">
           <div class="release-info">
             <div class="release-title">${esc(rel.title)}${badges}</div>
-            <div class="release-meta">${rel.country || '?'} ${rel.date || '?'} - ${rel.format} - ${rel.track_count}t - ${rel.status || '?'}</div>
+            <div class="release-meta"><a href="https://musicbrainz.org/release/${rel.id}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:#777;text-decoration:none;">${rel.country || '?'} ${rel.date || '?'} - ${rel.format} - ${rel.track_count}t - ${rel.status || '?'}</a></div>
           </div>
           <button class="btn btn-add" ${canAdd ? '' : 'disabled'} onclick="event.stopPropagation(); addRelease('${rel.id}', this)">
             ${canAdd ? 'Add' : (rel.in_library ? 'Owned' : rel.pipeline_status || '?')}
