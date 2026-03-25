@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Pipeline</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #111; color: #eee; padding: 16px; max-width: 800px; margin: 0 auto; }
+  h1 { font-size: 1.4em; margin-bottom: 16px; color: #aaa; }
+  input[type=text] { width: 100%; padding: 12px; font-size: 16px; background: #222; color: #eee; border: 1px solid #444; border-radius: 8px; margin-bottom: 16px; }
+  input[type=text]:focus { outline: none; border-color: #6a9; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { padding: 8px 16px; background: #222; border: 1px solid #333; border-radius: 6px; cursor: pointer; color: #aaa; font-size: 14px; }
+  .tab.active { background: #2a3a2a; border-color: #6a9; color: #6a9; }
+  .section { display: none; }
+  .section.active { display: block; }
+  .artist { padding: 12px; background: #1a1a1a; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+  .artist:hover { background: #222; }
+  .artist-name { font-weight: 600; }
+  .artist-dis { color: #777; font-size: 0.85em; }
+  .rg-list { padding-left: 0; margin-top: 8px; }
+  .rg { padding: 10px 12px; background: #1e1e1e; border-left: 3px solid #444; margin-bottom: 4px; cursor: pointer; border-radius: 0 6px 6px 0; }
+  .rg:hover { background: #252525; }
+  .rg-title { font-weight: 500; }
+  .rg-meta { color: #777; font-size: 0.8em; }
+  .releases { margin-top: 6px; padding-left: 12px; }
+  .release { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #222; border-radius: 6px; margin-bottom: 4px; }
+  .release-info { flex: 1; }
+  .release-title { font-size: 0.9em; }
+  .release-meta { color: #777; font-size: 0.75em; }
+  .btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+  .btn-add { background: #2a5a2a; color: #8d8; }
+  .btn-add:hover { background: #3a6a3a; }
+  .btn-add:disabled { background: #333; color: #666; cursor: default; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7em; font-weight: 600; margin-left: 6px; }
+  .badge-library { background: #1a3a5a; color: #6af; }
+  .badge-wanted { background: #5a3a1a; color: #fa6; }
+  .badge-imported { background: #1a4a2a; color: #6d6; }
+  .badge-manual { background: #3a3a3a; color: #aaa; }
+  .status-card { background: #1a1a1a; padding: 16px; border-radius: 8px; margin-bottom: 12px; }
+  .status-counts { display: flex; gap: 16px; margin-bottom: 16px; }
+  .count { text-align: center; }
+  .count-num { font-size: 2em; font-weight: 700; }
+  .count-label { font-size: 0.8em; color: #777; }
+  .wanted-item { padding: 8px 12px; background: #222; border-radius: 6px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+  .wanted-info { font-size: 0.9em; }
+  .wanted-source { color: #777; font-size: 0.75em; }
+  .loading { color: #666; padding: 20px; text-align: center; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 12px 24px; background: #2a5a2a; color: #8d8; border-radius: 8px; font-size: 14px; z-index: 100; display: none; }
+  .toast.error { background: #5a2a2a; color: #d88; }
+</style>
+</head>
+<body>
+<h1>Music Pipeline</h1>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('search')">Search</div>
+  <div class="tab" onclick="showTab('pipeline')">Pipeline</div>
+</div>
+
+<div id="search-section" class="section active">
+  <input type="text" id="q" placeholder="Search artists..." autofocus>
+  <div id="results"></div>
+</div>
+
+<div id="pipeline-section" class="section">
+  <div id="pipeline-content" class="loading">Loading...</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let searchTimer = null;
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelector(`.tab:nth-child(${name === 'search' ? 1 : 2})`).classList.add('active');
+  document.getElementById(name + '-section').classList.add('active');
+  if (name === 'pipeline') loadPipeline();
+}
+
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast' + (isError ? ' error' : '');
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+
+document.getElementById('q').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { document.getElementById('results').innerHTML = ''; return; }
+  searchTimer = setTimeout(() => searchArtists(q), 300);
+});
+
+async function searchArtists(q) {
+  const el = document.getElementById('results');
+  el.innerHTML = '<div class="loading">Searching...</div>';
+  try {
+    const r = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
+    const data = await r.json();
+    if (!data.artists || !data.artists.length) {
+      el.innerHTML = '<div class="loading">No results</div>';
+      return;
+    }
+    el.innerHTML = data.artists.map(a => `
+      <div class="artist" onclick="loadArtist('${a.id}', this)">
+        <span class="artist-name">${esc(a.name)}</span>
+        ${a.disambiguation ? `<span class="artist-dis"> - ${esc(a.disambiguation)}</span>` : ''}
+        <div class="rg-list" id="rg-${a.id}"></div>
+      </div>
+    `).join('');
+  } catch (e) { el.innerHTML = '<div class="loading">Search failed</div>'; }
+}
+
+async function loadArtist(id, el) {
+  const rgEl = document.getElementById('rg-' + id);
+  if (rgEl.innerHTML) { rgEl.innerHTML = ''; return; }
+  rgEl.innerHTML = '<div class="loading">Loading discography...</div>';
+  try {
+    const r = await fetch(`${API}/api/artist/${id}`);
+    const data = await r.json();
+    const groups = data.release_groups || [];
+    // Sort: albums first, then by date
+    const typeOrder = {'Album': 0, 'EP': 1, 'Single': 2, '': 3};
+    groups.sort((a, b) => {
+      const ta = typeOrder[a.type] ?? 3, tb = typeOrder[b.type] ?? 3;
+      if (ta !== tb) return ta - tb;
+      return (a.first_release_date || '').localeCompare(b.first_release_date || '');
+    });
+    rgEl.innerHTML = groups.map(rg => `
+      <div class="rg" onclick="event.stopPropagation(); loadReleaseGroup('${rg.id}', this)">
+        <span class="rg-title">${esc(rg.title)}</span>
+        <span class="rg-meta">${rg.type || '?'} ${rg.first_release_date ? '(' + rg.first_release_date.slice(0,4) + ')' : ''}</span>
+        <div class="releases" id="rel-${rg.id}"></div>
+      </div>
+    `).join('');
+  } catch (e) { rgEl.innerHTML = '<div class="loading">Failed to load</div>'; }
+}
+
+async function loadReleaseGroup(id, el) {
+  const relEl = document.getElementById('rel-' + id);
+  if (relEl.innerHTML) { relEl.innerHTML = ''; return; }
+  relEl.innerHTML = '<div class="loading">Loading releases...</div>';
+  try {
+    const r = await fetch(`${API}/api/release-group/${id}`);
+    const data = await r.json();
+    relEl.innerHTML = (data.releases || []).map(rel => {
+      let badges = '';
+      if (rel.in_library) badges += '<span class="badge badge-library">in library</span>';
+      if (rel.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+      if (rel.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
+      if (rel.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
+      const canAdd = !rel.in_library && !rel.pipeline_status;
+      return `
+        <div class="release">
+          <div class="release-info">
+            <div class="release-title">${esc(rel.title)}${badges}</div>
+            <div class="release-meta">${rel.country || '?'} ${rel.date || '?'} - ${rel.format} - ${rel.track_count}t - ${rel.status || '?'}</div>
+          </div>
+          <button class="btn btn-add" ${canAdd ? '' : 'disabled'} onclick="event.stopPropagation(); addRelease('${rel.id}', this)">
+            ${canAdd ? 'Add' : (rel.in_library ? 'Owned' : rel.pipeline_status || '?')}
+          </button>
+        </div>
+      `;
+    }).join('');
+  } catch (e) { relEl.innerHTML = '<div class="loading">Failed to load</div>'; }
+}
+
+async function addRelease(mbid, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch(`${API}/api/pipeline/add`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mb_release_id: mbid}),
+    });
+    const data = await r.json();
+    if (data.status === 'added') {
+      btn.textContent = 'Added';
+      toast(`Added: ${data.artist} - ${data.album} (${data.tracks} tracks)`);
+    } else if (data.status === 'exists') {
+      btn.textContent = data.current_status;
+      toast(`Already in pipeline (${data.current_status})`);
+    } else {
+      btn.textContent = 'Error';
+      toast(data.error || 'Unknown error', true);
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    toast('Request failed', true);
+  }
+}
+
+async function loadPipeline() {
+  const el = document.getElementById('pipeline-content');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await fetch(`${API}/api/pipeline/status`);
+    const data = await r.json();
+    const counts = data.counts || {};
+    const wanted = data.wanted || [];
+    el.innerHTML = `
+      <div class="status-card">
+        <div class="status-counts">
+          <div class="count"><div class="count-num">${counts.wanted || 0}</div><div class="count-label">Wanted</div></div>
+          <div class="count"><div class="count-num">${counts.imported || 0}</div><div class="count-label">Imported</div></div>
+          <div class="count"><div class="count-num">${counts.manual || 0}</div><div class="count-label">Manual</div></div>
+        </div>
+      </div>
+      <h2 style="font-size:1.1em;margin-bottom:8px;color:#aaa;">Wanted (${wanted.length})</h2>
+      ${wanted.map(w => `
+        <div class="wanted-item">
+          <div>
+            <div class="wanted-info">${esc(w.artist)} - ${esc(w.album)}</div>
+            <div class="wanted-source">${w.source} - ${w.created_at.slice(0,10)}</div>
+          </div>
+        </div>
+      `).join('')}
+    `;
+  } catch (e) { el.innerHTML = '<div class="loading">Failed to load pipeline status</div>'; }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
