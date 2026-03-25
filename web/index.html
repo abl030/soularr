@@ -257,7 +257,11 @@ async function loadReleaseGroup(id, el) {
   try {
     const r = await fetch(`${API}/api/release-group/${id}`);
     const data = await r.json();
-    relEl.innerHTML = (data.releases || []).map(rel => {
+    const all = data.releases || [];
+    const official = all.filter(r => r.status === 'Official' || !r.status);
+    const bootleg = all.filter(r => r.status && r.status !== 'Official');
+
+    function renderRelease(rel) {
       let badges = '';
       if (rel.in_library) badges += '<span class="badge badge-library">in library</span>';
       if (rel.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
@@ -275,7 +279,20 @@ async function loadReleaseGroup(id, el) {
           </button>
         </div>
       `;
-    }).join('');
+    }
+
+    let html = official.map(renderRelease).join('');
+    if (bootleg.length > 0) {
+      html += `
+        <div class="type-header" onclick="event.stopPropagation(); this.nextElementSibling.classList.toggle('open')" style="color:#777;margin-top:6px;">
+          Bootleg / Promo <span class="type-count">${bootleg.length}</span>
+        </div>
+        <div class="type-body">
+          ${bootleg.map(renderRelease).join('')}
+        </div>
+      `;
+    }
+    relEl.innerHTML = html;
   } catch (e) { relEl.innerHTML = '<div class="loading">Failed to load</div>'; }
 }
 
