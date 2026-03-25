@@ -7,6 +7,7 @@ Commands:
     status              Show counts by status
     retry <id>          Reset a failed/rejected request to wanted
     cancel <id>         Set a request to skipped
+    set <id> <status>   Change status (wanted, imported, manual)
     show <id>           Show full details of a request
 
 Usage:
@@ -167,6 +168,22 @@ def cmd_cancel(db, args):
     print(f"  Marked for manual download: [{args.id}] {req['artist_name']} - {req['album_title']}")
 
 
+VALID_STATUSES = ["wanted", "imported", "manual"]
+
+
+def cmd_set(db, args):
+    req = db.get_request(args.id)
+    if not req:
+        print(f"  Request {args.id} not found.")
+        return
+    old_status = req['status']
+    if old_status == args.status:
+        print(f"  [{args.id}] already has status '{args.status}'.")
+        return
+    db.update_status(args.id, args.status)
+    print(f"  [{args.id}] {req['artist_name']} - {req['album_title']}: {old_status} → {args.status}")
+
+
 def cmd_show(db, args):
     req = db.get_request(args.id)
     if not req:
@@ -243,6 +260,11 @@ def main():
     p_cancel = sub.add_parser("cancel", help="Cancel a request (set to skipped)")
     p_cancel.add_argument("id", type=int, help="Request ID")
 
+    # set
+    p_set = sub.add_parser("set", help="Change the status of a request")
+    p_set.add_argument("id", type=int, help="Request ID")
+    p_set.add_argument("status", choices=VALID_STATUSES, help="New status")
+
     # show
     p_show = sub.add_parser("show", help="Show full details of a request")
     p_show.add_argument("id", type=int, help="Request ID")
@@ -260,6 +282,7 @@ def main():
         "status": cmd_status,
         "retry": cmd_retry,
         "cancel": cmd_cancel,
+        "set": cmd_set,
         "show": cmd_show,
     }
     commands[args.command](db, args)
