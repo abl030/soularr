@@ -63,7 +63,7 @@ def get_release_group_releases(rg_mbid):
     releases = []
     for r in data.get("releases", []):
         track_count = sum(m.get("track-count", 0) for m in r.get("media", []))
-        formats = [m.get("format", "?") for m in r.get("media", [])]
+        formats = [(m.get("format") or "?") for m in r.get("media", [])]
         releases.append({
             "id": r["id"],
             "title": r.get("title", ""),
