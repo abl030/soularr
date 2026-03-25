@@ -1225,7 +1225,7 @@ def process_completed_album(album_data, failed_grab):
                         logger.info(f"AUTO-IMPORT: {album_data['artist']} - {album_data['title']} "
                                     f"(source=request, dist={bv_result['distance']:.4f})")
                         try:
-                            cmd = ["python3", import_script, dest, mb_id]
+                            cmd = [sys.executable, import_script, dest, mb_id]
                             if request_id:
                                 cmd.extend(["--request-id", str(request_id)])
                             import_env = {**os.environ, "HOME": "/home/abl030"}
@@ -1235,6 +1235,8 @@ def process_completed_album(album_data, failed_grab):
                                 logger.info(f"AUTO-IMPORT OK: {album_data['artist']} - {album_data['title']}")
                                 for line in result.stdout.strip().split("\n"):
                                     logger.info(f"  {line}")
+                                # Ensure DB status is set even if import_one's DB update failed
+                                pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest)
                                 # Clean up staged directory — beets already moved files
                                 # to /Beets, or pre-flight found a dupe (files unneeded)
                                 if os.path.isdir(dest):
