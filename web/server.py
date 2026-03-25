@@ -55,8 +55,9 @@ def get_library_artist(artist_name):
     conn.close()
     results = []
     for r in rows:
-        has_mb = bool(r[3])
-        has_discogs = bool(r[4])
+        mb_id = r[3] or ""
+        has_mb = bool(mb_id) and "-" in mb_id  # MB UUIDs have hyphens, Discogs IDs are numeric
+        has_discogs = bool(r[4]) or (bool(mb_id) and "-" not in mb_id)
         source = "musicbrainz" if has_mb else ("discogs" if has_discogs else "unknown")
         results.append({
             "album": r[0],
