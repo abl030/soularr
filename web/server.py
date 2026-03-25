@@ -135,6 +135,9 @@ class Handler(BaseHTTPRequestHandler):
             elif re.match(r"^/api/artist/[a-f0-9-]+$", path):
                 artist_id = path.split("/")[-1]
                 rgs = mb_api.get_artist_release_groups(artist_id)
+                official_rg_ids = mb_api.get_official_release_group_ids(artist_id)
+                for rg in rgs:
+                    rg["has_official"] = rg["id"] in official_rg_ids
                 self._json({"release_groups": rgs})
 
             elif re.match(r"^/api/release-group/[a-f0-9-]+$", path):

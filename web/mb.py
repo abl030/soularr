@@ -60,6 +60,26 @@ def get_artist_release_groups(artist_mbid):
     return results
 
 
+def get_official_release_group_ids(artist_mbid):
+    """Get the set of release group IDs that have at least one official release."""
+    rg_ids = set()
+    offset = 0
+    while True:
+        data = _get(
+            f"{MB_API_BASE}/release?artist={artist_mbid}"
+            f"&status=official&inc=release-groups&fmt=json&limit=100&offset={offset}"
+        )
+        for r in data.get("releases", []):
+            rg_id = r.get("release-group", {}).get("id")
+            if rg_id:
+                rg_ids.add(rg_id)
+        total = data.get("release-count", 0)
+        offset += 100
+        if offset >= total:
+            break
+    return rg_ids
+
+
 def get_release_group_releases(rg_mbid):
     """Get all releases for a release group. Returns list of release summaries."""
     data = _get(f"{MB_API_BASE}/release-group/{rg_mbid}?inc=releases+media&fmt=json")

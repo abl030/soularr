@@ -145,13 +145,16 @@ async function loadArtist(id, artistName, el) {
     const groups = data.release_groups || [];
     const libraryAlbums = libData.albums || [];
 
-    // Split: own work vs appearances
+    // Split: own work vs appearances, filter bootleg-only release groups
     const nameLC = artistName.toLowerCase();
-    const own = [], appearances = [];
+    const own = [], appearances = [], bootlegOnly = [];
     for (const rg of groups) {
       const credit = (rg.artist_credit || '').toLowerCase();
-      // Own work if credit starts with artist name or is exactly the artist
-      if (credit === nameLC || credit.startsWith(nameLC + ' /') || credit.startsWith(nameLC + ',') || !credit) {
+      const isOwn = credit === nameLC || credit.startsWith(nameLC + ' /') || credit.startsWith(nameLC + ',') || !credit;
+
+      if (!rg.has_official) {
+        bootlegOnly.push(rg);
+      } else if (isOwn) {
         own.push(rg);
       } else {
         appearances.push(rg);
@@ -242,6 +245,18 @@ async function loadArtist(id, artistName, el) {
           </div>
           <div class="type-body">
             ${renderSection(appearances, false)}
+          </div>
+        </div>
+      `;
+    }
+    if (bootlegOnly.length > 0) {
+      html += `
+        <div class="type-section">
+          <div class="type-header" onclick="event.stopPropagation(); this.nextElementSibling.classList.toggle('open')" style="color:#555;">
+            Bootleg-only releases <span class="type-count">${bootlegOnly.length}</span>
+          </div>
+          <div class="type-body">
+            ${renderSection(bootlegOnly, false)}
           </div>
         </div>
       `;
