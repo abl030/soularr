@@ -272,7 +272,7 @@ async function loadReleaseGroup(id, el) {
   try {
     const r = await fetch(`${API}/api/release-group/${id}`);
     const data = await r.json();
-    const all = data.releases || [];
+    const all = (data.releases || []).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     const official = all.filter(r => r.status === 'Official' || !r.status);
     const bootleg = all.filter(r => r.status && r.status !== 'Official');
 
