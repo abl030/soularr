@@ -1,12 +1,16 @@
 # **RUN `hostname` AT THE START OF EVERY CHAT. proxmox-vm = doc1, doc2 = doc2. You are likely already on doc1 — do NOT ssh to doc1 from doc1.**
 
-# **NEVER run destructive SQLite DDL (ALTER TABLE RENAME, DROP TABLE) directly against production databases. SQLite auto-commits DDL even inside BEGIN/COMMIT blocks — a failed migration WILL lose data. Always: (1) copy the DB file first (`cp pipeline.db pipeline.db.bak`), (2) test the migration on the copy, (3) only then run on production. This rule exists because a migration wiped the entire album_requests table (303 rows) on 2026-03-24.**
+# **The pipeline DB is PostgreSQL (migrated from SQLite on 2026-03-25). It runs in an nspawn container on doc2 (192.168.100.11:5432). Access via `pipeline-cli` on doc2's PATH, or from doc1 via `ssh doc2 'pipeline-cli ...'`. Data lives at `/mnt/virtio/soularr/postgres` for portability. Only 3 statuses: wanted, imported, manual.**
 
 # Soularr — Music Download Pipeline
 
-A Soulseek download engine driven by a SQLite pipeline database. Searches Soulseek via slskd, validates downloads against MusicBrainz via beets, auto-imports or stages for manual review.
+A Soulseek download engine driven by a PostgreSQL pipeline database. Searches Soulseek via slskd, validates downloads against MusicBrainz via beets, auto-imports or stages for manual review. Includes a web UI at `music.ablz.au` for browsing MusicBrainz and adding album requests.
 
-Forked from [mrusse/soularr](https://github.com/mrusse/soularr). This fork has diverged significantly — Lidarr is optional, replaced by a pipeline DB as the source of truth.
+Forked from [mrusse/soularr](https://github.com/mrusse/soularr). This fork has diverged significantly — Lidarr is optional (used only as a mobile album picker), replaced by the pipeline DB as the source of truth.
+
+## Web UI (music.ablz.au)
+
+A single-page web app for browsing the local MusicBrainz mirror, viewing your beets library, and adding releases to the pipeline. Runs on doc2 as `soularr-web` systemd service. No build step — stdlib `http.server`, vanilla JS, single HTML file. For full details on architecture, API endpoints, frontend features, and deployment, read `docs/webui-primer.md`.
 
 ## Meelo
 
@@ -22,8 +26,12 @@ Beets (v2.5.1, Nix-managed on doc1) is the library's source of truth — it matc
 soularr.py              — Main Soularr script (~2400 lines)
 album_source.py         — AlbumRecord, DatabaseSource, LidarrSource abstraction
 config.ini              — Config template (not used in production — Nix generates it)
+web/
+  server.py             — Web UI server (http.server, JSON API)
+  mb.py                 — MusicBrainz API helpers
+  index.html            — Frontend (vanilla JS, inline CSS)
 lib/
-  pipeline_db.py        — PipelineDB class (SQLite CRUD, queries, schema)
+  pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema)
 harness/
   beets_harness.py      — Beets interactive import harness (JSON protocol over stdin/stdout)
   run_beets_harness.sh  — Shell wrapper to bootstrap Nix beets Python environment
@@ -52,7 +60,8 @@ test_soularr.py         — Isolated tests for verify_filetype (AST extraction)
 
 | Path | Machine | Purpose |
 |------|---------|---------|
-| `/mnt/virtio/Music/pipeline.db` | Shared | Pipeline DB (source of truth) |
+| `192.168.100.11:5432/soularr` | doc2 nspawn | Pipeline DB (PostgreSQL, source of truth) |
+| `/mnt/virtio/soularr/postgres` | Shared | PostgreSQL data dir (portable) |
 | `/mnt/virtio/Music/beets-library.db` | Shared | Beets library DB |
 | `/mnt/virtio/Music/Beets` | Shared | Beets library (tagged files) |
 | `/mnt/virtio/Music/Incoming` | Shared | Staging area for validated downloads |
@@ -79,7 +88,7 @@ Lidarr (optional)                    CLI / Dashboard
       │ lidarr_sync.py                     │ pipeline_cli.py add
       ▼                                    ▼
 ┌──────────────────────────────────────────────┐
-│           pipeline.db (SQLite)               │
+│           PostgreSQL (pipeline DB)            │
 │  status: wanted→searching→downloading→       │
 │          validating→staged→imported           │
 └──────────────────┬───────────────────────────┘
