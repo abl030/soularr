@@ -171,11 +171,17 @@ def run_import(path, mb_release_id):
                 proc.stdin.flush()
 
             elif msg_type == "resolve_duplicate":
-                # Pre-flight verified MBID not in DB. If we get here, it's a
-                # stale/partial entry. Remove it and keep the new import.
-                proc.stdin.write(json.dumps({"action": "remove"}) + "\n")
-                proc.stdin.flush()
-                print(f"  [DUP] Removing stale entry, keeping new import")
+                dup_mbids = msg.get("duplicate_mbids", [])
+                if mb_release_id in dup_mbids:
+                    # Same MBID already in DB — stale/partial entry, replace it.
+                    proc.stdin.write(json.dumps({"action": "remove"}) + "\n")
+                    proc.stdin.flush()
+                    print(f"  [DUP] Same MBID in library, removing stale entry")
+                else:
+                    # Different edition of same album — keep both, let %aunique{} disambiguate.
+                    proc.stdin.write(json.dumps({"action": "keep"}) + "\n")
+                    proc.stdin.flush()
+                    print(f"  [DUP] Different edition (existing: {dup_mbids}), keeping both")
 
             elif msg_type in ("choose_match", "choose_item"):
                 candidates = msg.get("candidates", [])

@@ -220,12 +220,17 @@ class HarnessImportSession(ImportSession):
 
     def resolve_duplicate(self, task: ImportTask, found_duplicates):
         """Ask controller how to handle duplicates."""
+        dup_mbids = []
+        for dup in found_duplicates:
+            mbid = getattr(dup, "mb_albumid", None) or ""
+            dup_mbids.append(mbid)
         msg = {
             "type": "resolve_duplicate",
             "path": _path_str(task.paths[0]) if task.paths else "",
             "cur_artist": task.cur_artist or "",
             "cur_album": task.cur_album or "",
             "duplicate_count": len(found_duplicates),
+            "duplicate_mbids": dup_mbids,
         }
         _send(msg)
 
