@@ -54,6 +54,8 @@ def get_artist_release_groups(artist_mbid):
         for rg in data.get("release-groups", []):
             ac = rg.get("artist-credit", [])
             credit_name = " / ".join(a.get("name", "?") for a in ac) if ac else ""
+            # Extract primary artist ID from credit for reliable own-work detection
+            primary_artist_id = ac[0].get("artist", {}).get("id") if ac else None
             results.append({
                 "id": rg["id"],
                 "title": rg.get("title", ""),
@@ -61,6 +63,7 @@ def get_artist_release_groups(artist_mbid):
                 "secondary_types": rg.get("secondary-types", []),
                 "first_release_date": rg.get("first-release-date", ""),
                 "artist_credit": credit_name,
+                "primary_artist_id": primary_artist_id,
             })
         total = data.get("release-group-count", 0)
         offset += 100

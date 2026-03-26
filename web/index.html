@@ -208,11 +208,13 @@ async function loadArtist(id, artistName, el) {
     const libraryAlbums = libData.albums || [];
 
     // Split: own work vs appearances, filter bootleg-only release groups
+    // Compare by artist ID (handles name changes like Kanye West → Ye)
     const nameLC = artistName.toLowerCase();
     const own = [], appearances = [], bootlegOnly = [];
     for (const rg of groups) {
       const credit = (rg.artist_credit || '').toLowerCase();
-      const isOwn = credit === nameLC || credit.startsWith(nameLC + ' /') || credit.startsWith(nameLC + ',') || !credit;
+      const isOwn = rg.primary_artist_id === id
+        || credit === nameLC || credit.startsWith(nameLC + ' /') || credit.startsWith(nameLC + ',') || !credit;
 
       if (!rg.has_official) {
         bootlegOnly.push(rg);
