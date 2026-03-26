@@ -55,6 +55,21 @@ def check_beets_library_detail(mbids):
     return {r[0]: {"beets_tracks": r[1]} for r in rows}
 
 
+def check_beets_by_artist_album(artist, album):
+    """Fuzzy check: is there an album by this artist in beets? Returns track count or None."""
+    if not beets_db_path or not os.path.exists(beets_db_path):
+        return None
+    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+    rows = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count "
+        "FROM albums a WHERE a.albumartist LIKE ? COLLATE NOCASE "
+        "AND a.album LIKE ? COLLATE NOCASE LIMIT 1",
+        (f"%{artist}%", f"%{album}%"),
+    ).fetchall()
+    conn.close()
+    return rows[0][0] if rows else None
+
+
 def get_library_artist(artist_name):
     """Get albums by an artist from the beets library."""
     if not beets_db_path or not os.path.exists(beets_db_path):
@@ -214,8 +229,16 @@ class Handler(BaseHTTPRequestHandler):
                         item["in_beets"] = True
                         item["beets_tracks"] = beets_info[mbid]["beets_tracks"]
                     else:
-                        item["in_beets"] = False
-                        item["beets_tracks"] = 0
+                        # Fallback: match by artist + album name (different pressing)
+                        fallback = check_beets_by_artist_album(
+                            r.get("artist_name", ""), r.get("album_title", "")
+                        )
+                        if fallback is not None:
+                            item["in_beets"] = True
+                            item["beets_tracks"] = fallback
+                        else:
+                            item["in_beets"] = False
+                            item["beets_tracks"] = 0
                     serialized.append(item)
                 self._json({"recent": serialized})
 
