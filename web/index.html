@@ -96,6 +96,19 @@
   .beets-missing { background: #3a1a1a; color: #d66; }
   .beets-mismatch { background: #3a2a1a; color: #da6; }
   .r-date-header { padding: 6px 12px; color: #6a9; font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 12px; margin-bottom: 4px; }
+  .lib-item { padding: 10px 12px; background: #1e1e1e; border-left: 3px solid #336; margin-bottom: 4px; border-radius: 0 6px 6px 0; cursor: pointer; }
+  .lib-item:hover { background: #252525; }
+  .lib-detail { background: #191919; padding: 10px 12px; margin: 0 0 4px 0; border-radius: 0 0 6px 6px; display: none; border-left: 3px solid #333; }
+  .lib-detail.open { display: block; }
+  .lib-track { font-size: 0.78em; color: #888; padding: 1px 0; display: flex; justify-content: space-between; }
+  .lib-track-meta { color: #555; }
+  .p-btn.delete-beets { border-color: #833; color: #f66; background: #2a1111; }
+  .p-btn.delete-beets:hover { background: #3a1a1a; }
+  .confirm-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 200; display: flex; align-items: center; justify-content: center; }
+  .confirm-box { background: #222; border: 1px solid #633; border-radius: 8px; padding: 20px; max-width: 400px; text-align: center; }
+  .confirm-box h3 { color: #f66; margin-bottom: 12px; }
+  .confirm-box p { color: #aaa; margin-bottom: 16px; font-size: 0.9em; }
+  .confirm-box .actions { display: flex; gap: 8px; justify-content: center; }
   .loading { color: #666; padding: 20px; text-align: center; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 12px 24px; background: #2a5a2a; color: #8d8; border-radius: 8px; font-size: 14px; z-index: 100; display: none; }
   .toast.error { background: #5a2a2a; color: #d88; }
@@ -107,6 +120,7 @@
   <div class="tab active" onclick="showTab('search')">Search</div>
   <div class="tab" onclick="showTab('recents')">Recents</div>
   <div class="tab" onclick="showTab('pipeline')">Pipeline</div>
+  <div class="tab" onclick="showTab('library')">Library</div>
 </div>
 
 <div id="search-section" class="section active">
@@ -122,13 +136,18 @@
   <div id="pipeline-content" class="loading">Loading...</div>
 </div>
 
+<div id="library-section" class="section">
+  <input type="text" id="lib-q" placeholder="Search beets library...">
+  <div id="library-content"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 const API = '';
 let searchTimer = null;
 
-const tabOrder = ['search', 'recents', 'pipeline'];
+const tabOrder = ['search', 'recents', 'pipeline', 'library'];
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -136,6 +155,7 @@ function showTab(name) {
   document.getElementById(name + '-section').classList.add('active');
   if (name === 'pipeline') loadPipeline();
   if (name === 'recents') loadRecents();
+  if (name === 'library') loadLibraryRecent();
 }
 
 function toast(msg, isError) {
@@ -661,6 +681,153 @@ async function updateStatus(id, newStatus) {
       toast(data.error || 'Update failed', true);
     }
   } catch (e) { toast('Update failed', true); }
+}
+
+// --- Library tab ---
+let libSearchTimer = null;
+document.addEventListener('DOMContentLoaded', () => {
+  const libQ = document.getElementById('lib-q');
+  if (libQ) libQ.addEventListener('input', e => {
+    clearTimeout(libSearchTimer);
+    const q = e.target.value.trim();
+    if (q.length < 2) { document.getElementById('library-content').innerHTML = ''; return; }
+    libSearchTimer = setTimeout(() => searchLibrary(q), 300);
+  });
+});
+
+function loadLibraryRecent() {
+  const el = document.getElementById('library-content');
+  const q = document.getElementById('lib-q').value.trim();
+  if (q.length >= 2) return; // user has a search active
+  el.innerHTML = '<div class="loading">Loading recent additions...</div>';
+  fetch(`${API}/api/beets/recent`).then(r => r.json()).then(data => {
+    renderLibraryResults(data.albums || []);
+  }).catch(() => { el.innerHTML = '<div class="loading">Failed to load</div>'; });
+}
+
+async function searchLibrary(q) {
+  const el = document.getElementById('library-content');
+  el.innerHTML = '<div class="loading">Searching...</div>';
+  try {
+    const r = await fetch(`${API}/api/beets/search?q=${encodeURIComponent(q)}`);
+    const data = await r.json();
+    renderLibraryResults(data.albums || []);
+  } catch (e) { el.innerHTML = '<div class="loading">Search failed</div>'; }
+}
+
+function renderLibraryResults(albums) {
+  const el = document.getElementById('library-content');
+  if (albums.length === 0) {
+    el.innerHTML = '<div class="loading">No results</div>';
+    return;
+  }
+  el.innerHTML = albums.map(a => {
+    const added = a.added ? new Date(a.added * 1000).toISOString().slice(0, 10) : '?';
+    return `
+      <div class="lib-item" onclick="toggleLibDetail(${a.id})">
+        <div class="p-top">
+          <div>
+            <div class="p-title">${esc(a.album)}</div>
+            <div class="p-artist">${esc(a.artist)}</div>
+          </div>
+          <div style="font-size:0.75em;color:#666;">${a.track_count}t</div>
+        </div>
+        <div class="p-meta">
+          <span>${a.year || '?'}</span>
+          ${a.formats ? `<span>${a.formats}</span>` : ''}
+          ${a.country ? `<span>${a.country}</span>` : ''}
+          ${a.type ? `<span>${a.type}</span>` : ''}
+          <span>added ${added}</span>
+        </div>
+      </div>
+      <div class="lib-detail" id="lib-${a.id}"></div>
+    `;
+  }).join('');
+}
+
+async function toggleLibDetail(id) {
+  const el = document.getElementById('lib-' + id);
+  if (el.classList.contains('open')) { el.classList.remove('open'); return; }
+  el.innerHTML = '<div class="loading" style="padding:8px;">Loading...</div>';
+  el.classList.add('open');
+  try {
+    const r = await fetch(`${API}/api/beets/album/${id}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    let html = '';
+    if (data.path) {
+      html += `<div class="p-detail-row"><span class="p-detail-label">Path</span><span class="p-detail-value" style="font-size:0.85em;word-break:break-all;">${esc(data.path)}</span></div>`;
+    }
+    if (data.mb_albumid) {
+      html += `<div class="p-detail-row"><span class="p-detail-label">MusicBrainz</span><span class="p-detail-value"><a href="https://musicbrainz.org/release/${data.mb_albumid}" target="_blank" rel="noopener" style="color:#6af;">${data.mb_albumid.slice(0,8)}...</a></span></div>`;
+    }
+    if (data.label) {
+      html += `<div class="p-detail-row"><span class="p-detail-label">Label</span><span class="p-detail-value">${esc(data.label)}</span></div>`;
+    }
+    // Tracks
+    if (data.tracks && data.tracks.length > 0) {
+      html += '<div class="p-tracks"><div class="p-detail-label" style="margin-bottom:4px;">Tracks (' + data.tracks.length + ')</div>';
+      html += data.tracks.map(t => {
+        const dur = t.length ? `${Math.floor(t.length/60)}:${String(Math.round(t.length%60)).padStart(2,'0')}` : '';
+        const br = t.bitrate ? `${Math.round(t.bitrate/1000)}kbps` : '';
+        const depth = t.bitdepth && t.bitdepth > 16 ? `${t.bitdepth}bit` : '';
+        const sr = t.samplerate && t.samplerate > 44100 ? `${(t.samplerate/1000).toFixed(1)}kHz` : '';
+        const meta = [t.format, br, depth, sr].filter(Boolean).join(' ');
+        return `<div class="lib-track">
+          <span>${t.disc > 1 ? t.disc + '.' : ''}${t.track}. ${esc(t.title)} ${dur ? '<span style="color:#555;">' + dur + '</span>' : ''}</span>
+          <span class="lib-track-meta">${meta}</span>
+        </div>`;
+      }).join('');
+      html += '</div>';
+    }
+    // Delete button
+    html += `<div class="p-actions" style="margin-top:10px;">
+      <button class="p-btn delete-beets" onclick="event.stopPropagation(); confirmDeleteBeets(${id}, '${esc(data.artist).replace(/'/g, "\\'")}', '${esc(data.album).replace(/'/g, "\\'")}', ${data.tracks ? data.tracks.length : 0})">Delete from beets</button>
+    </div>`;
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = '<div class="loading" style="padding:8px;">Failed to load</div>'; }
+}
+
+function confirmDeleteBeets(id, artist, album, trackCount) {
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML = `
+    <div class="confirm-box">
+      <h3>Delete from beets?</h3>
+      <p>${artist} - ${album}<br>${trackCount} tracks will be permanently deleted from disk.</p>
+      <div class="actions">
+        <button class="p-btn" onclick="this.closest('.confirm-overlay').remove()">Cancel</button>
+        <button class="p-btn delete-beets" id="confirm-delete-btn" onclick="executeBeetsDeletion(${id}, this)">Yes, delete permanently</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+async function executeBeetsDeletion(id, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+  try {
+    const r = await fetch(`${API}/api/beets/delete`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id, confirm: 'DELETE'}),
+    });
+    const data = await r.json();
+    document.querySelector('.confirm-overlay')?.remove();
+    if (data.status === 'ok') {
+      toast(`Deleted: ${data.artist} - ${data.album} (${data.deleted_files} files)`);
+      // Remove the item from the DOM
+      const detail = document.getElementById('lib-' + id);
+      if (detail) { detail.previousElementSibling?.remove(); detail.remove(); }
+    } else {
+      toast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    document.querySelector('.confirm-overlay')?.remove();
+    toast('Delete failed', true);
+  }
 }
 
 function esc(s) {

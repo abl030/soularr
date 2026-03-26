@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -268,6 +269,93 @@ class Handler(BaseHTTPRequestHandler):
                     "history": [{k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()} for h in history],
                 })
 
+            elif path == "/api/beets/search":
+                q = params.get("q", [""])[0].strip()
+                if not q or len(q) < 2:
+                    self._error("Query too short")
+                    return
+                if not beets_db_path or not os.path.exists(beets_db_path):
+                    self._error("Beets DB not available")
+                    return
+                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                rows = conn.execute(
+                    "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+                    "       a.albumtype, a.label, a.country, a.format, "
+                    "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+                    "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+                    "       a.added "
+                    "FROM albums a "
+                    "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
+                    "ORDER BY a.albumartist, a.year, a.album LIMIT 100",
+                    (f"%{q}%", f"%{q}%"),
+                ).fetchall()
+                conn.close()
+                albums = [{
+                    "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
+                    "mb_albumid": r[4], "type": r[5], "label": r[6],
+                    "country": r[7], "format": r[8], "track_count": r[9],
+                    "formats": r[10], "added": r[11],
+                } for r in rows]
+                self._json({"albums": albums})
+
+            elif re.match(r"^/api/beets/album/\d+$", path):
+                album_id = int(path.split("/")[-1])
+                if not beets_db_path or not os.path.exists(beets_db_path):
+                    self._error("Beets DB not available")
+                    return
+                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                album = conn.execute(
+                    "SELECT id, album, albumartist, year, mb_albumid, albumtype, "
+                    "       label, country, artpath, added "
+                    "FROM albums WHERE id = ?", (album_id,)
+                ).fetchone()
+                if not album:
+                    conn.close()
+                    self._error("Not found", 404)
+                    return
+                items = conn.execute(
+                    "SELECT id, title, artist, track, disc, length, format, "
+                    "       bitrate, samplerate, bitdepth, path "
+                    "FROM items WHERE album_id = ? ORDER BY disc, track", (album_id,)
+                ).fetchall()
+                conn.close()
+                tracks = [{
+                    "id": i[0], "title": i[1], "artist": i[2], "track": i[3],
+                    "disc": i[4], "length": i[5], "format": i[6],
+                    "bitrate": i[7], "samplerate": i[8], "bitdepth": i[9],
+                    "path": i[10].decode("utf-8", errors="replace") if isinstance(i[10], bytes) else i[10],
+                } for i in items]
+                # Derive album directory from first track path
+                album_path = os.path.dirname(tracks[0]["path"]) if tracks else None
+                self._json({
+                    "id": album[0], "album": album[1], "artist": album[2],
+                    "year": album[3], "mb_albumid": album[4], "type": album[5],
+                    "label": album[6], "country": album[7],
+                    "artpath": album[8].decode("utf-8", errors="replace") if isinstance(album[8], bytes) else album[8],
+                    "added": album[9], "tracks": tracks, "path": album_path,
+                })
+
+            elif path == "/api/beets/recent":
+                if not beets_db_path or not os.path.exists(beets_db_path):
+                    self._error("Beets DB not available")
+                    return
+                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                rows = conn.execute(
+                    "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+                    "       a.albumtype, a.country, "
+                    "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+                    "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+                    "       a.added "
+                    "FROM albums a ORDER BY a.added DESC LIMIT 50",
+                ).fetchall()
+                conn.close()
+                albums = [{
+                    "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
+                    "mb_albumid": r[4], "type": r[5], "country": r[6],
+                    "track_count": r[7], "formats": r[8], "added": r[9],
+                } for r in rows]
+                self._json({"albums": albums})
+
             else:
                 self._error("Not found", 404)
 
@@ -363,6 +451,53 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 db.delete_request(int(req_id))
                 self._json({"status": "ok", "id": req_id})
+
+            elif path == "/api/beets/delete":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                album_id = body.get("id")
+                confirm = body.get("confirm")
+                if not album_id:
+                    self._error("Missing id")
+                    return
+                if confirm != "DELETE":
+                    self._error("Must send confirm: 'DELETE'")
+                    return
+                if not beets_db_path or not os.path.exists(beets_db_path):
+                    self._error("Beets DB not available")
+                    return
+                conn = sqlite3.connect(beets_db_path)
+                # Get album path from items before deleting
+                items = conn.execute(
+                    "SELECT path FROM items WHERE album_id = ?", (int(album_id),)
+                ).fetchall()
+                album_row = conn.execute(
+                    "SELECT album, albumartist FROM albums WHERE id = ?", (int(album_id),)
+                ).fetchone()
+                if not album_row:
+                    conn.close()
+                    self._error("Album not found", 404)
+                    return
+                album_name = album_row[0]
+                artist_name = album_row[1]
+                # Get album directory from first track
+                file_paths = [r[0].decode("utf-8", errors="replace") if isinstance(r[0], bytes) else r[0] for r in items]
+                album_dir = os.path.dirname(file_paths[0]) if file_paths else None
+                # Delete from beets DB
+                conn.execute("DELETE FROM items WHERE album_id = ?", (int(album_id),))
+                conn.execute("DELETE FROM albums WHERE id = ?", (int(album_id),))
+                conn.commit()
+                conn.close()
+                # Delete files from disk
+                deleted_files = 0
+                if album_dir and os.path.isdir(album_dir):
+                    shutil.rmtree(album_dir)
+                    deleted_files = len(file_paths)
+                self._json({
+                    "status": "ok", "id": album_id,
+                    "album": album_name, "artist": artist_name,
+                    "deleted_files": deleted_files,
+                })
 
             else:
                 self._error("Not found", 404)
