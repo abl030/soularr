@@ -76,14 +76,18 @@ def get_library_artist(artist_name, mb_artist_id=None):
     if not beets_db_path or not os.path.exists(beets_db_path):
         return []
     conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-    # Prefer MB artist ID match (exact), fall back to name LIKE
+    # Match by MB artist ID (exact) plus name match for Discogs-only albums
+    # Discogs IDs are numeric; MB UUIDs contain hyphens — use that to detect non-MB entries
     if mb_artist_id:
         rows = conn.execute(
             "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
             "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
             "FROM albums WHERE mb_albumartistid = ? OR mb_albumartistids LIKE ? "
+            "  OR (albumartist LIKE ? COLLATE NOCASE "
+            "      AND (mb_albumartistid IS NULL OR mb_albumartistid = '' "
+            "           OR mb_albumartistid NOT LIKE '%-%')) "
             "ORDER BY year, album",
-            (mb_artist_id, f"%{mb_artist_id}%"),
+            (mb_artist_id, f"%{mb_artist_id}%", f"%{artist_name}%"),
         ).fetchall()
     else:
         rows = conn.execute(
