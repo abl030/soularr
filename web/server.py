@@ -350,6 +350,20 @@ class Handler(BaseHTTPRequestHandler):
 
                 self._json({"status": "ok", "id": req_id, "new_status": new_status})
 
+            elif path == "/api/pipeline/delete":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                req_id = body.get("id")
+                if not req_id:
+                    self._error("Missing id")
+                    return
+                req = db.get_request(int(req_id))
+                if not req:
+                    self._error("Not found", 404)
+                    return
+                db.delete_request(int(req_id))
+                self._json({"status": "ok", "id": req_id})
+
             else:
                 self._error("Not found", 404)
 
