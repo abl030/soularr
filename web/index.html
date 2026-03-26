@@ -266,8 +266,10 @@ async function loadArtist(id, artistName, el) {
                   const creditNote = rg.artist_credit && rg.artist_credit.toLowerCase() !== nameLC
                     ? `<span class="rg-meta"> - ${esc(rg.artist_credit)}</span>` : '';
                   return `
-                    <div class="rg" onclick="event.stopPropagation(); loadReleaseGroup('${rg.id}', this)">
-                      <span class="rg-year">${year}</span> <span class="rg-title">${esc(rg.title)}</span>${creditNote}
+                    <div class="rg">
+                      <div onclick="event.stopPropagation(); loadReleaseGroup('${rg.id}', this)">
+                        <span class="rg-year">${year}</span> <span class="rg-title">${esc(rg.title)}</span>${creditNote}
+                      </div>
                       <div class="releases" id="rel-${rg.id}"></div>
                     </div>
                   `;
