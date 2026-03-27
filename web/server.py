@@ -586,7 +586,8 @@ def main():
     if args.mb_api:
         mb_api.MB_API_BASE = args.mb_api
 
-    db = PipelineDB(args.dsn)
+    db = PipelineDB(args.dsn, run_migrations=False)
+    db.conn.autocommit = True  # Web server is read-heavy; avoid idle-in-transaction locks
     beets_db_path = args.beets_db
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
