@@ -746,13 +746,27 @@ def downloads_all_done(downloads):
     return all_done, error_list, remote_queue
 
 
+def _get_denied_users(album_id):
+    """Merge file-based cutoff denylist with pipeline DB source_denylist."""
+    denied = set(cutoff_denylist.get(album_id, set()))
+    # In DB mode, album_id is negative; request_id is the positive counterpart
+    if pipeline_db_enabled and pipeline_db_source is not None and album_id < 0:
+        request_id = abs(album_id)
+        try:
+            db = pipeline_db_source._get_db()
+            denied.update(e["username"] for e in db.get_denylisted_users(request_id))
+        except Exception:
+            pass
+    return denied
+
+
 def try_enqueue(all_tracks, results, allowed_filetype):
     """
     Single album match and enqueue.
     Iterates over all users and enqueues a found match
     """
     album_id = all_tracks[0]["albumId"]
-    denied_users = cutoff_denylist.get(album_id, set())
+    denied_users = _get_denied_users(album_id)
     # Sort users by upload speed (fastest first) for quicker downloads
     sorted_users = sorted(results.keys(), key=lambda u: user_upload_speed.get(u, 0), reverse=True)
     for username in sorted_users:
@@ -812,7 +826,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
     total = len(split_release)
     count_found = 0
     album_id = all_tracks[0]["albumId"]
-    denied_users = cutoff_denylist.get(album_id, set())
+    denied_users = _get_denied_users(album_id)
     for disk in split_release:
         for username in tmp_results:
             if username in denied_users:
