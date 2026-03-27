@@ -561,15 +561,15 @@ async function loadRecents() {
         } else {
           beetsLabel = `<span class="beets-status beets-ok">${item.beets_tracks}t in beets</span>`;
         }
-        // Audio quality — prefer beets (actual on-disk), fall back to download log
-        const br = item.beets_bitrate ? `${Math.round(item.beets_bitrate/1000)}kbps`
-                 : item.dl_bitrate ? `${Math.round(item.dl_bitrate)}kbps` : '';
+        // Audio quality — use qualityLabel for tier display (V0, 320, etc.)
+        const beetsFormat = item.beets_format || item.dl_filetype || '';
+        const beetsBr = item.beets_bitrate || (item.dl_bitrate ? item.dl_bitrate * 1000 : 0);
+        const tier = qualityLabel(beetsFormat, beetsBr);
         const sr = (item.beets_samplerate || 0) > 44100 ? `${(item.beets_samplerate/1000).toFixed(1)}kHz`
                  : (item.dl_sample_rate || 0) > 44100 ? `${(item.dl_sample_rate/1000).toFixed(1)}kHz` : '';
         const bd = (item.beets_bitdepth || 0) > 16 ? `${item.beets_bitdepth}bit`
                  : (item.dl_bit_depth || 0) > 16 ? `${item.dl_bit_depth}bit` : '';
-        const dlFmt = item.beets_format || item.dl_filetype || '';
-        const qualityParts = [dlFmt, br, bd, sr].filter(Boolean);
+        const qualityParts = [tier, bd, sr].filter(Boolean);
         let quality = qualityParts.length ? qualityParts.join(' ') : '';
         // Show upgrade delta if prev_min_bitrate exists
         if (item.prev_min_bitrate && item.min_bitrate) {
