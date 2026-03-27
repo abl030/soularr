@@ -334,17 +334,21 @@ def main():
     request_id = args.request_id
 
     # --- Pre-flight: already imported? ---
-    if preflight_check(mbid):
-        print(f"[PRE-FLIGHT] Already in beets: {mbid}")
-        if request_id:
-            result = postflight_verify(mbid)
-            if result:
-                _, track_count, album_path = result
-                update_pipeline_db(request_id, "imported", imported_path=album_path)
-        sys.exit(0)
+    already_in_beets = preflight_check(mbid)
+    if already_in_beets:
+        print(f"[PRE-FLIGHT] Already in beets: {mbid} — checking if new files are better")
 
     # --- Path check ---
     if not os.path.isdir(args.path):
+        if already_in_beets:
+            # No new files to compare — just confirm existing import
+            print(f"[PRE-FLIGHT] No new files, keeping existing import")
+            if request_id:
+                result = postflight_verify(mbid)
+                if result:
+                    _, track_count, album_path = result
+                    update_pipeline_db(request_id, "imported", imported_path=album_path)
+            sys.exit(0)
         print(f"[ERROR] Path not found: {args.path}", file=sys.stderr)
         sys.exit(3)
 
