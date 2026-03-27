@@ -122,6 +122,8 @@
   .lib-detail.open { display: block; }
   .lib-track { font-size: 0.78em; color: #888; padding: 1px 0; display: flex; justify-content: space-between; }
   .lib-track-meta { color: #555; }
+  .p-btn.upgrade-btn { border-color: #5a5a1a; color: #da6; }
+  .p-btn.upgrade-btn:hover { background: #3a3a1a; }
   .p-btn.delete-beets { border-color: #833; color: #f66; background: #2a1111; }
   .p-btn.delete-beets:hover { background: #3a1a1a; }
   .confirm-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 200; display: flex; align-items: center; justify-content: center; }
@@ -166,6 +168,19 @@
 <script>
 const API = '';
 let searchTimer = null;
+
+function qualityLabel(formats, minBitrate) {
+  // minBitrate is in bps from beets (e.g. 320000)
+  if (!formats) return '?';
+  const fmt = formats.split(',')[0].trim().toUpperCase();
+  if (fmt === 'FLAC' || fmt === 'ALAC') return fmt;
+  if (!minBitrate || minBitrate <= 0) return fmt;
+  const kbps = Math.round(minBitrate / 1000);
+  if (kbps >= 295) return fmt + ' 320';
+  if (kbps >= 220) return fmt + ' V0';
+  if (kbps >= 170) return fmt + ' V2';
+  return fmt + ' ' + kbps + 'k';
+}
 
 function renderDownloadHistoryItem(h) {
   const outcome = h.outcome || '?';
@@ -889,7 +904,7 @@ function renderLibraryResults(albums) {
           </div>
           <div class="p-meta">
             <span>${a.year || '?'}</span>
-            ${a.formats ? `<span>${a.formats}</span>` : ''}
+            <span>${qualityLabel(a.formats, a.min_bitrate)}</span>
             ${a.country ? `<span>${a.country}</span>` : ''}
             ${a.type ? `<span>${a.type}</span>` : ''}
             <span>added ${added}</span>
@@ -977,12 +992,44 @@ async function toggleLibDetail(id) {
     } else if (data.pipeline_status) {
       html += `<div class="p-detail-row"><span class="p-detail-label">Pipeline</span><span class="p-detail-value">${data.pipeline_status} (${data.pipeline_source || '?'})</span></div>`;
     }
-    // Delete button
-    html += `<div class="p-actions" style="margin-top:10px;">
-      <button class="p-btn delete-beets" onclick="event.stopPropagation(); confirmDeleteBeets(${id}, '${esc(data.artist).replace(/'/g, "\\'")}', '${esc(data.album).replace(/'/g, "\\'")}', ${data.tracks ? data.tracks.length : 0})">Delete from beets</button>
-    </div>`;
+    // Upgrade + Delete buttons
+    html += '<div class="p-actions" style="margin-top:10px;">';
+    if (data.mb_albumid) {
+      const bitrates = (data.tracks || []).map(t => t.bitrate).filter(b => b && b > 0);
+      const minBr = bitrates.length > 0 ? Math.round(Math.min(...bitrates) / 1000) : null;
+      const brLabel = minBr ? ` (lowest: ${minBr}kbps)` : '';
+      html += `<button class="p-btn upgrade-btn" onclick="event.stopPropagation(); upgradeAlbum('${data.mb_albumid}', this)">Upgrade${brLabel}</button>`;
+    }
+    html += `<button class="p-btn delete-beets" onclick="event.stopPropagation(); confirmDeleteBeets(${id}, '${esc(data.artist).replace(/'/g, "\\'")}', '${esc(data.album).replace(/'/g, "\\'")}', ${data.tracks ? data.tracks.length : 0})">Delete from beets</button>`;
+    html += '</div>';
     el.innerHTML = html;
   } catch (e) { el.innerHTML = '<div class="loading" style="padding:8px;">Failed to load</div>'; }
+}
+
+async function upgradeAlbum(mbid, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Queuing...';
+  try {
+    const r = await fetch(`${API}/api/pipeline/upgrade`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mb_release_id: mbid}),
+    });
+    const data = await r.json();
+    if (data.status === 'upgrade_queued') {
+      btn.textContent = 'Queued';
+      btn.style.borderColor = '#6a9';
+      btn.style.color = '#6a9';
+      const br = data.min_bitrate ? ` from ${data.min_bitrate}kbps` : '';
+      toast(`Upgrade queued${br} — searching flac, v0, 320`);
+    } else {
+      btn.textContent = 'Error';
+      toast(data.error || 'Upgrade failed', true);
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    toast('Upgrade failed', true);
+  }
 }
 
 function confirmDeleteBeets(id, artist, album, trackCount) {

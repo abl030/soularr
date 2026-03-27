@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS album_requests (
     beets_scenario TEXT,
     imported_path TEXT,
 
+    -- Quality upgrade
+    quality_override TEXT,
+    min_bitrate INTEGER,
+
     -- Lidarr bridge
     lidarr_album_id INTEGER,
     lidarr_artist_id INTEGER,
@@ -146,6 +150,17 @@ class PipelineDB:
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
+            # album_requests migrations
+            for col, coltype in [
+                ("quality_override", "TEXT"),
+                ("min_bitrate", "INTEGER"),
+            ]:
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE album_requests ADD COLUMN {col} {coltype};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
+                """)
         self.conn.commit()
 
     def close(self):
@@ -217,7 +232,7 @@ class PipelineDB:
         )
         self.conn.commit()
 
-    def reset_to_wanted(self, request_id):
+    def reset_to_wanted(self, request_id, quality_override=None, min_bitrate=None):
         now = datetime.now(timezone.utc)
         self._execute("""
             UPDATE album_requests
@@ -227,9 +242,11 @@ class PipelineDB:
                 validation_attempts = 0,
                 next_retry_after = NULL,
                 last_attempt_at = NULL,
+                quality_override = %s,
+                min_bitrate = %s,
                 updated_at = %s
             WHERE id = %s
-        """, (now, request_id))
+        """, (quality_override, min_bitrate, now, request_id))
         self.conn.commit()
 
     # --- Query methods ---

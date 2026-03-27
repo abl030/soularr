@@ -82,6 +82,7 @@ class AlbumRecord:
             "_db_request_id": row["id"],
             "_db_source": row["source"],
             "_db_mb_release_id": row["mb_release_id"],
+            "_db_quality_override": row.get("quality_override"),
         }
 
 

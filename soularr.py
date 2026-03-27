@@ -1026,6 +1026,15 @@ def find_download(album, grab_list):
                 f"only trying {len(filetypes_to_try)} higher-priority formats"
             )
 
+    # Per-album quality override from pipeline DB (e.g. upgrade requests)
+    quality_override = album.get("_db_quality_override")
+    if quality_override:
+        filetypes_to_try = [ft.strip() for ft in quality_override.split(",")]
+        logger.info(
+            f"Quality override for {artist_name} - {album['title']}: "
+            f"searching only {filetypes_to_try}"
+        )
+
     for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
         # DB records carry releases inline (copy to avoid mutation);
@@ -1074,6 +1083,7 @@ def find_download(album, grab_list):
                 if album.get("_db_request_id"):
                     grab_list[album_id]["_db_request_id"] = album["_db_request_id"]
                     grab_list[album_id]["_db_source"] = album.get("_db_source")
+                    grab_list[album_id]["_db_quality_override"] = album.get("_db_quality_override")
                 return True
             elif len(release["media"]) > 1:
                 found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype)
@@ -1091,6 +1101,7 @@ def find_download(album, grab_list):
                     if album.get("_db_request_id"):
                         grab_list[album_id]["_db_request_id"] = album["_db_request_id"]
                         grab_list[album_id]["_db_source"] = album.get("_db_source")
+                        grab_list[album_id]["_db_quality_override"] = album.get("_db_quality_override")
                     return True
 
             # If a monitored release was tried and didn't match, stop here.
@@ -1128,6 +1139,51 @@ def search_and_queue(albums):
         else:
             failed_search.append(album)
     return grab_list, failed_search, failed_grab
+
+
+QUALITY_UPGRADE_TIERS = "flac,mp3 v0,mp3 320"
+QUALITY_MIN_BITRATE_KBPS = 220  # V0 floor — below this triggers upgrade
+
+
+def _check_quality_gate(album_data, request_id):
+    """Post-import quality gate: if min track bitrate is below V0, queue for upgrade."""
+    mb_id = album_data.get("mb_release_id")
+    if not mb_id or not pipeline_db_enabled or pipeline_db_source is None:
+        return
+    try:
+        import sqlite3 as _sqlite3
+        beets_db = os.environ.get("BEETS_DB", "/mnt/virtio/Music/beets-library.db")
+        if not os.path.exists(beets_db):
+            return
+        conn = _sqlite3.connect(f"file:{beets_db}?mode=ro", uri=True)
+        album_row = conn.execute(
+            "SELECT id FROM albums WHERE mb_albumid = ?", (mb_id,)
+        ).fetchone()
+        if not album_row:
+            conn.close()
+            return
+        br_row = conn.execute(
+            "SELECT MIN(bitrate) FROM items WHERE album_id = ?", (album_row[0],)
+        ).fetchone()
+        conn.close()
+        if not br_row or not br_row[0]:
+            return
+        min_br_kbps = int(br_row[0] / 1000)
+        if min_br_kbps < QUALITY_MIN_BITRATE_KBPS:
+            db = pipeline_db_source._get_db()
+            db.reset_to_wanted(request_id,
+                               quality_override=QUALITY_UPGRADE_TIERS,
+                               min_bitrate=min_br_kbps)
+            logger.info(
+                f"QUALITY GATE: {album_data['artist']} - {album_data['title']} "
+                f"min_bitrate={min_br_kbps}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps, "
+                f"queued for upgrade (searching {QUALITY_UPGRADE_TIERS})")
+        else:
+            logger.info(
+                f"QUALITY GATE: {album_data['artist']} - {album_data['title']} "
+                f"min_bitrate={min_br_kbps}kbps — quality OK")
+    except Exception:
+        logger.exception("QUALITY GATE: failed to check quality")
 
 
 def _build_download_info(album_data):
@@ -1283,6 +1339,8 @@ def process_completed_album(album_data, failed_grab):
                                             pass
                                 # Ensure DB status is set even if import_one's DB update failed
                                 pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest, download_info=dl_info)
+                                # Quality gate: if below V0, queue for upgrade
+                                _check_quality_gate(album_data, request_id)
                                 trigger_meelo_scan()
                                 # Clean up staged directory — beets already moved files
                                 # to /Beets, or pre-flight found a dupe (files unneeded)

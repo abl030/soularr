@@ -360,7 +360,8 @@ class Handler(BaseHTTPRequestHandler):
                     "       a.albumtype, a.label, a.country, "
                     "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
                     "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-                    "       a.added, a.mb_releasegroupid, a.release_group_title "
+                    "       a.added, a.mb_releasegroupid, a.release_group_title, "
+                    "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
                     "FROM albums a "
                     "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
                     "ORDER BY a.albumartist, a.year, a.album LIMIT 100",
@@ -373,6 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                     "country": r[7], "track_count": r[8],
                     "formats": r[9], "added": r[10],
                     "mb_releasegroupid": r[11], "release_group_title": r[12],
+                    "min_bitrate": r[13],
                 } for r in rows]
                 self._json({"albums": albums})
 
@@ -437,7 +439,8 @@ class Handler(BaseHTTPRequestHandler):
                     "       a.albumtype, a.country, "
                     "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
                     "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-                    "       a.added, a.mb_releasegroupid, a.release_group_title "
+                    "       a.added, a.mb_releasegroupid, a.release_group_title, "
+                    "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
                     "FROM albums a ORDER BY a.added DESC LIMIT 50",
                 ).fetchall()
                 conn.close()
@@ -446,6 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                     "mb_albumid": r[4], "type": r[5], "country": r[6],
                     "track_count": r[7], "formats": r[8], "added": r[9],
                     "mb_releasegroupid": r[10], "release_group_title": r[11],
+                    "min_bitrate": r[12],
                 } for r in rows]
                 self._json({"albums": albums})
 
@@ -530,6 +534,70 @@ class Handler(BaseHTTPRequestHandler):
                     db.update_status(int(req_id), new_status)
 
                 self._json({"status": "ok", "id": req_id, "new_status": new_status})
+
+            elif path == "/api/pipeline/upgrade":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                mbid = body.get("mb_release_id", "").strip()
+                if not mbid:
+                    self._error("Missing mb_release_id")
+                    return
+
+                quality = "flac,mp3 v0,mp3 320"
+
+                # Calculate min_bitrate from beets library
+                min_bitrate = None
+                if beets_db_path and os.path.exists(beets_db_path):
+                    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                    album_row = conn.execute(
+                        "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
+                    ).fetchone()
+                    if album_row:
+                        br_row = conn.execute(
+                            "SELECT MIN(bitrate) FROM items WHERE album_id = ?",
+                            (album_row[0],),
+                        ).fetchone()
+                        if br_row and br_row[0]:
+                            min_bitrate = int(br_row[0] / 1000)
+                    conn.close()
+
+                # Find or create pipeline request
+                existing = db.get_request_by_mb_release_id(mbid)
+                if existing:
+                    req_id = existing["id"]
+                    db.reset_to_wanted(req_id,
+                                       quality_override=quality,
+                                       min_bitrate=min_bitrate)
+                    self._json({
+                        "status": "upgrade_queued",
+                        "id": req_id,
+                        "min_bitrate": min_bitrate,
+                        "quality_override": quality,
+                    })
+                else:
+                    # Album in beets but not in pipeline DB — create new request
+                    release = mb_api.get_release(mbid)
+                    req_id = db.add_request(
+                        mb_release_id=mbid,
+                        mb_artist_id=release.get("artist_id"),
+                        artist_name=release["artist_name"],
+                        album_title=release["title"],
+                        year=release.get("year"),
+                        country=release.get("country"),
+                        source="request",
+                    )
+                    if release.get("tracks"):
+                        db.set_tracks(req_id, release["tracks"])
+                    db.reset_to_wanted(req_id,
+                                       quality_override=quality,
+                                       min_bitrate=min_bitrate)
+                    self._json({
+                        "status": "upgrade_queued",
+                        "id": req_id,
+                        "min_bitrate": min_bitrate,
+                        "quality_override": quality,
+                        "created": True,
+                    })
 
             elif path == "/api/pipeline/delete":
                 length = int(self.headers.get("Content-Length", 0))
