@@ -298,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
                     "       a.albumtype, a.label, a.country, "
                     "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
                     "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-                    "       a.added "
+                    "       a.added, a.mb_releasegroupid, a.release_group_title "
                     "FROM albums a "
                     "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
                     "ORDER BY a.albumartist, a.year, a.album LIMIT 100",
@@ -310,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
                     "mb_albumid": r[4], "type": r[5], "label": r[6],
                     "country": r[7], "track_count": r[8],
                     "formats": r[9], "added": r[10],
+                    "mb_releasegroupid": r[11], "release_group_title": r[12],
                 } for r in rows]
                 self._json({"albums": albums})
 
@@ -360,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
                     "       a.albumtype, a.country, "
                     "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
                     "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-                    "       a.added "
+                    "       a.added, a.mb_releasegroupid, a.release_group_title "
                     "FROM albums a ORDER BY a.added DESC LIMIT 50",
                 ).fetchall()
                 conn.close()
@@ -368,6 +369,7 @@ class Handler(BaseHTTPRequestHandler):
                     "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
                     "mb_albumid": r[4], "type": r[5], "country": r[6],
                     "track_count": r[7], "formats": r[8], "added": r[9],
+                    "mb_releasegroupid": r[10], "release_group_title": r[11],
                 } for r in rows]
                 self._json({"albums": albums})
 

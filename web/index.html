@@ -105,6 +105,11 @@
   .lib-artist-count { color: #556; font-size: 0.8em; }
   .lib-artist-body { display: none; padding-top: 4px; }
   .lib-artist-body.open { display: block; }
+  .lib-rg { margin-bottom: 4px; }
+  .lib-rg-header { padding: 8px 12px; background: #1e1e2e; border-left: 3px solid #446; border-radius: 0 6px 6px 0; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.9em; }
+  .lib-rg-header:hover { background: #252535; }
+  .lib-rg-body { padding-left: 12px; display: none; }
+  .lib-rg-body.open { display: block; }
   .lib-type-header { padding: 4px 12px; color: #6a9; font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px; }
   .lib-item { padding: 10px 12px; background: #1e1e1e; border-left: 3px solid #336; margin-bottom: 4px; border-radius: 0 6px 6px 0; cursor: pointer; }
   .lib-item:hover { background: #252525; }
@@ -755,17 +760,19 @@ function renderLibraryResults(albums) {
 
   el.innerHTML = artists.map(artist => {
     const artistAlbums = byArtist[artist];
-    // Sub-group by type
-    const typeOrder = ['Album', 'EP', 'Single', 'Compilation', 'Live', 'Remix', 'Soundtrack', 'Other', ''];
-    const byType = {};
+
+    // Group by release group within artist
+    const rgOrder = [];
+    const byRG = {};
     for (const a of artistAlbums) {
-      const t = a.type || '';
-      if (!byType[t]) byType[t] = [];
-      byType[t].push(a);
+      const rgKey = a.mb_releasegroupid || ('_' + a.id);
+      if (!byRG[rgKey]) {
+        byRG[rgKey] = { title: a.release_group_title || a.album, year: a.year, albums: [] };
+        rgOrder.push(rgKey);
+      }
+      byRG[rgKey].albums.push(a);
     }
-    const types = typeOrder.filter(t => byType[t]);
-    // If all same type or only one type, don't show type headers
-    const showTypes = types.length > 1;
+    const rgCount = rgOrder.length;
 
     function renderAlbum(a) {
       const added = a.added ? new Date(a.added * 1000).toISOString().slice(0, 10) : '?';
@@ -781,7 +788,7 @@ function renderLibraryResults(albums) {
             <span>${a.year || '?'}</span>
             ${a.formats ? `<span>${a.formats}</span>` : ''}
             ${a.country ? `<span>${a.country}</span>` : ''}
-            ${!showTypes && a.type ? `<span>${a.type}</span>` : ''}
+            ${a.type ? `<span>${a.type}</span>` : ''}
             <span>added ${added}</span>
           </div>
         </div>
@@ -789,18 +796,31 @@ function renderLibraryResults(albums) {
       `;
     }
 
-    const albumsHtml = showTypes
-      ? types.map(t => `
-          <div class="lib-type-header">${t || 'Other'}s (${byType[t].length})</div>
-          ${byType[t].map(renderAlbum).join('')}
-        `).join('')
-      : artistAlbums.map(renderAlbum).join('');
+    const albumsHtml = rgOrder.map(rgKey => {
+      const rg = byRG[rgKey];
+      if (rg.albums.length === 1) {
+        return renderAlbum(rg.albums[0]);
+      }
+      // Multiple releases in same release group
+      const yr = rg.year || '?';
+      return `
+        <div class="lib-rg">
+          <div class="lib-rg-header" onclick="this.nextElementSibling.classList.toggle('open')">
+            <span>${yr} ${esc(rg.title)}</span>
+            <span class="lib-artist-count">${rg.albums.length} versions</span>
+          </div>
+          <div class="lib-rg-body">
+            ${rg.albums.map(renderAlbum).join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
 
     return `
       <div class="lib-artist">
         <div class="lib-artist-header" onclick="this.nextElementSibling.classList.toggle('open')">
           <span class="lib-artist-name">${esc(artist)}</span>
-          <span class="lib-artist-count">${artistAlbums.length} album${artistAlbums.length !== 1 ? 's' : ''}</span>
+          <span class="lib-artist-count">${rgCount} release${rgCount !== 1 ? 's' : ''}</span>
         </div>
         <div class="lib-artist-body${autoOpen ? ' open' : ''}">
           ${albumsHtml}
