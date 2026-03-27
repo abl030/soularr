@@ -1381,33 +1381,81 @@ def process_completed_album(album_data, failed_grab):
                                     if os.path.isdir(parent) and not os.listdir(parent):
                                         os.rmdir(parent)
                                         logger.info(f"  Cleaned up empty artist dir: {parent}")
-                            elif result.returncode in (5, 6):
-                                # 5 = quality downgrade, 6 = transcode detected
-                                reason = "transcode detected" if result.returncode == 6 else "quality downgrade prevented"
+                            elif result.returncode == 5:
+                                # Quality downgrade — not imported
                                 logger.warning(
-                                    f"{reason.upper()}: {album_data['artist']} - {album_data['title']}")
+                                    f"QUALITY DOWNGRADE PREVENTED: {album_data['artist']} - {album_data['title']}")
                                 for line in result.stderr.strip().split("\n"):
                                     logger.warning(f"  {line}")
-                                # Parse actual bitrate from import_one output for logging
+                                usernames = set(f.get("username") for f in album_data.get("files", [])
+                                                if f.get("username"))
+                                db = pipeline_db_source._get_db()
+                                for username in usernames:
+                                    db.add_denylist(request_id, username, "quality downgrade prevented")
+                                logger.info(f"  Denylisted {usernames} for request {request_id}")
+                                if os.path.isdir(dest):
+                                    shutil.rmtree(dest)
+                            elif result.returncode == 6:
+                                # Transcode detected. May or may not have imported:
+                                # - "[OK] Transcode imported" = imported as upgrade, keep searching
+                                # - "[QUALITY DOWNGRADE]" = not imported, keep searching
+                                stdout_text = result.stdout or ""
+                                imported_transcode = "[OK] Transcode imported" in stdout_text
                                 actual_br = None
-                                for line in (result.stdout or "").strip().split("\n"):
+                                for line in stdout_text.strip().split("\n"):
+                                    logger.info(f"  {line}")
                                     if line.strip().startswith("min_bitrate="):
                                         try:
                                             actual_br = int(line.strip().split("=")[1])
                                         except (ValueError, IndexError):
                                             pass
+                                    # Capture conversion info for download log
+                                    if line.strip().startswith("Converted ") and ", failed " in line:
+                                        try:
+                                            parts = line.strip().split()
+                                            conv_count = int(parts[1].rstrip(","))
+                                            if conv_count > 0:
+                                                dl_info["was_converted"] = True
+                                                dl_info["original_filetype"] = "flac"
+                                                dl_info["filetype"] = "mp3"
+                                                dl_info["is_vbr"] = True
+                                        except (ValueError, IndexError):
+                                            pass
                                 if actual_br:
-                                    logger.warning(f"  Actual min bitrate: {actual_br}kbps")
-                                # Denylist source users so we try someone else
+                                    dl_info["bitrate"] = actual_br * 1000
+                                for line in (result.stderr or "").strip().split("\n"):
+                                    if line.strip():
+                                        logger.warning(f"  {line}")
+                                if imported_transcode:
+                                    logger.info(
+                                        f"TRANSCODE UPGRADE: {album_data['artist']} - {album_data['title']} "
+                                        f"imported at {actual_br}kbps, denylisting + continuing search")
+                                    pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest, download_info=dl_info)
+                                    trigger_meelo_scan()
+                                else:
+                                    logger.warning(
+                                        f"TRANSCODE REJECTED: {album_data['artist']} - {album_data['title']} "
+                                        f"at {actual_br}kbps — not an upgrade")
+                                # Denylist source user and reset to wanted for further searching
                                 usernames = set(f.get("username") for f in album_data.get("files", [])
                                                 if f.get("username"))
                                 db = pipeline_db_source._get_db()
+                                reason = f"transcode: {actual_br}kbps" if actual_br else "transcode detected"
                                 for username in usernames:
                                     db.add_denylist(request_id, username, reason)
                                 logger.info(f"  Denylisted {usernames} for request {request_id}")
-                                # Clean up staged dir
+                                # Reset to wanted so we keep searching for better quality
+                                db.reset_to_wanted(request_id,
+                                                   quality_override=QUALITY_UPGRADE_TIERS,
+                                                   min_bitrate=actual_br)
+                                # Clean up staged dir (beets already moved files if imported)
                                 if os.path.isdir(dest):
                                     shutil.rmtree(dest)
+                                    logger.info(f"  Cleaned up staged dir: {dest}")
+                                    parent = os.path.dirname(dest)
+                                    if os.path.isdir(parent) and not os.listdir(parent):
+                                        os.rmdir(parent)
+                                        logger.info(f"  Cleaned up empty artist dir: {parent}")
                             else:
                                 logger.error(f"AUTO-IMPORT FAILED (rc={result.returncode}): "
                                              f"{album_data['artist']} - {album_data['title']}")

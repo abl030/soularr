@@ -15,7 +15,9 @@ Exit codes:
     3 = album path not found
     4 = MBID not found in beets candidates
     5 = quality downgrade (new files worse than existing)
-    6 = transcode detected (converted FLAC produced sub-threshold bitrate)
+    6 = transcode detected — may or may not have imported:
+        - If upgrade over existing: imported, but denylist user + keep searching
+        - If not an upgrade: not imported, denylist user + keep searching
 """
 
 import argparse
@@ -358,33 +360,38 @@ def main():
     # If we converted FLACs, check the resulting MP3 bitrate.
     # Genuine lossless→V0 produces ~220-260kbps. Sub-threshold means
     # the FLAC was a transcode (MP3 wrapped in FLAC container).
+    is_transcode = False
     if converted > 0:
         post_conv_br = _get_folder_min_bitrate(args.path)
         if post_conv_br is not None and post_conv_br < TRANSCODE_MIN_BITRATE_KBPS:
             print(f"[TRANSCODE] converted FLAC min bitrate {post_conv_br}kbps "
-                  f"< {TRANSCODE_MIN_BITRATE_KBPS}kbps — source was not lossless",
-                  file=sys.stderr)
-            print(f"  min_bitrate={post_conv_br}")
-            sys.exit(6)
+                  f"< {TRANSCODE_MIN_BITRATE_KBPS}kbps — source was not lossless")
+            is_transcode = True
         if post_conv_br is not None:
-            print(f"  [TRANSCODE CHECK] post-conversion min bitrate {post_conv_br}kbps — OK")
             print(f"  min_bitrate={post_conv_br}")
 
     if args.dry_run:
         print("[DRY] Would import via harness")
         sys.exit(0)
 
-    # --- Quality downgrade check ---
-    # If this MBID is already in beets, check that new files are better
+    # --- Quality comparison ---
+    # If this MBID is already in beets, check that new files are better.
+    # For transcodes: still import if it's an upgrade, but exit 6 so
+    # soularr denylists the user and keeps searching for real lossless.
+    new_min_br = _get_folder_min_bitrate(args.path)
     existing_min_br = _get_beets_min_bitrate(mbid)
-    if existing_min_br is not None:
-        new_min_br = _get_folder_min_bitrate(args.path)
-        if new_min_br is not None and new_min_br <= existing_min_br:
+    if existing_min_br is not None and new_min_br is not None:
+        if new_min_br <= existing_min_br:
             print(f"[QUALITY DOWNGRADE] new {new_min_br}kbps <= existing {existing_min_br}kbps — skipping import",
                   file=sys.stderr)
+            if is_transcode:
+                sys.exit(6)  # Transcode + not an upgrade
             sys.exit(5)
-        if new_min_br is not None:
-            print(f"  [QUALITY CHECK] new {new_min_br}kbps > existing {existing_min_br}kbps — OK")
+        print(f"  [QUALITY CHECK] new {new_min_br}kbps > existing {existing_min_br}kbps — upgrading")
+    elif existing_min_br is None and is_transcode:
+        # First import — no existing quality to compare against.
+        # Import the transcode (something is better than nothing).
+        print(f"  [QUALITY CHECK] no existing album in beets — importing transcode")
 
     # --- Import ---
     print(f"[IMPORT] {args.path} → beets (mbid={mbid})")
@@ -428,6 +435,9 @@ def main():
     if request_id:
         update_pipeline_db(request_id, "imported", imported_path=album_path)
 
+    if is_transcode:
+        print("[OK] Transcode imported (upgrade) — denylist user, keep searching")
+        sys.exit(6)
     print("[OK] Import complete")
     sys.exit(0)
 
