@@ -118,9 +118,11 @@ def _get_folder_min_bitrate(folder_path):
             continue
         fpath = os.path.join(folder_path, fname)
         try:
+            # Use format=bit_rate (overall file bitrate) — stream=bit_rate
+            # returns N/A for VBR MP3s since there's no fixed stream bitrate.
             result = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a:0",
-                 "-show_entries", "stream=bit_rate",
+                ["ffprobe", "-v", "error",
+                 "-show_entries", "format=bit_rate",
                  "-of", "csv=p=0", fpath],
                 capture_output=True, text=True, timeout=30,
             )
