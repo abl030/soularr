@@ -727,8 +727,23 @@ async function toggleDetail(id) {
       html += `<div class="p-detail-row"><span class="p-detail-label">Scenario</span><span class="p-detail-value">${esc(req.beets_scenario)}</span></div>`;
     }
 
-    // Tracks
-    if (tracks.length > 0) {
+    // Tracks — prefer beets (has bitrate) over pipeline tracks
+    const beetsTracks = data.beets_tracks || [];
+    if (beetsTracks.length > 0) {
+      html += '<div class="p-tracks"><div class="p-detail-label" style="margin-bottom:4px;">Tracks (' + beetsTracks.length + ')</div>';
+      html += beetsTracks.map(t => {
+        const dur = t.length ? `${Math.floor(t.length/60)}:${String(Math.round(t.length%60)).padStart(2,'0')}` : '';
+        const br = t.bitrate ? `${Math.round(t.bitrate/1000)}kbps` : '';
+        const depth = t.bitdepth && t.bitdepth > 16 ? `${t.bitdepth}bit` : '';
+        const sr = t.samplerate && t.samplerate > 44100 ? `${(t.samplerate/1000).toFixed(1)}kHz` : '';
+        const meta = [t.format, br, depth, sr].filter(Boolean).join(' ');
+        return `<div class="lib-track">
+          <span>${t.disc > 1 ? t.disc + '.' : ''}${t.track}. ${esc(t.title)} ${dur ? '<span style="color:#555;">' + dur + '</span>' : ''}</span>
+          <span class="lib-track-meta">${meta}</span>
+        </div>`;
+      }).join('');
+      html += '</div>';
+    } else if (tracks.length > 0) {
       html += '<div class="p-tracks"><div class="p-detail-label" style="margin-bottom:4px;">Tracks (' + tracks.length + ')</div>';
       html += tracks.map(t => {
         const dur = t.length_seconds ? `${Math.floor(t.length_seconds/60)}:${String(Math.round(t.length_seconds%60)).padStart(2,'0')}` : '';

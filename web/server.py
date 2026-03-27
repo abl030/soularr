@@ -319,11 +319,32 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 tracks = db.get_tracks(req_id)
                 history = db.get_download_history(req_id)
-                self._json({
+                result = {
                     "request": {k: str(v) if hasattr(v, 'isoformat') else v for k, v in req.items()},
                     "tracks": tracks,
                     "history": [{k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()} for h in history],
-                })
+                }
+                # Include beets tracks (with bitrate) if imported
+                mbid = req.get("mb_release_id")
+                if mbid and beets_db_path and os.path.exists(beets_db_path):
+                    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                    album = conn.execute(
+                        "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
+                    ).fetchone()
+                    if album:
+                        items = conn.execute(
+                            "SELECT title, track, disc, length, format, "
+                            "       bitrate, samplerate, bitdepth "
+                            "FROM items WHERE album_id = ? ORDER BY disc, track",
+                            (album[0],),
+                        ).fetchall()
+                        result["beets_tracks"] = [{
+                            "title": i[0], "track": i[1], "disc": i[2],
+                            "length": i[3], "format": i[4], "bitrate": i[5],
+                            "samplerate": i[6], "bitdepth": i[7],
+                        } for i in items]
+                    conn.close()
+                self._json(result)
 
             elif path == "/api/beets/search":
                 q = params.get("q", [""])[0].strip()
