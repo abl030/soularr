@@ -127,15 +127,38 @@ class PipelineDB:
 
     def __init__(self, dsn=None, run_migrations=False):
         self.dsn = dsn or DEFAULT_DSN
-        self.conn = psycopg2.connect(self.dsn)
-        self.conn.autocommit = False
+        self.conn = self._connect()
         if run_migrations:
             self.init_schema()
 
+    def _connect(self):
+        conn = psycopg2.connect(
+            self.dsn,
+            connect_timeout=10,
+            options="-c statement_timeout=30000",
+            tcp_keepalives_idle=60,
+            tcp_keepalives_interval=10,
+            tcp_keepalives_count=5,
+        )
+        conn.autocommit = True
+        return conn
+
+    def _ensure_conn(self):
+        """Reconnect if the connection is dead."""
+        if self.conn.closed:
+            self.conn = self._connect()
+
     def init_schema(self):
-        with self.conn.cursor() as cur:
+        """Run DDL on a separate short-lived connection to avoid blocking."""
+        mig_conn = psycopg2.connect(self.dsn, connect_timeout=10)
+        mig_conn.autocommit = True
+        with mig_conn.cursor() as cur:
+            cur.execute("SET lock_timeout TO '5s'")
+            # Safety net: kill any future idle-in-transaction after 60s
+            cur.execute(
+                "ALTER ROLE soularr SET idle_in_transaction_session_timeout = '60s'"
+            )
             cur.execute(SCHEMA_SQL)
-            # Migrations: add columns that may not exist on older schemas
             for col, coltype in [
                 ("bitrate", "INTEGER"),
                 ("sample_rate", "INTEGER"),
@@ -150,7 +173,6 @@ class PipelineDB:
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
-            # album_requests migrations
             for col, coltype in [
                 ("quality_override", "TEXT"),
                 ("min_bitrate", "INTEGER"),
@@ -161,12 +183,13 @@ class PipelineDB:
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
-        self.conn.commit()
+        mig_conn.close()
 
     def close(self):
         self.conn.close()
 
     def _execute(self, sql, params=()):
+        self._ensure_conn()
         cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(sql, params)
         return cur

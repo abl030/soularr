@@ -46,7 +46,6 @@ def _try_reconnect_db():
         pass
     try:
         db = PipelineDB(_db_dsn, run_migrations=False)
-        db.conn.autocommit = True
         log.info("Reconnected to pipeline DB")
     except Exception:
         log.exception("Failed to reconnect to pipeline DB")
@@ -746,7 +745,6 @@ def main():
     global _db_dsn
     _db_dsn = args.dsn
     db = PipelineDB(args.dsn, run_migrations=False)
-    db.conn.autocommit = True  # Web server is read-heavy; avoid idle-in-transaction locks
     beets_db_path = args.beets_db
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
