@@ -167,6 +167,16 @@
 const API = '';
 let searchTimer = null;
 
+// Convert UTC ISO string to AWST (UTC+8)
+function toAWST(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr.endsWith('Z') ? isoStr : isoStr + 'Z');
+  return new Date(d.getTime() + 8 * 3600000).toISOString();
+}
+function awstDate(isoStr) { return toAWST(isoStr).slice(0, 10); }
+function awstTime(isoStr) { return toAWST(isoStr).slice(11, 16); }
+function awstDateTime(isoStr) { return toAWST(isoStr).slice(0, 16).replace('T', ' '); }
+
 const tabOrder = ['search', 'recents', 'pipeline', 'library'];
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -491,10 +501,10 @@ async function loadRecents() {
       return;
     }
 
-    // Group by date
+    // Group by date (AWST)
     const byDate = {};
     for (const item of items) {
-      const date = (item.updated_at || item.created_at || '').slice(0, 10);
+      const date = awstDate(item.updated_at || item.created_at || '');
       if (!byDate[date]) byDate[date] = [];
       byDate[date].push(item);
     }
@@ -506,7 +516,7 @@ async function loadRecents() {
         const dist = item.beets_distance != null ? `dist ${item.beets_distance.toFixed(3)}` : '';
         const fmt = item.format || '?';
         const year = item.year || '?';
-        const time = (item.updated_at || '').slice(11, 16);
+        const time = awstTime(item.updated_at || '');
         let beetsClass = '';
         let beetsLabel = '';
         if (!item.in_beets) {
@@ -518,6 +528,14 @@ async function loadRecents() {
         } else {
           beetsLabel = `<span class="beets-status beets-ok">${item.beets_tracks}t in beets</span>`;
         }
+        // Audio quality from download log
+        const br = item.dl_bitrate ? `${Math.round(item.dl_bitrate)}kbps` : '';
+        const sr = item.dl_sample_rate && item.dl_sample_rate > 44100 ? `${(item.dl_sample_rate/1000).toFixed(1)}kHz` : '';
+        const bd = item.dl_bit_depth && item.dl_bit_depth > 16 ? `${item.dl_bit_depth}bit` : '';
+        const dlFmt = item.dl_filetype || '';
+        const qualityParts = [dlFmt, br, bd, sr].filter(Boolean);
+        const quality = qualityParts.length ? qualityParts.join(' ') : '';
+        const user = item.dl_soulseek_username || '';
         return `
           <div class="r-item ${beetsClass}" onclick="toggleDetail(${item.id})">
             <div class="p-top">
@@ -529,9 +547,10 @@ async function loadRecents() {
             </div>
             <div class="p-meta">
               <span>${year}</span>
-              <span>${fmt}</span>
+              ${quality ? `<span>${quality}</span>` : `<span>${fmt}</span>`}
               ${item.country ? `<span>${item.country}</span>` : ''}
               <span>${item.source}</span>
+              ${user ? `<span>from ${esc(user)}</span>` : ''}
               ${dist ? `<span>${dist}</span>` : ''}
             </div>
           </div>
@@ -625,7 +644,7 @@ function renderPipelineItem(item) {
   const year = item.year || '?';
   const fmt = item.format || '?';
   const country = item.country || '';
-  const date = (item.created_at || '').slice(0, 10);
+  const date = awstDate(item.created_at || '');
   const attempts = [];
   if (item.search_attempts) attempts.push(`${item.search_attempts} search`);
   if (item.download_attempts) attempts.push(`${item.download_attempts} dl`);
@@ -704,10 +723,16 @@ async function toggleDetail(id) {
         const outcome = h.outcome || '?';
         const color = outcome === 'success' ? '#6d6' : outcome === 'rejected' ? '#d88' : '#aa8';
         const user = h.soulseek_username || '?';
-        const date = (h.created_at || '').slice(0, 16).replace('T', ' ');
+        const date = awstDateTime(h.created_at || '');
         const dist = h.beets_distance != null ? ` dist=${h.beets_distance.toFixed(3)}` : '';
         const err = h.error_message ? ` - ${h.error_message}` : '';
-        return `<div class="p-hist-item"><span style="color:${color};">${outcome}</span> ${user} ${h.filetype || ''} ${date}${dist}${err}</div>`;
+        // Audio quality info
+        const br = h.bitrate ? ` ${Math.round(h.bitrate)}kbps` : '';
+        const bd = h.bit_depth && h.bit_depth > 16 ? ` ${h.bit_depth}bit` : '';
+        const sr = h.sample_rate && h.sample_rate > 44100 ? ` ${(h.sample_rate/1000).toFixed(1)}kHz` : '';
+        const vbr = h.is_vbr ? ' VBR' : '';
+        const conv = h.was_converted ? ` (converted from ${h.original_filetype || '?'})` : '';
+        return `<div class="p-hist-item"><span style="color:${color};">${outcome}</span> ${user} ${h.filetype || ''}${br}${bd}${sr}${vbr}${conv} ${date}${dist}${err}</div>`;
       }).join('');
       html += '</div>';
     }
@@ -831,7 +856,7 @@ function renderLibraryResults(albums) {
     const rgCount = rgOrder.length;
 
     function renderAlbum(a) {
-      const added = a.added ? new Date(a.added * 1000).toISOString().slice(0, 10) : '?';
+      const added = a.added ? new Date(a.added * 1000 + 8 * 3600000).toISOString().slice(0, 10) : '?';
       return `
         <div class="lib-item" onclick="toggleLibDetail(${a.id})">
           <div class="p-top">

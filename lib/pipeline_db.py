@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS download_log (
     outcome TEXT CHECK(outcome IN ('success', 'rejected', 'failed', 'timeout')),
     staged_path TEXT,
     error_message TEXT,
+    bitrate INTEGER,
+    sample_rate INTEGER,
+    bit_depth INTEGER,
+    is_vbr BOOLEAN,
+    was_converted BOOLEAN DEFAULT FALSE,
+    original_filetype TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -124,6 +130,21 @@ class PipelineDB:
     def init_schema(self):
         with self.conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            # Migrations: add columns that may not exist on older schemas
+            for col, coltype in [
+                ("bitrate", "INTEGER"),
+                ("sample_rate", "INTEGER"),
+                ("bit_depth", "INTEGER"),
+                ("is_vbr", "BOOLEAN"),
+                ("was_converted", "BOOLEAN DEFAULT FALSE"),
+                ("original_filetype", "TEXT"),
+            ]:
+                cur.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE download_log ADD COLUMN {col} {coltype};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
+                """)
         self.conn.commit()
 
     def close(self):
@@ -277,17 +298,23 @@ class PipelineDB:
     def log_download(self, request_id, soulseek_username=None, filetype=None,
                      download_path=None, beets_distance=None, beets_scenario=None,
                      beets_detail=None, valid=None, outcome=None,
-                     staged_path=None, error_message=None):
+                     staged_path=None, error_message=None,
+                     bitrate=None, sample_rate=None, bit_depth=None,
+                     is_vbr=None, was_converted=None, original_filetype=None):
         self._execute("""
             INSERT INTO download_log (
                 request_id, soulseek_username, filetype, download_path,
                 beets_distance, beets_scenario, beets_detail, valid,
-                outcome, staged_path, error_message
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                outcome, staged_path, error_message,
+                bitrate, sample_rate, bit_depth, is_vbr,
+                was_converted, original_filetype
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             request_id, soulseek_username, filetype, download_path,
             beets_distance, beets_scenario, beets_detail, valid,
             outcome, staged_path, error_message,
+            bitrate, sample_rate, bit_depth, is_vbr,
+            was_converted, original_filetype,
         ))
         self.conn.commit()
 

@@ -149,7 +149,8 @@ class DatabaseSource:
         db = self._get_db()
         db.update_status(request_id, status, **extra)
 
-    def mark_done(self, album_record, bv_result, dest_path=None):
+    def mark_done(self, album_record, bv_result, dest_path=None,
+                  download_info=None):
         """Mark album as imported."""
         request_id = album_record.get("_db_request_id")
         if not request_id:
@@ -157,6 +158,7 @@ class DatabaseSource:
 
         db = self._get_db()
         distance = bv_result.get("distance")
+        dl = download_info or {}
 
         db.update_status(request_id, "imported",
                          beets_distance=distance,
@@ -166,20 +168,30 @@ class DatabaseSource:
         # Log the download
         db.log_download(
             request_id=request_id,
+            soulseek_username=dl.get("username"),
+            filetype=dl.get("filetype"),
             beets_distance=distance,
             beets_scenario=bv_result.get("scenario"),
             beets_detail=bv_result.get("detail"),
             outcome="success",
             staged_path=dest_path,
+            bitrate=dl.get("bitrate"),
+            sample_rate=dl.get("sample_rate"),
+            bit_depth=dl.get("bit_depth"),
+            is_vbr=dl.get("is_vbr"),
+            was_converted=dl.get("was_converted"),
+            original_filetype=dl.get("original_filetype"),
         )
 
-    def mark_failed(self, album_record, bv_result, usernames=None):
+    def mark_failed(self, album_record, bv_result, usernames=None,
+                    download_info=None):
         """Log the failure and denylist users, but keep album wanted for retry."""
         request_id = album_record.get("_db_request_id")
         if not request_id:
             return
 
         db = self._get_db()
+        dl = download_info or {}
         db.update_status(request_id, "wanted",
                          beets_distance=bv_result.get("distance"),
                          beets_scenario=bv_result.get("scenario"))
@@ -188,11 +200,19 @@ class DatabaseSource:
         # Log the download attempt
         db.log_download(
             request_id=request_id,
+            soulseek_username=dl.get("username"),
+            filetype=dl.get("filetype"),
             beets_distance=bv_result.get("distance"),
             beets_scenario=bv_result.get("scenario"),
             beets_detail=bv_result.get("detail"),
             outcome="rejected",
             error_message=bv_result.get("error"),
+            bitrate=dl.get("bitrate"),
+            sample_rate=dl.get("sample_rate"),
+            bit_depth=dl.get("bit_depth"),
+            is_vbr=dl.get("is_vbr"),
+            was_converted=dl.get("was_converted"),
+            original_filetype=dl.get("original_filetype"),
         )
 
         # Denylist source users

@@ -274,6 +274,16 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             item["in_beets"] = False
                             item["beets_tracks"] = 0
+                    # Include latest download info (bitrate, user, etc.)
+                    history = db.get_download_history(r["id"])
+                    success = next((h for h in history if h.get("outcome") == "success"), None)
+                    if success:
+                        for k in ("soulseek_username", "filetype", "bitrate",
+                                  "sample_rate", "bit_depth", "is_vbr",
+                                  "was_converted", "original_filetype"):
+                            val = success.get(k)
+                            if val is not None:
+                                item["dl_" + k] = val
                     serialized.append(item)
                 self._json({"recent": serialized})
 

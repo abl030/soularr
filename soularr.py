@@ -1130,6 +1130,34 @@ def search_and_queue(albums):
     return grab_list, failed_search, failed_grab
 
 
+def _build_download_info(album_data):
+    """Extract audio quality metadata from album files for download logging."""
+    files = album_data.get("files", [])
+    if not files:
+        return {}
+    usernames = set(f.get("username") for f in files if f.get("username"))
+    filetypes = set(f["filename"].split(".")[-1].lower() for f in files if "." in f["filename"])
+    bitrates = [f["bitRate"] for f in files if "bitRate" in f]
+    sample_rates = [f["sampleRate"] for f in files if "sampleRate" in f]
+    bit_depths = [f["bitDepth"] for f in files if "bitDepth" in f]
+    vbr_flags = [f["isVariableBitRate"] for f in files if "isVariableBitRate" in f]
+
+    info = {}
+    if usernames:
+        info["username"] = ", ".join(sorted(usernames))
+    if filetypes:
+        info["filetype"] = ", ".join(sorted(filetypes))
+    if bitrates:
+        info["bitrate"] = max(bitrates)  # representative max
+    if sample_rates:
+        info["sample_rate"] = max(sample_rates)
+    if bit_depths:
+        info["bit_depth"] = max(bit_depths)
+    if vbr_flags:
+        info["is_vbr"] = any(vbr_flags)
+    return info
+
+
 def process_completed_album(album_data, failed_grab):
     os.chdir(slskd_download_dir)
     import_folder_name = sanitize_folder_name(album_data["artist"] + " - " + album_data["title"] + " (" + album_data["year"] + ")")
@@ -1222,6 +1250,7 @@ def process_completed_album(album_data, failed_grab):
 
                 # Pipeline DB: two-track post-download pipeline
                 if is_db_mode:
+                    dl_info = _build_download_info(album_data)
                     source_type = album_data.get("_db_source", "redownload")
                     request_id = album_data.get("_db_request_id")
                     if source_type == "request" and bv_result.get("distance", 1.0) <= beets_distance_threshold:
@@ -1243,7 +1272,7 @@ def process_completed_album(album_data, failed_grab):
                                 for line in result.stdout.strip().split("\n"):
                                     logger.info(f"  {line}")
                                 # Ensure DB status is set even if import_one's DB update failed
-                                pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest)
+                                pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest, download_info=dl_info)
                                 trigger_meelo_scan()
                                 # Clean up staged directory — beets already moved files
                                 # to /Beets, or pre-flight found a dupe (files unneeded)
@@ -1268,14 +1297,15 @@ def process_completed_album(album_data, failed_grab):
                             logger.exception(f"AUTO-IMPORT ERROR: {album_data['artist']} - {album_data['title']}")
                     else:
                         # Redownload or high distance: stage only, user reviews manually
-                        pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest)
+                        pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest, download_info=dl_info)
             else:
                 move_failed_import(import_folder_fullpath)
                 log_validation_result(album_data, bv_result)
                 usernames = set(f["username"] for f in album_data.get("files", []))
                 # Pipeline DB: mark failed + denylist users
                 if is_db_mode:
-                    pipeline_db_source.mark_failed(album_data, bv_result, usernames=usernames)
+                    dl_info = _build_download_info(album_data)
+                    pipeline_db_source.mark_failed(album_data, bv_result, usernames=usernames, download_info=dl_info)
                 else:
                     failed_grab.append(lidarr.get_album(album_data["album_id"]))
                 # Denylist the source user(s) so we try a different source next run
