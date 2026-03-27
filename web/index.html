@@ -578,13 +578,13 @@ async function loadRecents() {
           const cur = item.min_bitrate;
           const prevLabel = qualityLabel('MP3', prev * 1000);
           const curLabel = qualityLabel('MP3', cur * 1000);
-          // Only show delta if the tier actually changed
-          if (prevLabel !== curLabel) {
-            if (cur > prev) {
-              quality += ` <span style="color:#6d6;">↑${prevLabel}→${curLabel}</span>`;
-            } else {
-              quality += ` <span style="color:#d66;">↓${prevLabel}→${curLabel}</span>`;
-            }
+          // Use tier labels if different, raw kbps if same tier
+          const prevStr = prevLabel !== curLabel ? prevLabel : `${prev}k`;
+          const curStr = prevLabel !== curLabel ? curLabel : `${cur}k`;
+          if (cur > prev) {
+            quality += ` <span style="color:#6d6;">↑${prevStr}→${curStr}</span>`;
+          } else {
+            quality += ` <span style="color:#d66;">↓${prevStr}→${curStr}</span>`;
           }
         }
         const user = item.dl_soulseek_username || '';
