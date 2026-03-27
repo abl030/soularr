@@ -296,7 +296,9 @@ class PipelineDB:
 
     def get_recent(self, limit=20):
         cur = self._execute(
-            "SELECT * FROM album_requests WHERE status = 'imported' "
+            "SELECT * FROM album_requests "
+            "WHERE status = 'imported' "
+            "   OR (status = 'wanted' AND quality_override IS NOT NULL AND min_bitrate IS NOT NULL) "
             "ORDER BY updated_at DESC LIMIT %s",
             (limit,),
         )

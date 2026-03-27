@@ -1174,10 +1174,17 @@ def _check_quality_gate(album_data, request_id):
             db.reset_to_wanted(request_id,
                                quality_override=QUALITY_UPGRADE_TIERS,
                                min_bitrate=min_br_kbps)
+            # Denylist the source user(s) so we don't re-download same quality
+            usernames = set(f.get("username") for f in album_data.get("files", [])
+                           if f.get("username"))
+            for username in usernames:
+                db.add_denylist(request_id, username,
+                                f"quality gate: {min_br_kbps}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps")
             logger.info(
                 f"QUALITY GATE: {album_data['artist']} - {album_data['title']} "
                 f"min_bitrate={min_br_kbps}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps, "
-                f"queued for upgrade (searching {QUALITY_UPGRADE_TIERS})")
+                f"queued for upgrade, denylisted {usernames} "
+                f"(searching {QUALITY_UPGRADE_TIERS})")
         else:
             logger.info(
                 f"QUALITY GATE: {album_data['artist']} - {album_data['title']} "
