@@ -902,7 +902,10 @@ function renderLibraryResults(albums) {
               <div class="p-title">${esc(a.album)}</div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;">
-              ${mbid ? `<button class="p-btn upgrade-btn" style="padding:2px 8px;font-size:0.7em;" onclick="event.stopPropagation(); upgradeAlbum('${mbid}', this)">Upgrade</button>` : ''}
+              ${mbid ? (a.upgrade_queued
+                ? `<button class="p-btn upgrade-btn" style="padding:2px 8px;font-size:0.7em;border-color:#6a9;color:#6a9;" disabled>Queued</button>`
+                : `<button class="p-btn upgrade-btn" style="padding:2px 8px;font-size:0.7em;" onclick="event.stopPropagation(); upgradeAlbum('${mbid}', this)">Upgrade</button>`
+              ) : ''}
               <span style="font-size:0.75em;color:#666;">${a.track_count}t</span>
             </div>
           </div>

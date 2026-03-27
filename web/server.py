@@ -124,12 +124,15 @@ def get_library_artist(artist_name, mb_artist_id=None):
 
 
 def check_pipeline(mbids):
-    """Check which MBIDs are already in the pipeline DB. Returns dict of mbid → status."""
+    """Check which MBIDs are already in the pipeline DB. Returns dict of mbid → info."""
     result = {}
     for mbid in mbids:
         req = db.get_request_by_mb_release_id(mbid)
         if req:
-            result[mbid] = req["status"]
+            result[mbid] = {
+                "status": req["status"],
+                "quality_override": req.get("quality_override"),
+            }
     return result
 
 
@@ -203,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                 in_pipeline = check_pipeline(mbids)
                 for r in data["releases"]:
                     r["in_library"] = r["id"] in in_library
-                    r["pipeline_status"] = in_pipeline.get(r["id"])
+                    pi = in_pipeline.get(r["id"])
+                    r["pipeline_status"] = pi["status"] if pi else None
                 self._json(data)
 
             elif re.match(r"^/api/release/[a-f0-9-]+$", path):
@@ -376,6 +380,14 @@ class Handler(BaseHTTPRequestHandler):
                     "mb_releasegroupid": r[11], "release_group_title": r[12],
                     "min_bitrate": r[13],
                 } for r in rows]
+                # Add pipeline status for upgrade queue awareness
+                if db:
+                    mbids = [a["mb_albumid"] for a in albums if a.get("mb_albumid")]
+                    pipeline_info = check_pipeline(mbids) if mbids else {}
+                    for a in albums:
+                        pi = pipeline_info.get(a.get("mb_albumid"))
+                        if pi and pi["status"] == "wanted" and pi.get("quality_override"):
+                            a["upgrade_queued"] = True
                 self._json({"albums": albums})
 
             elif re.match(r"^/api/beets/album/\d+$", path):
@@ -451,6 +463,13 @@ class Handler(BaseHTTPRequestHandler):
                     "mb_releasegroupid": r[10], "release_group_title": r[11],
                     "min_bitrate": r[12],
                 } for r in rows]
+                if db:
+                    mbids = [a["mb_albumid"] for a in albums if a.get("mb_albumid")]
+                    pipeline_info = check_pipeline(mbids) if mbids else {}
+                    for a in albums:
+                        pi = pipeline_info.get(a.get("mb_albumid"))
+                        if pi and pi["status"] == "wanted" and pi.get("quality_override"):
+                            a["upgrade_queued"] = True
                 self._json({"albums": albums})
 
             else:
