@@ -467,6 +467,10 @@ class Handler(BaseHTTPRequestHandler):
                         result["pipeline_id"] = req["id"]
                         result["pipeline_status"] = req["status"]
                         result["pipeline_source"] = req["source"]
+                        result["pipeline_min_bitrate"] = req.get("min_bitrate")
+                        result["upgrade_queued"] = (
+                            req["status"] == "wanted" and bool(req.get("quality_override"))
+                        )
                         result["download_history"] = [
                             {k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()}
                             for h in history
@@ -651,6 +655,57 @@ class Handler(BaseHTTPRequestHandler):
                         "quality_override": quality,
                         "created": True,
                     })
+
+            elif path == "/api/pipeline/set-quality":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                mbid = body.get("mb_release_id", "").strip()
+                new_status = body.get("status", "").strip()
+                min_bitrate = body.get("min_bitrate")
+
+                if not mbid:
+                    self._error("Missing mb_release_id")
+                    return
+
+                existing = db.get_request_by_mb_release_id(mbid)
+                if not existing:
+                    self._error("Not found in pipeline", 404)
+                    return
+
+                req_id = existing["id"]
+                updates = {}
+
+                # Set min_bitrate override
+                if min_bitrate is not None:
+                    min_bitrate = int(min_bitrate)
+                    db._execute(
+                        "UPDATE album_requests SET min_bitrate = %s WHERE id = %s",
+                        (min_bitrate, req_id),
+                    )
+
+                # Set status
+                if new_status:
+                    if new_status not in ("wanted", "imported", "manual"):
+                        self._error(f"Invalid status: {new_status}")
+                        return
+                    if new_status == "imported":
+                        # Clear quality_override so it stops looping
+                        db._execute(
+                            "UPDATE album_requests SET status = 'imported', "
+                            "quality_override = NULL, updated_at = NOW() WHERE id = %s",
+                            (req_id,),
+                        )
+                    elif new_status == "wanted" and existing["status"] != "wanted":
+                        db.reset_to_wanted(req_id)
+                    else:
+                        db.update_status(req_id, new_status)
+
+                self._json({
+                    "status": "ok",
+                    "id": req_id,
+                    "new_status": new_status or existing["status"],
+                    "min_bitrate": min_bitrate,
+                })
 
             elif path == "/api/pipeline/delete":
                 length = int(self.headers.get("Content-Length", 0))

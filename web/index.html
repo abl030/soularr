@@ -1015,18 +1015,58 @@ async function toggleLibDetail(id) {
     } else if (data.pipeline_status) {
       html += `<div class="p-detail-row"><span class="p-detail-label">Pipeline</span><span class="p-detail-value">${data.pipeline_status} (${data.pipeline_source || '?'})</span></div>`;
     }
+    // Pipeline controls (status + quality override)
+    if (data.mb_albumid && data.pipeline_id) {
+      const pStatus = data.pipeline_status || '';
+      html += `<div class="p-actions" style="margin-top:10px;">
+        <span class="p-detail-label" style="line-height:28px;">Status:</span>
+        <button class="p-btn ${pStatus === 'wanted' ? 'active-status' : ''}" onclick="event.stopPropagation(); setLibQuality('${data.mb_albumid}', 'wanted', null)">wanted</button>
+        <button class="p-btn ${pStatus === 'imported' ? 'active-status' : ''}" onclick="event.stopPropagation(); setLibQuality('${data.mb_albumid}', 'imported', null)">imported</button>
+        <button class="p-btn ${pStatus === 'manual' ? 'active-status' : ''}" onclick="event.stopPropagation(); setLibQuality('${data.mb_albumid}', 'manual', null)">manual</button>
+      </div>`;
+      html += `<div class="p-actions" style="margin-top:6px;">
+        <span class="p-detail-label" style="line-height:28px;">Min bitrate:</span>
+        <input type="number" id="lib-minbr-${id}" value="" placeholder="${data.pipeline_min_bitrate || ''}" style="width:60px;padding:2px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font-size:0.8em;" onclick="event.stopPropagation()">
+        <button class="p-btn" onclick="event.stopPropagation(); var v=document.getElementById('lib-minbr-${id}').value; if(v) setLibQuality('${data.mb_albumid}', null, parseInt(v))">Set</button>
+        <button class="p-btn" onclick="event.stopPropagation(); setLibQuality('${data.mb_albumid}', 'imported', 210)">Accept as V0</button>
+      </div>`;
+    }
     // Upgrade + Delete buttons
-    html += '<div class="p-actions" style="margin-top:10px;">';
+    html += '<div class="p-actions" style="margin-top:6px;">';
     if (data.mb_albumid) {
       const bitrates = (data.tracks || []).map(t => t.bitrate).filter(b => b && b > 0);
       const minBr = bitrates.length > 0 ? Math.round(Math.min(...bitrates) / 1000) : null;
       const brLabel = minBr ? ` (lowest: ${minBr}kbps)` : '';
-      html += `<button class="p-btn upgrade-btn" onclick="event.stopPropagation(); upgradeAlbum('${data.mb_albumid}', this)">Upgrade${brLabel}</button>`;
+      if (!data.upgrade_queued) {
+        html += `<button class="p-btn upgrade-btn" onclick="event.stopPropagation(); upgradeAlbum('${data.mb_albumid}', this)">Upgrade${brLabel}</button>`;
+      }
     }
     html += `<button class="p-btn delete-beets" onclick="event.stopPropagation(); confirmDeleteBeets(${id}, '${esc(data.artist).replace(/'/g, "\\'")}', '${esc(data.album).replace(/'/g, "\\'")}', ${data.tracks ? data.tracks.length : 0})">Delete from beets</button>`;
     html += '</div>';
     el.innerHTML = html;
   } catch (e) { el.innerHTML = '<div class="loading" style="padding:8px;">Failed to load</div>'; }
+}
+
+async function setLibQuality(mbid, status, minBitrate) {
+  try {
+    const body = {mb_release_id: mbid};
+    if (status) body.status = status;
+    if (minBitrate != null) body.min_bitrate = minBitrate;
+    const r = await fetch(`${API}/api/pipeline/set-quality`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.status === 'ok') {
+      const parts = [];
+      if (status) parts.push(status);
+      if (minBitrate != null) parts.push(`min_bitrate=${minBitrate}`);
+      toast(`Set ${parts.join(', ')}`);
+    } else {
+      toast(data.error || 'Failed', true);
+    }
+  } catch (e) { toast('Failed', true); }
 }
 
 async function upgradeAlbum(mbid, btn) {
