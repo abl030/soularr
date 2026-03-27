@@ -9,19 +9,47 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
 import sqlite3
 import sys
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
+log = logging.getLogger("soularr-web")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import mb as mb_api
 from pipeline_db import PipelineDB
+
+_db_dsn = None
+
+
+def _try_reconnect_db():
+    """Reconnect the pipeline DB if the connection is dead."""
+    global db
+    if not _db_dsn:
+        return
+    try:
+        db.conn.close()
+    except Exception:
+        pass
+    try:
+        db = PipelineDB(_db_dsn, run_migrations=False)
+        db.conn.autocommit = True
+        log.info("Reconnected to pipeline DB")
+    except Exception:
+        log.exception("Failed to reconnect to pipeline DB")
 
 # Globals set in main()
 db = None
@@ -125,21 +153,26 @@ def get_library_artist(artist_name, mb_artist_id=None):
 
 def check_pipeline(mbids):
     """Check which MBIDs are already in the pipeline DB. Returns dict of mbid → info."""
-    result = {}
-    for mbid in mbids:
-        req = db.get_request_by_mb_release_id(mbid)
-        if req:
-            result[mbid] = {
-                "status": req["status"],
-                "quality_override": req.get("quality_override"),
-            }
-    return result
+    if not mbids or not db:
+        return {}
+    placeholders = ",".join(["%s"] * len(mbids))
+    cur = db._execute(
+        f"SELECT mb_release_id, status, quality_override "
+        f"FROM album_requests WHERE mb_release_id IN ({placeholders})",
+        tuple(mbids),
+    )
+    return {
+        r["mb_release_id"]: {
+            "status": r["status"],
+            "quality_override": r["quality_override"],
+        }
+        for r in cur.fetchall()
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        # Quieter logging
-        pass
+        log.info(fmt % args)
 
     def _json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -476,6 +509,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._error("Not found", 404)
 
         except Exception as e:
+            log.exception("GET %s failed", path)
+            _try_reconnect_db()
             self._error(str(e), 500)
 
     def do_POST(self):
@@ -683,6 +718,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._error("Not found", 404)
 
         except Exception as e:
+            log.exception("POST %s failed", path)
+            _try_reconnect_db()
             self._error(str(e), 500)
 
     def do_OPTIONS(self):
@@ -706,6 +743,8 @@ def main():
     if args.mb_api:
         mb_api.MB_API_BASE = args.mb_api
 
+    global _db_dsn
+    _db_dsn = args.dsn
     db = PipelineDB(args.dsn, run_migrations=False)
     db.conn.autocommit = True  # Web server is read-heavy; avoid idle-in-transaction locks
     beets_db_path = args.beets_db
