@@ -205,6 +205,25 @@ class Handler(BaseHTTPRequestHandler):
                 req = db.get_request_by_mb_release_id(release_id)
                 data["pipeline_status"] = req["status"] if req else None
                 data["pipeline_id"] = req["id"] if req else None
+                # Include beets track info if in library
+                if data["in_library"] and beets_db_path and os.path.exists(beets_db_path):
+                    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                    album = conn.execute(
+                        "SELECT id FROM albums WHERE mb_albumid = ?", (release_id,)
+                    ).fetchone()
+                    if album:
+                        items = conn.execute(
+                            "SELECT title, track, disc, length, format, bitrate, "
+                            "       samplerate, bitdepth "
+                            "FROM items WHERE album_id = ? ORDER BY disc, track",
+                            (album[0],),
+                        ).fetchall()
+                        data["beets_tracks"] = [{
+                            "title": i[0], "track": i[1], "disc": i[2],
+                            "length": i[3], "format": i[4], "bitrate": i[5],
+                            "samplerate": i[6], "bitdepth": i[7],
+                        } for i in items]
+                    conn.close()
                 self._json(data)
 
             elif path == "/api/pipeline/status":

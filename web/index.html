@@ -41,11 +41,16 @@
   .rg-year { color: #777; font-size: 0.85em; }
   .rg-meta { color: #777; font-size: 0.8em; }
   .releases { margin-top: 6px; padding-left: 12px; }
-  .release { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #222; border-radius: 6px; margin-bottom: 4px; cursor: pointer; }
+  .release { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #222; border-radius: 6px; margin-bottom: 0; cursor: pointer; }
   .release:hover { background: #2a2a2a; }
   .release-info { flex: 1; }
   .release-title { font-size: 0.9em; }
   .release-meta { color: #777; font-size: 0.75em; }
+  .release-detail { background: #1a1a1a; padding: 10px 12px; margin: 0 0 4px 0; border-radius: 0 0 6px 6px; display: none; font-size: 0.85em; }
+  .release-detail.open { display: block; }
+  .release-detail .lib-track { font-size: 0.85em; color: #888; padding: 1px 0; display: flex; justify-content: space-between; }
+  .release-detail .lib-track-meta { color: #555; }
+  .release-detail .release-links { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   .btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
   .btn-add { background: #2a5a2a; color: #8d8; }
   .btn-add:hover { background: #3a6a3a; }
@@ -369,15 +374,16 @@ async function loadReleaseGroup(id, el) {
       if (rel.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
       const canAdd = !rel.in_library && !rel.pipeline_status;
       return `
-        <a class="release" href="https://musicbrainz.org/release/${rel.id}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="text-decoration:none;color:inherit;display:flex;">
+        <div class="release" onclick="event.stopPropagation(); toggleReleaseDetail('${rel.id}')">
           <div class="release-info">
             <div class="release-title">${esc(rel.title)}${badges}</div>
             <div class="release-meta" style="color:#777;">${rel.country || '?'} ${rel.date || '?'} - ${rel.format} - ${rel.track_count}t - ${rel.status || '?'}</div>
           </div>
-          <button class="btn btn-add" ${canAdd ? '' : 'disabled'} onclick="event.stopPropagation(); ${canAdd ? `addRelease('${rel.id}', this)` : ''}; return false;">
+          <button class="btn btn-add" ${canAdd ? '' : 'disabled'} onclick="event.stopPropagation(); ${canAdd ? `addRelease('${rel.id}', this)` : ''}">
             ${canAdd ? 'Add' : (rel.in_library ? 'Owned' : rel.pipeline_status || '?')}
           </button>
-        </a>
+        </div>
+        <div class="release-detail" id="reldet-${rel.id}"></div>
       `;
     }
 
@@ -420,6 +426,56 @@ async function addRelease(mbid, btn) {
     btn.textContent = 'Error';
     toast('Request failed', true);
   }
+}
+
+async function toggleReleaseDetail(mbid) {
+  const el = document.getElementById('reldet-' + mbid);
+  if (el.classList.contains('open')) { el.classList.remove('open'); return; }
+  el.innerHTML = '<div class="loading" style="padding:8px;">Loading...</div>';
+  el.classList.add('open');
+  try {
+    const r = await fetch(`${API}/api/release/${mbid}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    let html = '';
+
+    // Use beets tracks if owned (has bitrate info), otherwise MB tracks
+    const hasBeets = data.beets_tracks && data.beets_tracks.length > 0;
+    const tracks = hasBeets ? data.beets_tracks : (data.tracks || []);
+
+    if (tracks.length > 0) {
+      html += '<div style="margin-bottom:6px;color:#666;font-size:0.8em;">Tracks (' + tracks.length + ')' + (hasBeets ? ' — from library' : '') + '</div>';
+      html += tracks.map(t => {
+        if (hasBeets) {
+          const dur = t.length ? `${Math.floor(t.length/60)}:${String(Math.round(t.length%60)).padStart(2,'0')}` : '';
+          const br = t.bitrate ? `${Math.round(t.bitrate/1000)}kbps` : '';
+          const depth = t.bitdepth && t.bitdepth > 16 ? `${t.bitdepth}bit` : '';
+          const sr = t.samplerate && t.samplerate > 44100 ? `${(t.samplerate/1000).toFixed(1)}kHz` : '';
+          const meta = [t.format, br, depth, sr].filter(Boolean).join(' ');
+          return `<div class="lib-track">
+            <span>${t.disc > 1 ? t.disc + '.' : ''}${t.track}. ${esc(t.title)} ${dur ? '<span style="color:#555;">' + dur + '</span>' : ''}</span>
+            <span class="lib-track-meta">${meta}</span>
+          </div>`;
+        } else {
+          const dur = t.length_seconds ? `${Math.floor(t.length_seconds/60)}:${String(Math.round(t.length_seconds%60)).padStart(2,'0')}` : '';
+          return `<div class="lib-track">
+            <span>${t.disc_number > 1 ? t.disc_number + '.' : ''}${t.track_number}. ${esc(t.title)} ${dur ? '<span style="color:#555;">' + dur + '</span>' : ''}</span>
+          </div>`;
+        }
+      }).join('');
+    }
+
+    // Links and actions
+    html += '<div class="release-links">';
+    html += `<a href="https://musicbrainz.org/release/${mbid}" target="_blank" rel="noopener" style="color:#6af;font-size:0.85em;" onclick="event.stopPropagation()">MusicBrainz</a>`;
+    const canAdd = !data.in_library && !data.pipeline_status;
+    if (canAdd) {
+      html += `<button class="btn btn-add" onclick="event.stopPropagation(); addRelease('${mbid}', this)">Add to pipeline</button>`;
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = '<div class="loading" style="padding:8px;">Failed to load</div>'; }
 }
 
 async function loadRecents() {
