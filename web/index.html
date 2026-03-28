@@ -578,14 +578,16 @@ async function loadRecents() {
           badgeClass = 'badge-upgraded';
           borderColor = '#3a6';
         } else if (isSuccess && wasConverted && item.bitrate && item.bitrate < 210000) {
-          badge = 'Transcode';
-          badgeClass = 'badge-transcode';
-          borderColor = '#a93';
+          const accepted = item.request_status === 'imported';
+          badge = accepted ? 'Transcode - accepted' : 'Transcode';
+          badgeClass = accepted ? 'badge-new' : 'badge-transcode';
+          borderColor = accepted ? '#1a4a2a' : '#a93';
         } else if (isSuccess) {
           if (prevBr && curBr && curBr <= prevBr) {
-            badge = 'Beets quality mismatch';
-            badgeClass = 'badge-transcode';
-            borderColor = '#a93';
+            const accepted = item.request_status === 'imported';
+            badge = accepted ? 'Quality mismatch - accepted' : 'Beets quality mismatch';
+            badgeClass = accepted ? 'badge-new' : 'badge-transcode';
+            borderColor = accepted ? '#1a4a2a' : '#a93';
           } else {
             badge = prevBr ? 'Upgraded' : 'New import';
             badgeClass = 'badge-new';
