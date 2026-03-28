@@ -194,36 +194,51 @@ function renderDownloadHistoryItem(h) {
   const dist = h.beets_distance != null ? ` dist=${parseFloat(h.beets_distance).toFixed(3)}` : '';
   const err = h.error_message ? ` - ${h.error_message}` : '';
   const scenario = h.beets_scenario ? ` [${h.beets_scenario}]` : '';
-  // Audio quality — for conversions, don't trust slskd bitrate (it's the FLAC stream rate)
-  const actualFmt = h.filetype || '';
-  let tier;
-  if (h.was_converted) {
-    // Converted from FLAC — slskd bitrate is meaningless, just show format
-    tier = actualFmt ? actualFmt.toUpperCase() : '?';
-  } else {
-    const actualBr = h.bitrate || 0;
-    tier = actualFmt && actualBr ? qualityLabel(actualFmt, actualBr) : (actualFmt || '?');
+
+  // Line 1: outcome, user, date
+  let line1 = `<span style="color:${color};">${outcome}</span> ${user} ${date}${dist}${scenario}${err}`;
+
+  // Line 2: quality flow — slskd reported → actual on disk → spectral analysis → existing
+  let qualityParts = [];
+
+  // What Soulseek said
+  const slskdFmt = h.slskd_filetype || h.original_filetype || h.filetype || '';
+  if (slskdFmt) {
+    const slskdBr = h.slskd_bitrate ? qualityLabel(slskdFmt, h.slskd_bitrate) : slskdFmt;
+    qualityParts.push(`slskd: ${slskdBr}`);
   }
-  const bd = h.bit_depth && h.bit_depth > 16 ? ` ${h.bit_depth}bit` : '';
-  const sr = h.sample_rate && h.sample_rate > 44100 ? ` ${(h.sample_rate/1000).toFixed(1)}kHz` : '';
-  const conv = h.was_converted ? ` (from ${h.original_filetype || '?'})` : '';
-  // Spectral quality badge
-  let spectral = '';
+
+  // What's actually on disk
+  const actualFmt = h.actual_filetype || h.filetype || '';
+  if (actualFmt) {
+    let actualLabel;
+    if (h.was_converted) {
+      const convBr = h.bitrate || h.actual_min_bitrate || 0;
+      actualLabel = convBr ? qualityLabel('mp3', convBr) + ' (from ' + (h.original_filetype || '?') + ')' : 'MP3 (from ' + (h.original_filetype || '?') + ')';
+    } else {
+      const br = h.actual_min_bitrate || h.bitrate || 0;
+      actualLabel = br ? qualityLabel(actualFmt, br) : actualFmt;
+    }
+    qualityParts.push(`actual: ${actualLabel}`);
+  }
+
+  // Spectral analysis verdict
   if (h.spectral_grade) {
     const sgColor = h.spectral_grade === 'genuine' ? '#6d6' : h.spectral_grade === 'suspect' ? '#d66' : '#aa8';
-    const sgLabel = h.spectral_grade === 'suspect' && h.spectral_bitrate
-      ? `spectral: ${h.spectral_bitrate}kbps`
-      : `spectral: ${h.spectral_grade}`;
-    spectral = ` <span style="color:${sgColor};">[${sgLabel}]</span>`;
+    const sgLabel = h.spectral_bitrate ? `${h.spectral_grade} (~${h.spectral_bitrate}kbps)` : h.spectral_grade;
+    qualityParts.push(`<span style="color:${sgColor};">spectral: ${sgLabel}</span>`);
   }
-  // Existing quality snapshot
-  let existing = '';
+
+  // What was on disk before this download
   if (h.existing_min_bitrate || h.existing_spectral_bitrate) {
     const eBr = h.existing_spectral_bitrate || h.existing_min_bitrate;
-    existing = ` <span style="color:#888;">was: ${eBr}kbps</span>`;
+    qualityParts.push(`<span style="color:#888;">was: ${eBr}kbps</span>`);
   }
+
+  let line2 = qualityParts.length ? `<div style="color:#999;font-size:0.85em;padding-left:8px;">${qualityParts.join(' → ')}</div>` : '';
+
   const detail = h.beets_detail && h.beets_detail !== `distance=${h.beets_distance}` ? `<div style="color:#666;font-size:0.9em;padding-left:8px;">${esc(h.beets_detail)}</div>` : '';
-  return `<div class="p-hist-item"><span style="color:${color};">${outcome}</span> ${user} ${tier}${bd}${sr}${conv}${spectral}${existing} ${date}${dist}${scenario}${err}</div>${detail}`;
+  return `<div class="p-hist-item">${line1}${line2}</div>${detail}`;
 }
 
 // Convert UTC ISO string to AWST (UTC+8)

@@ -1336,6 +1336,52 @@ def process_completed_album(album_data, failed_grab):
                         "error": None,
                     }
 
+            # Spectral check for non-VBR MP3 downloads (CBR 320 has no other quality signal)
+            if bv_result["valid"] and is_db_mode:
+                dl_info_pre = _build_download_info(album_data)
+                filetype_str = dl_info_pre.get("filetype", "").lower()
+                is_vbr = dl_info_pre.get("is_vbr", False)
+                is_mp3 = "mp3" in filetype_str and "flac" not in filetype_str
+                if is_mp3 and not is_vbr:
+                    try:
+                        lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+                        if lib_dir not in sys.path:
+                            sys.path.insert(0, lib_dir)
+                        from spectral_check import analyze_album as spectral_analyze
+                        spectral_result = spectral_analyze(import_folder_fullpath, trim_seconds=30)
+                        logger.info(f"SPECTRAL: {album_data['artist']} - {album_data['title']} "
+                                    f"grade={spectral_result.grade}, "
+                                    f"estimated_bitrate={spectral_result.estimated_bitrate_kbps}kbps, "
+                                    f"suspect={spectral_result.suspect_pct:.0f}%")
+                        # Store in album_data for downstream dl_info
+                        album_data["_spectral_grade"] = spectral_result.grade
+                        album_data["_spectral_bitrate"] = spectral_result.estimated_bitrate_kbps
+                        # Also check existing beets files for comparison
+                        mb_id = album_data.get("mb_release_id")
+                        if mb_id:
+                            try:
+                                import sqlite3 as _sqlite3
+                                beets_db = os.environ.get("BEETS_DB", "/mnt/virtio/Music/beets-library.db")
+                                if os.path.exists(beets_db):
+                                    conn = _sqlite3.connect(f"file:{beets_db}?mode=ro", uri=True)
+                                    row = conn.execute(
+                                        "SELECT (SELECT path FROM items WHERE album_id = a.id LIMIT 1) "
+                                        "FROM albums a WHERE a.mb_albumid = ?", (mb_id,)
+                                    ).fetchone()
+                                    conn.close()
+                                    if row and row[0]:
+                                        existing_path = os.path.dirname(
+                                            row[0].decode() if isinstance(row[0], bytes) else row[0])
+                                        if os.path.isdir(existing_path):
+                                            existing_spectral = spectral_analyze(existing_path, trim_seconds=30)
+                                            album_data["_existing_spectral_bitrate"] = existing_spectral.estimated_bitrate_kbps
+                                            logger.info(f"SPECTRAL: existing on disk: grade={existing_spectral.grade}, "
+                                                        f"estimated_bitrate={existing_spectral.estimated_bitrate_kbps}kbps")
+                            except Exception:
+                                logger.exception("SPECTRAL: failed to check existing files")
+                    except Exception:
+                        logger.exception(f"SPECTRAL: failed for {album_data['artist']} - {album_data['title']}")
+
             if bv_result["valid"]:
                 dest = stage_to_ai(album_data, import_folder_fullpath, beets_staging_dir)
                 log_validation_result(album_data, bv_result, dest)
@@ -1348,6 +1394,13 @@ def process_completed_album(album_data, failed_grab):
                 # Pipeline DB: two-track post-download pipeline
                 if is_db_mode:
                     dl_info = _build_download_info(album_data)
+                    # Inject spectral analysis results from pre-staging check
+                    if album_data.get("_spectral_grade"):
+                        dl_info["spectral_grade"] = album_data["_spectral_grade"]
+                        dl_info["spectral_bitrate"] = album_data.get("_spectral_bitrate")
+                        dl_info["existing_spectral_bitrate"] = album_data.get("_existing_spectral_bitrate")
+                        dl_info["slskd_filetype"] = dl_info.get("filetype")
+                        dl_info["actual_filetype"] = dl_info.get("filetype")
                     source_type = album_data.get("_db_source", "redownload")
                     request_id = album_data.get("_db_request_id")
                     if source_type == "request" and bv_result.get("distance", 1.0) <= beets_distance_threshold:

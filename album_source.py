@@ -161,10 +161,17 @@ class DatabaseSource:
         distance = bv_result.get("distance")
         dl = download_info or {}
 
-        db.update_status(request_id, "imported",
-                         beets_distance=distance,
-                         beets_scenario=bv_result.get("scenario"),
-                         imported_path=dest_path)
+        update_fields = dict(
+            beets_distance=distance,
+            beets_scenario=bv_result.get("scenario"),
+            imported_path=dest_path,
+        )
+        # Propagate spectral data to album_requests for quality gate
+        if dl.get("spectral_bitrate") is not None:
+            update_fields["spectral_bitrate"] = dl["spectral_bitrate"]
+        if dl.get("spectral_grade"):
+            update_fields["spectral_grade"] = dl["spectral_grade"]
+        db.update_status(request_id, "imported", **update_fields)
 
         # Log the download
         db.log_download(
