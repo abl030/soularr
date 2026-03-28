@@ -156,7 +156,7 @@ def check_pipeline(mbids):
         return {}
     placeholders = ",".join(["%s"] * len(mbids))
     cur = db._execute(
-        f"SELECT mb_release_id, status, quality_override "
+        f"SELECT mb_release_id, status, quality_override, min_bitrate "
         f"FROM album_requests WHERE mb_release_id IN ({placeholders})",
         tuple(mbids),
     )
@@ -164,6 +164,7 @@ def check_pipeline(mbids):
         r["mb_release_id"]: {
             "status": r["status"],
             "quality_override": r["quality_override"],
+            "min_bitrate": r["min_bitrate"],
         }
         for r in cur.fetchall()
     }
@@ -437,8 +438,14 @@ class Handler(BaseHTTPRequestHandler):
                     pipeline_info = check_pipeline(mbids) if mbids else {}
                     for a in albums:
                         pi = pipeline_info.get(a.get("mb_albumid"))
-                        if pi and pi["status"] == "wanted" and pi.get("quality_override"):
-                            a["upgrade_queued"] = True
+                        if pi:
+                            if pi["status"] == "wanted" and pi.get("quality_override"):
+                                a["upgrade_queued"] = True
+                            # Use pipeline min_bitrate (avg after accept) if higher than beets min
+                            if pi.get("min_bitrate") and a.get("min_bitrate"):
+                                pi_br = pi["min_bitrate"] * 1000  # DB stores kbps, beets stores bps
+                                if pi_br > a["min_bitrate"]:
+                                    a["min_bitrate"] = pi_br
                 self._json({"albums": albums})
 
             elif re.match(r"^/api/beets/album/\d+$", path):
@@ -523,8 +530,13 @@ class Handler(BaseHTTPRequestHandler):
                     pipeline_info = check_pipeline(mbids) if mbids else {}
                     for a in albums:
                         pi = pipeline_info.get(a.get("mb_albumid"))
-                        if pi and pi["status"] == "wanted" and pi.get("quality_override"):
-                            a["upgrade_queued"] = True
+                        if pi:
+                            if pi["status"] == "wanted" and pi.get("quality_override"):
+                                a["upgrade_queued"] = True
+                            if pi.get("min_bitrate") and a.get("min_bitrate"):
+                                pi_br = pi["min_bitrate"] * 1000
+                                if pi_br > a["min_bitrate"]:
+                                    a["min_bitrate"] = pi_br
                 self._json({"albums": albums})
 
             else:
