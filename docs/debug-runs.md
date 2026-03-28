@@ -95,7 +95,7 @@ Mountain Goats only. Both fixes deployed:
 
 4. **Pipeline DB `min_bitrate` overrides beets bitrate for downgrade check** — When we queue an album for upgrade because we know its files are garbage (e.g. `min_bitrate=0`), the downgrade check in import_one.py must use the pipeline's assessment, not beets' nominal bitrate.
 
-5. **Album `estimated_bitrate` only set when album is suspect** — A single outlier track on a genuine album shouldn't cause the quality gate to re-queue the whole album.
+5. **Album `estimated_bitrate` set from ANY outlier track** — Even a single bad track means the album has a quality problem worth upgrading. Initially tried only setting on suspect albums (Bug 10) but reverted — the user wants the worst track to drive the upgrade decision.
 
 6. **Quality gate uses `min(spectral_bitrate, beets_min_bitrate)` for threshold** — If spectral says 192kbps but beets says 222kbps, use 192. This catches fake 320s that would otherwise pass the 210kbps threshold.
 
@@ -105,3 +105,42 @@ Mountain Goats only. Both fixes deployed:
    - HF deficit < 40dB → GENUINE
    - Cliff: 2+ consecutive slices with gradient < -12 dB/kHz
    - Album: >60% tracks suspect → SUSPECT album
+
+---
+
+## Run 3 Results (15:00-15:36, PID 1693403, both fixes deployed)
+
+Both fixes deployed and running on new code:
+1. `--override-min-bitrate` passes pipeline DB value to import_one.py
+2. Album `estimated_bitrate` only set when album is suspect (later reverted)
+
+### Results:
+| Album | Source | Type | Outcome |
+|-------|--------|------|---------|
+| See America Right | pleasureprince | MP3 V0 | OK: genuine V0, upgraded 184→219, quality OK |
+| **Aquarium Drunkard** | zozke | FLAC | **OVERRIDE FIX WORKS**: `[OVERRIDE] pipeline says 0kbps, beets says 320kbps`, V0 227 > 0, imported, quality OK 224kbps |
+| **Life of World to Come** | bright.wood7932 | FLAC | PERFECT: genuine, existing spectral 128 transcode, upgraded 172→237 |
+| Songs for Peter Hughes | bl0atedfisher | FLAC | Failed download |
+| Taking the Dative | bl0atedfisher | FLAC | Failed download |
+| Songs for Petronius | bl0atedfisher | FLAC | Failed download |
+| Hot Garden Stomp | bl0atedfisher | FLAC | Failed download |
+| Songs About Fire | bl0atedfisher | FLAC | Failed download |
+| Yam King of Crops | bl0atedfisher | FLAC | Failed download |
+| Philyra | bl0atedfisher | FLAC | Failed download |
+| Protein Source | AnderMachines | FLAC | Downloading very slowly, stuck on requeue errors |
+
+### Bugs found this run:
+None — all fixes confirmed working.
+
+---
+
+## Display Fixes (post-run 3)
+
+### Fixed:
+1. **Removed album-level Scenario from detail panel** — was showing old import's "strong_match" for a "high_distance" rejection, causing confusion
+2. **quality_override downloads show "Upgraded" not "Quality mismatch"** — when replacing garbage CBR 320 with genuine V0, the nominal bitrate goes down (320→224) but it's still an upgrade. Now checks if `quality_override` is set.
+3. **Reverted Bug 10 fix** — album `estimated_bitrate` now set from any outlier track again. A single bad track at 192kbps means the album should be upgraded.
+
+### Remaining display issues (cosmetic, not blocking):
+- Nine Black Poppies shows "Quality mismatch - accepted" (no quality_override, was manually accepted pre-spectral era)
+- Heretic Pride 11:23 shows ↓MP3 V2→MP3 160k (genuine downgrade from ShadowoftheHunter that happened pre-spectral)
