@@ -63,28 +63,81 @@ sox file.mp3 -n sinc 18000-20000 stat  # High frequency band 3
 
 Dependencies: `sox` (in nixpkgs)
 
-#### Known Frequency Cutoffs by Original Bitrate
+#### LAME Lowpass Table (from source code)
 
-| Original Bitrate | Lowpass Cutoff | 14-16k% | 16-18k% | 18-20k% |
-|-----------------|----------------|---------|---------|---------|
-| 96kbps          | ~14kHz         | < 1%    | < 1%    | < 1%    |
-| 128kbps         | ~16kHz         | normal  | ~1%     | ~0%     |
-| 192kbps         | ~19kHz         | normal  | normal  | < 1%    |
-| 256kbps         | ~20kHz         | normal  | normal  | reduced |
-| 320kbps/V0      | ~20.5kHz       | normal  | normal  | normal  |
-| Lossless (CD)   | 22.05kHz       | normal  | normal  | normal  |
+| Bitrate (kbps) | Lowpass (Hz) | 14-16k% | 16-18k% | 18-20k% |
+|----------------|-------------|---------|---------|---------|
+| 96             | 15,100      | < 1%    | < 1%    | < 1%    |
+| 128            | 17,000      | normal  | ~1%     | ~0%     |
+| 160            | 17,500      | normal  | ~1%     | ~0%     |
+| 192            | 18,600      | normal  | normal  | < 1%    |
+| 256            | 19,700      | normal  | normal  | reduced |
+| 320 CBR        | 20,500      | normal  | normal  | normal  |
+| V0             | **disabled** | normal  | normal  | normal  |
+| V2             | 18,671      | normal  | normal  | < 1%    |
+| Lossless (CD)  | 22,050      | normal  | normal  | normal  |
+
+Source: LAME `lame.c` `optimum_bandwidth()` function.
+
+#### The 16kHz Shelf (strongest single indicator)
+
+All MP3 encoders have a fundamental limitation: there is no scale factor band 21 (sfb21) for frequencies above ~16kHz. This forces the encoder to choose between less accurate representation above 16kHz or less efficient storage below. The result is a characteristic energy step-down ("shelf") at 16kHz that is:
+
+- Present in **ALL** MP3 files regardless of bitrate
+- **NOT** present in genuine lossless, vinyl rips, or cassette rips
+- The strongest single automated indicator of MP3 origin
+
+To detect the shelf, check the ratio: `energy(14-16kHz) / energy(16-18kHz)`
+- Genuine lossless: ratio close to **1.0** (gradual decrease)
+- MP3 transcode: ratio **3x-10x** (sharp cliff at 16kHz)
 
 #### Edge Cases
 
 - **Lo-fi recordings** (boombox, cassette, AM radio): Naturally have limited high-frequency content. The energy ratio approach handles this because it compares RELATIVE to the 1-4kHz band, not absolute levels. But very lo-fi material may have low ratios simply due to recording quality, not transcoding.
 - **Classical/acoustic music**: May have less high-frequency energy than rock/electronic, but still maintains relative proportions. Need wider thresholds.
 - **Cassette recordings**: Tape hiss adds energy across all frequencies including high bands. Genuine cassette rips may actually show MORE high frequency energy (as noise) than clean digital recordings.
+- **Natural rolloff vs. artificial cutoff**: Vinyl and cassette have gradual, smooth HF rolloff. MP3 transcodes have sharp, blocky cutoffs. The shape matters more than the location.
+
+#### Performance
+
+Sox bandpass + stats takes ~0.5-1s per band per track. For 4 bands on a 12-track album: ~24-48s.
+
+**Optimisation**: Analyse only the first 30 seconds: `sox "$file" -n trim 0 30 sinc 16k-18k stats`. Cuts time by ~75% with negligible accuracy loss (encoding parameters are consistent throughout a track).
+
+### 3. Existing Tools Evaluated
+
+| Tool | Works? | Notes |
+|------|--------|-------|
+| **LAC** (losslessaudiochecker) | **No** | In nixpkgs but useless — said "Clean" on 128→FLAC transcode |
+| **spectro** (`pip install spectro`) | Maybe | Has automated `check` command with built-in thresholds, worth testing |
+| **fakeflac** (GitHub) | Maybe | FFT + backward sweep for discontinuity, Python + scipy |
+| **FLAC_Detective** (GitHub) | Maybe | 11-rule scoring system, claims to handle vinyl/cassette edge cases |
+| **auCDtect** | No | Windows only, only analyses WAV for CD origin detection |
+| **Fakin' The Funk** | No | Windows-only GUI |
+
+### 4. Published Research
+
+- **D'Alessandro & Shi (2009)**: "MP3 Bit Rate Quality Detection through Frequency Spectrum Analysis" — 97% overall accuracy using SVM on 100 frequency bands in the 16-20kHz range. Seminal paper.
+- **FLAD**: Neural network (EfficientNet) achieving 99.75% accuracy. Analyses 2.4-20kHz, suggesting lossy artifacts exist in mid-frequencies too, not just at the cutoff. Heavy deps (PyTorch).
+
+## Proposed Thresholds (conservative — minimise false positives)
+
+For CBR 320kbps claimed files, flag as SUSPECT if:
+- 16-18kHz energy < **1.5%** of 1-4kHz reference (genuine: 2-5%, suspect: 0.6-1.1%)
+- AND 18-20kHz energy < **1.0%** of reference (genuine: 0.8-6.4%, suspect: 0.2-0.7%)
+
+Album-level decision:
+- **>50%** of tracks fail both → SUSPECT
+- **>75%** of tracks fail → LIKELY_TRANSCODE
+- Never auto-reject; flag for review
 
 ## TODO
 
 - [ ] Integrate spectral check into `import_one.py` post-download pipeline
-- [ ] Determine reliable thresholds that minimize false positives
-- [ ] Handle per-track vs per-album decisions (flag album if majority of tracks fail?)
+- [ ] Test `spectro` pip package as validation of our approach
+- [ ] Add 16kHz shelf ratio check (14-16k / 16-18k) as primary indicator
 - [ ] Add spectral quality score to pipeline DB and web UI display
-- [ ] Research: should we run spectral check on downloaded FLACs BEFORE conversion, or on the converted V0 files, or both?
-- [ ] Consider: for MP3 downloads (non-FLAC), run spectral check post-download to catch upsampled 320s
+- [ ] Run spectral check on downloaded FLACs BEFORE conversion to catch transcodes early
+- [ ] For MP3 downloads (non-FLAC), run spectral check post-download to catch upsampled 320s
+- [ ] Handle per-track vs per-album decisions (flag album if majority of tracks fail)
+- [ ] Performance: use 30-second trim for speed
