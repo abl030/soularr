@@ -1127,13 +1127,12 @@ async function setLibQuality(mbid, status, minBitrate, detailId) {
       if (status) parts.push(status);
       if (minBitrate != null) parts.push(`min_bitrate=${minBitrate}`);
       toast(`Set ${parts.join(', ')}`);
-      // Refresh the detail panel if open
-      if (detailId) {
-        const el = document.getElementById('detail-' + detailId);
-        if (el && el.classList.contains('open')) {
-          el.classList.remove('open');
-          toggleDetail(detailId);
-        }
+      // Refresh the whole recents/library view to update badges
+      const activeTab = document.querySelector('.tab.active');
+      if (activeTab) {
+        const tabText = activeTab.textContent.trim();
+        if (tabText === 'Recents') loadRecents();
+        else if (tabText === 'Library') loadLibraryRecent();
       }
     } else {
       toast(data.error || 'Failed', true);
