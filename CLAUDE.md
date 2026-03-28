@@ -123,6 +123,43 @@ Lidarr (optional)                    CLI / Dashboard
 - **Requests** (`source='request'`): User-added via Lidarr/CLI. Auto-imported to beets if beets validation passes at distance ≤ 0.15.
 - **Redownloads** (`source='redownload'`): Replacing bad source material from LLM review. Always staged to `/Incoming` for manual review, never auto-imported.
 
+## Quality Upgrade System
+
+The pipeline automatically upgrades album quality toward VBR V0 (~220-280kbps). This is the core differentiator of the system — it doesn't just download albums, it curates them.
+
+### How It Works
+
+1. **First pass**: Downloads whatever quality is available. Album enters beets immediately — something is better than nothing.
+2. **Quality gate** (`_check_quality_gate()` in soularr.py): After import, checks beets min track bitrate. If <210kbps, sets `quality_override="flac,mp3 v0,mp3 320"` and keeps album as `wanted`. Denylists the source user.
+3. **Upgrade pass**: `find_download()` sees `quality_override`, searches only at flac/v0/320 tiers instead of global config.
+4. **FLAC conversion**: `import_one.py` converts FLAC→VBR V0 via ffmpeg. The resulting bitrate reveals source quality — genuine lossless produces ~240-260kbps, transcodes produce lower.
+5. **Downgrade prevention**: `import_one.py` compares new file bitrate (via ffprobe) against existing beets bitrate. Rejects if new ≤ existing (exit code 5). Detects transcodes (exit code 6).
+6. **Duplicate replacement**: Same MBID in beets triggers `resolve_duplicate` → removes old entry, imports new. Different MBID keeps both (curated collection).
+
+### Why VBR V0
+
+VBR V0 is the gold standard because it acts as a quality fingerprint. CBR 320 would make all files identical — no way to spot transcodes or measure source quality. VBR bitrate reveals the truth: genuine CD rips → ~245kbps, transcoded garbage → ~190kbps. The bitrate IS the quality signal.
+
+### Key Fields (`album_requests` table)
+
+- `quality_override TEXT` — Comma-separated filetype list (e.g. `"flac,mp3 v0,mp3 320"`). When set, overrides global `allowed_filetypes` for this album. NULL = use config.
+- `min_bitrate INTEGER` — Current min track bitrate in kbps. After "Accept", set to AVG bitrate instead (handles lo-fi outlier tracks).
+- `prev_min_bitrate INTEGER` — What min_bitrate was before the last upgrade attempt. Shows upgrade delta in UI.
+
+### Web UI Controls
+
+- **Recents tab** ("validation pipeline log"): Shows every download that hit validation — new imports, upgrades (with ↑prev→new delta), rejections, transcodes, quality mismatches. Each expandable with status buttons, min_bitrate override, and ban-source.
+- **Library tab**: Quality label per album (MP3 V0, MP3 320, MP3 192k, etc.). Upgrade button on each album. Accept button sets avg bitrate and stops upgrade loop.
+- **Accept workflow**: For edge cases (lo-fi recordings with one bad track dragging min down), click Accept → sets min_bitrate to average → then click Wanted to re-queue at the new higher threshold. Stops infinite loops from ffprobe/beets bitrate mismatch.
+- **Ban source**: Denylists user + removes from beets + requeues for re-download from someone else.
+
+### Edge Cases
+
+- **ffprobe vs beets bitrate mismatch**: ffprobe reports overall file bitrate (includes overhead), beets reports audio stream bitrate. Can differ by ~15kbps. The downgrade check uses ffprobe, the quality gate uses beets. This causes "Beets quality mismatch" entries where ffprobe thought it was an upgrade but beets disagrees.
+- **Lo-fi recordings** (e.g. Mountain Goats boombox tracks): One track at 96kbps while rest is 260kbps. Quality label shows V2 even though it's genuinely V0 quality. Accept → sets avg bitrate → label reflects true character.
+- **Fake FLACs**: Soulseek users share MP3-transcoded-to-FLAC files. After conversion back to V0, bitrate is ~190kbps instead of ~245kbps. Detected as transcodes, source denylisted.
+- **Discogs-sourced albums**: Have numeric IDs instead of MB UUIDs. Cannot use upgrade pipeline. See `TODO.md`.
+
 ## Deploying Changes
 
 Flake input changes (step 2) MUST be done on doc1 and pushed from there. Doc2 has no git push credentials. Doc2 is only for building/running.
@@ -224,11 +261,13 @@ First run will auto-install the package. You may still need `npx playwright inst
 
 ## Critical Rules
 
-1. **NEVER use `beet remove -d`** — deletes files from disk permanently
+1. **NEVER use `beet remove -d`** — deletes files from disk permanently (exception: ban-source endpoint which is an explicit user action)
 2. **NEVER import without inspecting the match** — always use the harness, never pipe blind input to beet
 3. **NEVER match by candidate_index** — always match by MB release ID (candidate ordering is not stable)
-4. **Auto-import only for `source='request'`** — redownloads always stage for manual review
-5. **All scripts deploy via Nix** — no manual `cp` to virtiofs. Change code → push → flake update → rebuild
+4. **NEVER match by release group** — always exact MB release ID. The user left Lidarr over this.
+5. **Auto-import only for `source='request'`** — redownloads always stage for manual review
+6. **All scripts deploy via Nix** — no manual `cp` to virtiofs. Change code → push → flake update → rebuild
+7. **PostgreSQL must use `autocommit=True`** — prevents idle-in-transaction deadlocks. DDL migrations run on separate short-lived connections with `lock_timeout`. See the PostgreSQL audit in git history (commit ca579e3).
 
 ## Known Issues
 
