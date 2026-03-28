@@ -329,6 +329,8 @@ def main():
     parser.add_argument("path", help="Path to staged album directory")
     parser.add_argument("mb_release_id", help="MusicBrainz release ID")
     parser.add_argument("--request-id", type=int, help="Pipeline DB request ID for status updates")
+    parser.add_argument("--override-min-bitrate", type=int, default=None,
+                        help="Override existing min bitrate for downgrade check (kbps)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -423,19 +425,27 @@ def main():
     # soularr denylists the user and keeps searching for real lossless.
     new_min_br = _get_folder_min_bitrate(args.path)
     existing_min_br = _get_beets_min_bitrate(mbid)
+    # Pipeline DB may override existing bitrate (e.g. when existing files are
+    # upsampled garbage — beets says 320 but spectral says 128)
+    if args.override_min_bitrate is not None:
+        effective_existing = args.override_min_bitrate
+        if existing_min_br is not None and effective_existing != existing_min_br:
+            print(f"  [OVERRIDE] pipeline says {effective_existing}kbps, beets says {existing_min_br}kbps")
+    else:
+        effective_existing = existing_min_br
     # Output both for soularr to track upgrade delta
-    if existing_min_br is not None:
-        print(f"  prev_min_bitrate={existing_min_br}")
+    if effective_existing is not None:
+        print(f"  prev_min_bitrate={effective_existing}")
     if new_min_br is not None:
         print(f"  new_min_bitrate={new_min_br}")
-    if existing_min_br is not None and new_min_br is not None:
-        if new_min_br <= existing_min_br:
-            print(f"[QUALITY DOWNGRADE] new {new_min_br}kbps <= existing {existing_min_br}kbps — skipping import",
+    if effective_existing is not None and new_min_br is not None:
+        if new_min_br <= effective_existing:
+            print(f"[QUALITY DOWNGRADE] new {new_min_br}kbps <= existing {effective_existing}kbps — skipping import",
                   file=sys.stderr)
             if is_transcode:
                 sys.exit(6)  # Transcode + not an upgrade
             sys.exit(5)
-        print(f"  [QUALITY CHECK] new {new_min_br}kbps > existing {existing_min_br}kbps — upgrading")
+        print(f"  [QUALITY CHECK] new {new_min_br}kbps > existing {effective_existing}kbps — upgrading")
     elif existing_min_br is None and is_transcode:
         # First import — no existing quality to compare against.
         # Import the transcode (something is better than nothing).

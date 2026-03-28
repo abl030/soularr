@@ -1464,6 +1464,15 @@ def process_completed_album(album_data, failed_grab):
                             cmd = [sys.executable, import_script, dest, mb_id]
                             if request_id:
                                 cmd.extend(["--request-id", str(request_id)])
+                                # Pass pipeline DB min_bitrate to override beets
+                                # comparison when existing files are known garbage
+                                try:
+                                    req = pipeline_db_source._get_db().get_request(request_id)
+                                    db_min_br = req.get("min_bitrate") if req else None
+                                    if db_min_br is not None:
+                                        cmd.extend(["--override-min-bitrate", str(db_min_br)])
+                                except Exception:
+                                    pass
                             import_env = {**os.environ, "HOME": "/home/abl030"}
                             result = sp.run(cmd, capture_output=True, text=True,
                                             timeout=1800, env=import_env)
