@@ -466,5 +466,69 @@ class TestResetToWanted(unittest.TestCase):
         self.assertEqual(req["validation_attempts"], 0)
 
 
+@requires_postgres
+class TestSpectralColumns(unittest.TestCase):
+    """Test spectral quality columns on download_log and album_requests."""
+
+    def setUp(self):
+        self.db = make_db()
+        self.req_id = self.db.add_request(
+            mb_release_id="spectral-uuid",
+            artist_name="Test Artist",
+            album_title="Test Album",
+            source="request",
+        )
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_log_download_with_spectral_fields(self):
+        self.db.log_download(
+            request_id=self.req_id,
+            soulseek_username="testuser",
+            filetype="mp3",
+            outcome="success",
+            spectral_grade="suspect",
+            spectral_bitrate=128,
+            slskd_filetype="mp3",
+            slskd_bitrate=320000,
+            actual_filetype="mp3",
+            actual_min_bitrate=320000,
+            existing_min_bitrate=92,
+            existing_spectral_bitrate=64,
+        )
+        history = self.db.get_download_history(self.req_id)
+        self.assertEqual(len(history), 1)
+        h = history[0]
+        self.assertEqual(h["spectral_grade"], "suspect")
+        self.assertEqual(h["spectral_bitrate"], 128)
+        self.assertEqual(h["slskd_filetype"], "mp3")
+        self.assertEqual(h["slskd_bitrate"], 320000)
+        self.assertEqual(h["actual_filetype"], "mp3")
+        self.assertEqual(h["actual_min_bitrate"], 320000)
+        self.assertEqual(h["existing_min_bitrate"], 92)
+        self.assertEqual(h["existing_spectral_bitrate"], 64)
+
+    def test_spectral_fields_null_by_default(self):
+        self.db.log_download(
+            request_id=self.req_id,
+            soulseek_username="testuser",
+            outcome="success",
+        )
+        history = self.db.get_download_history(self.req_id)
+        h = history[0]
+        self.assertIsNone(h.get("spectral_grade"))
+        self.assertIsNone(h.get("spectral_bitrate"))
+        self.assertIsNone(h.get("slskd_filetype"))
+
+    def test_album_request_spectral_columns(self):
+        self.db.update_status(self.req_id, "imported",
+                              spectral_bitrate=128,
+                              spectral_grade="suspect")
+        req = self.db.get_request(self.req_id)
+        self.assertEqual(req["spectral_bitrate"], 128)
+        self.assertEqual(req["spectral_grade"], "suspect")
+
+
 if __name__ == "__main__":
     unittest.main()

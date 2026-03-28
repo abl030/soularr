@@ -167,6 +167,15 @@ class PipelineDB:
                 ("is_vbr", "BOOLEAN"),
                 ("was_converted", "BOOLEAN DEFAULT FALSE"),
                 ("original_filetype", "TEXT"),
+                # Spectral quality verification columns
+                ("slskd_filetype", "TEXT"),
+                ("slskd_bitrate", "INTEGER"),
+                ("actual_filetype", "TEXT"),
+                ("actual_min_bitrate", "INTEGER"),
+                ("spectral_grade", "TEXT"),
+                ("spectral_bitrate", "INTEGER"),
+                ("existing_min_bitrate", "INTEGER"),
+                ("existing_spectral_bitrate", "INTEGER"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
@@ -178,6 +187,9 @@ class PipelineDB:
                 ("quality_override", "TEXT"),
                 ("min_bitrate", "INTEGER"),
                 ("prev_min_bitrate", "INTEGER"),
+                # Spectral quality verification columns
+                ("spectral_bitrate", "INTEGER"),
+                ("spectral_grade", "TEXT"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
@@ -377,21 +389,35 @@ class PipelineDB:
                      beets_detail=None, valid=None, outcome=None,
                      staged_path=None, error_message=None,
                      bitrate=None, sample_rate=None, bit_depth=None,
-                     is_vbr=None, was_converted=None, original_filetype=None):
+                     is_vbr=None, was_converted=None, original_filetype=None,
+                     # Spectral quality verification fields
+                     slskd_filetype=None, slskd_bitrate=None,
+                     actual_filetype=None, actual_min_bitrate=None,
+                     spectral_grade=None, spectral_bitrate=None,
+                     existing_min_bitrate=None, existing_spectral_bitrate=None):
         self._execute("""
             INSERT INTO download_log (
                 request_id, soulseek_username, filetype, download_path,
                 beets_distance, beets_scenario, beets_detail, valid,
                 outcome, staged_path, error_message,
                 bitrate, sample_rate, bit_depth, is_vbr,
-                was_converted, original_filetype
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                was_converted, original_filetype,
+                slskd_filetype, slskd_bitrate,
+                actual_filetype, actual_min_bitrate,
+                spectral_grade, spectral_bitrate,
+                existing_min_bitrate, existing_spectral_bitrate
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             request_id, soulseek_username, filetype, download_path,
             beets_distance, beets_scenario, beets_detail, valid,
             outcome, staged_path, error_message,
             bitrate, sample_rate, bit_depth, is_vbr,
             was_converted, original_filetype,
+            slskd_filetype, slskd_bitrate,
+            actual_filetype, actual_min_bitrate,
+            spectral_grade, spectral_bitrate,
+            existing_min_bitrate, existing_spectral_bitrate,
         ))
         self.conn.commit()
 

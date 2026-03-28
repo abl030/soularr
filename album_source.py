@@ -182,6 +182,15 @@ class DatabaseSource:
             is_vbr=dl.get("is_vbr"),
             was_converted=dl.get("was_converted"),
             original_filetype=dl.get("original_filetype"),
+            # Spectral quality verification
+            slskd_filetype=dl.get("slskd_filetype"),
+            slskd_bitrate=dl.get("slskd_bitrate"),
+            actual_filetype=dl.get("actual_filetype"),
+            actual_min_bitrate=dl.get("actual_min_bitrate"),
+            spectral_grade=dl.get("spectral_grade"),
+            spectral_bitrate=dl.get("spectral_bitrate"),
+            existing_min_bitrate=dl.get("existing_min_bitrate"),
+            existing_spectral_bitrate=dl.get("existing_spectral_bitrate"),
         )
 
     def mark_failed(self, album_record, bv_result, usernames=None,
@@ -214,6 +223,15 @@ class DatabaseSource:
             is_vbr=dl.get("is_vbr"),
             was_converted=dl.get("was_converted"),
             original_filetype=dl.get("original_filetype"),
+            # Spectral quality verification
+            slskd_filetype=dl.get("slskd_filetype"),
+            slskd_bitrate=dl.get("slskd_bitrate"),
+            actual_filetype=dl.get("actual_filetype"),
+            actual_min_bitrate=dl.get("actual_min_bitrate"),
+            spectral_grade=dl.get("spectral_grade"),
+            spectral_bitrate=dl.get("spectral_bitrate"),
+            existing_min_bitrate=dl.get("existing_min_bitrate"),
+            existing_spectral_bitrate=dl.get("existing_spectral_bitrate"),
         )
 
         # Denylist source users
