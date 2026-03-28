@@ -225,7 +225,7 @@ function renderDownloadHistoryItem(h) {
   // Spectral analysis verdict
   if (h.spectral_grade) {
     const sgColor = h.spectral_grade === 'genuine' ? '#6d6' : h.spectral_grade === 'suspect' ? '#d66' : '#aa8';
-    const sgLabel = h.spectral_bitrate ? `${h.spectral_grade} (~${h.spectral_bitrate}kbps)` : h.spectral_grade;
+    const sgLabel = h.spectral_bitrate && h.spectral_grade !== 'genuine' ? `${h.spectral_grade} (~${h.spectral_bitrate}kbps)` : h.spectral_grade;
     qualityParts.push(`<span style="color:${sgColor};">spectral: ${sgLabel}</span>`);
   }
 
