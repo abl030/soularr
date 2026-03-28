@@ -1186,6 +1186,7 @@ def _check_quality_gate(album_data, request_id):
         # Use spectral_bitrate for quality gate if available (catches fake 320s)
         gate_br = min_br_kbps
         spectral_br = None
+        req = None
         if request_id:
             try:
                 req = pipeline_db_source._get_db().get_request(request_id)
@@ -1196,6 +1197,16 @@ def _check_quality_gate(album_data, request_id):
                                 f"(lower than beets min_bitrate={min_br_kbps}kbps)")
             except Exception:
                 pass
+        # If spectral verified this as genuine lossless, trust it — the low
+        # V0 bitrate is just quiet/simple music, not a bad source.
+        spectral_grade = req.get("spectral_grade") if req else None
+        if spectral_grade == "genuine" and gate_br < QUALITY_MIN_BITRATE_KBPS:
+            logger.info(
+                f"QUALITY GATE: {album_data['artist']} - {album_data['title']} "
+                f"gate_bitrate={gate_br}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps but "
+                f"spectral=genuine — verified lossless source, accepting")
+            gate_br = QUALITY_MIN_BITRATE_KBPS  # force pass
+
         if gate_br < QUALITY_MIN_BITRATE_KBPS:
             db = pipeline_db_source._get_db()
             db.reset_to_wanted(request_id,
