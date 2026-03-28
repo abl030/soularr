@@ -207,8 +207,23 @@ function renderDownloadHistoryItem(h) {
   const bd = h.bit_depth && h.bit_depth > 16 ? ` ${h.bit_depth}bit` : '';
   const sr = h.sample_rate && h.sample_rate > 44100 ? ` ${(h.sample_rate/1000).toFixed(1)}kHz` : '';
   const conv = h.was_converted ? ` (from ${h.original_filetype || '?'})` : '';
+  // Spectral quality badge
+  let spectral = '';
+  if (h.spectral_grade) {
+    const sgColor = h.spectral_grade === 'genuine' ? '#6d6' : h.spectral_grade === 'suspect' ? '#d66' : '#aa8';
+    const sgLabel = h.spectral_grade === 'suspect' && h.spectral_bitrate
+      ? `spectral: ${h.spectral_bitrate}kbps`
+      : `spectral: ${h.spectral_grade}`;
+    spectral = ` <span style="color:${sgColor};">[${sgLabel}]</span>`;
+  }
+  // Existing quality snapshot
+  let existing = '';
+  if (h.existing_min_bitrate || h.existing_spectral_bitrate) {
+    const eBr = h.existing_spectral_bitrate || h.existing_min_bitrate;
+    existing = ` <span style="color:#888;">was: ${eBr}kbps</span>`;
+  }
   const detail = h.beets_detail && h.beets_detail !== `distance=${h.beets_distance}` ? `<div style="color:#666;font-size:0.9em;padding-left:8px;">${esc(h.beets_detail)}</div>` : '';
-  return `<div class="p-hist-item"><span style="color:${color};">${outcome}</span> ${user} ${tier}${bd}${sr}${conv} ${date}${dist}${scenario}${err}</div>${detail}`;
+  return `<div class="p-hist-item"><span style="color:${color};">${outcome}</span> ${user} ${tier}${bd}${sr}${conv}${spectral}${existing} ${date}${dist}${scenario}${err}</div>${detail}`;
 }
 
 // Convert UTC ISO string to AWST (UTC+8)
