@@ -620,10 +620,19 @@ async function loadRecents() {
           borderColor = accepted ? '#1a4a2a' : '#a93';
         } else if (isSuccess) {
           if (prevBr && curBr && curBr <= prevBr) {
-            const accepted = item.request_status === 'imported';
-            badge = accepted ? 'Quality mismatch - accepted' : 'Beets quality mismatch';
-            badgeClass = accepted ? 'badge-new' : 'badge-transcode';
-            borderColor = accepted ? '#1a4a2a' : '#a93';
+            // Nominal bitrate went down — but if this was a quality_override
+            // upgrade (replacing garbage CBR 320 with genuine V0), it's still
+            // an upgrade. The old files were upsampled junk.
+            if (item.quality_override) {
+              badge = 'Upgraded';
+              badgeClass = 'badge-upgraded';
+              borderColor = '#3a6';
+            } else {
+              const accepted = item.request_status === 'imported';
+              badge = accepted ? 'Quality mismatch - accepted' : 'Beets quality mismatch';
+              badgeClass = accepted ? 'badge-new' : 'badge-transcode';
+              borderColor = accepted ? '#1a4a2a' : '#a93';
+            }
           } else {
             badge = prevBr ? 'Upgraded' : 'New import';
             badgeClass = 'badge-new';
@@ -819,9 +828,9 @@ async function toggleDetail(id) {
     if (req.imported_path) {
       html += `<div class="p-detail-row"><span class="p-detail-label">Imported to</span><span class="p-detail-value" style="font-size:0.9em;">${esc(req.imported_path)}</span></div>`;
     }
-    if (req.beets_scenario) {
-      html += `<div class="p-detail-row"><span class="p-detail-label">Scenario</span><span class="p-detail-value">${esc(req.beets_scenario)}</span></div>`;
-    }
+    // beets_scenario on album_requests is from the last successful import,
+    // not necessarily this download — per-download scenarios are shown in
+    // the download history section below instead
 
     // Tracks — prefer beets (has bitrate) over pipeline tracks
     const beetsTracks = data.beets_tracks || [];
