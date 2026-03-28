@@ -110,55 +110,117 @@ Lidarr (optional)                    CLI / Dashboard
     source=request       source=redownload
     dist ≤ 0.15              │
          │              stage to /Incoming
-         ▼              (manual review)
+         ▼              (manual review only)
+    stage to /Incoming
+    (temporary)
+         │
+         ▼
     import_one.py
-    (convert → import)
+    (spectral check → convert FLAC→V0 → quality compare → import)
          │
          ▼
       /Beets/
+    (cleanup /Incoming after import)
 ```
+
+**IMPORTANT**: ALL validated downloads stage to `/Incoming` first. For `source=request`, `import_one.py` auto-imports from `/Incoming` to `/Beets` and cleans up. For `source=redownload`, files stay in `/Incoming` for manual review. Don't assume files in `/Incoming` are redownloads — they may be mid-import.
 
 ## Two-Track Pipeline
 
-- **Requests** (`source='request'`): User-added via Lidarr/CLI. Auto-imported to beets if beets validation passes at distance ≤ 0.15.
-- **Redownloads** (`source='redownload'`): Replacing bad source material from LLM review. Always staged to `/Incoming` for manual review, never auto-imported.
+- **Requests** (`source='request'`): User-added via Lidarr/CLI/web UI. Auto-imported to beets if beets validation passes at distance ≤ 0.15. Files stage temporarily in `/Incoming`, then `import_one.py` converts (if FLAC), imports to beets (`/Beets`), and cleans up `/Incoming`.
+- **Redownloads** (`source='redownload'`): Replacing bad source material. Always staged to `/Incoming` for manual review, never auto-imported.
 
 ## Quality Upgrade System
 
-The pipeline automatically upgrades album quality toward VBR V0 (~220-280kbps). This is the core differentiator of the system — it doesn't just download albums, it curates them.
+The pipeline automatically upgrades album quality toward VBR V0 from verified lossless sources. This is the core differentiator — it doesn't just download albums, it curates them.
 
-### How It Works
+### Gold Standard
 
-1. **First pass**: Downloads whatever quality is available. Album enters beets immediately — something is better than nothing.
-2. **Quality gate** (`_check_quality_gate()` in soularr.py): After import, checks beets min track bitrate. If <210kbps, sets `quality_override="flac,mp3 v0,mp3 320"` and keeps album as `wanted`. Denylists the source user.
-3. **Upgrade pass**: `find_download()` sees `quality_override`, searches only at flac/v0/320 tiers instead of global config.
-4. **FLAC conversion**: `import_one.py` converts FLAC→VBR V0 via ffmpeg. The resulting bitrate reveals source quality — genuine lossless produces ~240-260kbps, transcodes produce lower.
-5. **Downgrade prevention**: `import_one.py` compares new file bitrate (via ffprobe) against existing beets bitrate. Rejects if new ≤ existing (exit code 5). Detects transcodes (exit code 6).
-6. **Duplicate replacement**: Same MBID in beets triggers `resolve_duplicate` → removes old entry, imports new. Different MBID keeps both (curated collection).
+The target quality for every album is: **FLAC downloaded from Soulseek → spectral analysis confirms genuine lossless → convert to VBR V0**. The VBR bitrate acts as a permanent quality fingerprint (genuine CD rips → ~240-260kbps, transcodes → ~190kbps). CBR 320 is never a final state — it's unverifiable.
 
-### Why VBR V0
+### Quality Gate (`_check_quality_gate()` in soularr.py)
 
-VBR V0 is the gold standard because it acts as a quality fingerprint. CBR 320 would make all files identical — no way to spot transcodes or measure source quality. VBR bitrate reveals the truth: genuine CD rips → ~245kbps, transcoded garbage → ~190kbps. The bitrate IS the quality signal.
+After every import, the quality gate decides what to do next. It checks these conditions in order:
+
+1. **`verified_lossless=TRUE` + any bitrate** → **DONE**. We verified this from genuine FLAC. Low V0 bitrate (e.g. 207kbps) on lo-fi music is fine — the source is proven lossless.
+2. **`min_bitrate < 210kbps`** → **RE-QUEUE** for upgrade. Bad quality, search for better.
+3. **CBR on disk** (all tracks same bitrate) **+ not verified_lossless** → **RE-QUEUE for FLAC only** (`quality_override="flac"`). CBR is unverifiable — spectral analysis can detect obvious upsamples but cannot prove a CBR file came from lossless source.
+4. **VBR above 210kbps** → **DONE**. VBR bitrate is trustworthy.
+
+### Two Key Concepts (don't confuse them)
+
+- **`spectral_grade`** (on both `download_log` and `album_requests`): "Does this file look like a transcode?" — answers whether spectral analysis found cliff artifacts or high-frequency deficits. Works on any file type. A CBR 320 with `spectral_grade=genuine` just means "no cliff detected" — it does NOT mean the source was lossless.
+- **`verified_lossless`** (on `album_requests` only): "Did we verify this from a genuine FLAC?" — only set `TRUE` when: downloaded FLAC + spectral analysis said genuine + converted to V0. This is the only way to prove source quality.
+
+### How Downloads Flow by Type
+
+**FLAC downloads** (in `import_one.py`):
+1. Spectral check on raw FLAC → grade stored on album_requests
+2. Convert FLAC → V0 via ffmpeg (`-q:a 0`)
+3. Compare new V0 bitrate against existing on disk (pipeline DB `min_bitrate` overrides beets via `--override-min-bitrate`)
+4. If upgrade → import to beets, set `verified_lossless=TRUE` if spectral=genuine
+5. Quality gate accepts regardless of bitrate if verified_lossless
+
+**MP3 VBR downloads** (V0/V2):
+1. No spectral check needed — VBR bitrate IS the quality signal
+2. Import directly, quality gate checks min_bitrate against 210kbps threshold
+
+**MP3 CBR downloads** (320, 256, etc.):
+1. Spectral check runs in `process_completed_album()` (soularr.py) — detects upsampled garbage via cliff detection
+2. If spectral says SUSPECT → reject, denylist user
+3. If spectral says genuine or marginal → import (something is better than nothing)
+4. Quality gate sees CBR + not verified_lossless → re-queues with `quality_override="flac"` to find lossless source
+
+### Spectral Analysis (`lib/spectral_check.py`)
+
+Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 500Hz frequency slices from 12-20kHz, computes gradient between adjacent slices. A transcode has a sharp "cliff" at the original encoder's lowpass frequency. Genuine audio has gradual rolloff.
+
+- **Cliff detection**: 2+ consecutive slices with gradient < -12 dB/kHz → SUSPECT
+- **HF deficit**: avg energy at 18-20kHz vs 1-4kHz reference > 60dB → SUSPECT
+- Album level: >60% tracks suspect → album SUSPECT
+- Dependencies: `sox` (in Nix PATH)
+- Performance: ~8s per track (30s trim), ~100s per 12-track album
+- Full docs: `docs/quality-verification.md`
 
 ### Key Fields (`album_requests` table)
 
-- `quality_override TEXT` — Comma-separated filetype list (e.g. `"flac,mp3 v0,mp3 320"`). When set, overrides global `allowed_filetypes` for this album. NULL = use config.
-- `min_bitrate INTEGER` — Current min track bitrate in kbps. After "Accept", set to AVG bitrate instead (handles lo-fi outlier tracks).
-- `prev_min_bitrate INTEGER` — What min_bitrate was before the last upgrade attempt. Shows upgrade delta in UI.
+- `quality_override TEXT` — CSV filetype list (e.g. `"flac,mp3 v0,mp3 320"` or just `"flac"`). Overrides global `allowed_filetypes` for this album.
+- `min_bitrate INTEGER` — Current min track bitrate in kbps (from beets).
+- `prev_min_bitrate INTEGER` — Previous min_bitrate before last upgrade. Shows delta in UI.
+- `verified_lossless BOOLEAN` — True only when imported from spectral-verified genuine FLAC→V0.
+- `spectral_grade TEXT` — Latest spectral analysis result ("genuine", "suspect", "marginal").
+- `spectral_bitrate INTEGER` — Estimated original bitrate from cliff detection (kbps).
+
+### Key Fields (`download_log` table)
+
+- `slskd_filetype TEXT` — What Soulseek advertised ("flac", "mp3").
+- `actual_filetype TEXT` — What's on disk after download/conversion.
+- `spectral_grade TEXT` — Spectral analysis of the downloaded files.
+- `spectral_bitrate INTEGER` — Estimated original bitrate from spectral.
+- `existing_min_bitrate INTEGER` — Beets min bitrate before this download.
+- `existing_spectral_bitrate INTEGER` — Spectral estimate of existing files before download.
+
+### Downgrade Prevention (`import_one.py`)
+
+- `--override-min-bitrate` arg: soularr.py passes the pipeline DB `min_bitrate` to import_one.py. When existing files are known garbage (e.g. `min_bitrate=0`), this overrides the beets comparison so genuine V0 at 227kbps isn't rejected as "downgrade from 320kbps."
+- Exit codes: 0=imported, 1=conversion failed, 2=beets failed, 3=path not found, 5=downgrade, 6=transcode (may or may not have imported as upgrade)
+
+### New/Re-queued Album Priority
+
+`get_wanted()` sorts by `search_attempts=0` first, then random. New requests and upgrade re-queues always get picked up on the next cycle.
 
 ### Web UI Controls
 
-- **Recents tab** ("validation pipeline log"): Shows every download that hit validation — new imports, upgrades (with ↑prev→new delta), rejections, transcodes, quality mismatches. Each expandable with status buttons, min_bitrate override, and ban-source.
-- **Library tab**: Quality label per album (MP3 V0, MP3 320, MP3 192k, etc.). Upgrade button on each album. Accept button sets avg bitrate and stops upgrade loop.
-- **Accept workflow**: For edge cases (lo-fi recordings with one bad track dragging min down), click Accept → sets min_bitrate to average → then click Wanted to re-queue at the new higher threshold. Stops infinite loops from ffprobe/beets bitrate mismatch.
-- **Ban source**: Denylists user + removes from beets + requeues for re-download from someone else.
+- **Recents tab** ("validation pipeline log"): Shows every download with full quality flow (slskd reported → actual on disk → spectral → existing). Badges: Upgraded, New import, Wrong match, Transcode, Quality mismatch.
+- **Library tab**: Quality label per album (MP3 V0, MP3 320, etc.). Upgrade button. Accept button (sets avg bitrate for lo-fi edge cases).
+- **Ban source**: Denylists user + removes from beets + requeues.
 
 ### Edge Cases
 
-- **ffprobe vs beets bitrate mismatch**: ffprobe reports overall file bitrate (includes overhead), beets reports audio stream bitrate. Can differ by ~15kbps. The downgrade check uses ffprobe, the quality gate uses beets. This causes "Beets quality mismatch" entries where ffprobe thought it was an upgrade but beets disagrees.
-- **Lo-fi recordings** (e.g. Mountain Goats boombox tracks): One track at 96kbps while rest is 260kbps. Quality label shows V2 even though it's genuinely V0 quality. Accept → sets avg bitrate → label reflects true character.
-- **Fake FLACs**: Soulseek users share MP3-transcoded-to-FLAC files. After conversion back to V0, bitrate is ~190kbps instead of ~245kbps. Detected as transcodes, source denylisted.
-- **Discogs-sourced albums**: Have numeric IDs instead of MB UUIDs. Cannot use upgrade pipeline. See `TODO.md`.
+- **Lo-fi recordings** (Mountain Goats boombox era): Genuine V0 from verified FLAC can produce ~207kbps. `verified_lossless=TRUE` lets this pass the quality gate.
+- **Mixed-source CBR** (e.g. 13 tracks at 320 + 1 track at 192): Looks like VBR to `COUNT(DISTINCT bitrate)` but isn't genuine V0. Quality gate uses min_bitrate (192 < 210) → re-queues.
+- **Fake FLACs**: MP3 wrapped in FLAC container. Spectral detects cliff pre-conversion, V0 bitrate confirms post-conversion. Source denylisted, but file imported if better than existing.
+- **Discogs-sourced albums**: Numeric IDs instead of MB UUIDs. Cannot use upgrade pipeline. See `TODO.md`.
 
 ## Deploying Changes
 
