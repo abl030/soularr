@@ -307,11 +307,16 @@ class PipelineDB:
 
     def get_wanted(self, limit=None):
         now = datetime.now(timezone.utc)
+        # New/re-queued albums (0 search attempts) go first, then random.
+        # This ensures freshly added or upgrade-requeued albums get picked
+        # up on the next cycle instead of waiting for random selection.
         sql = """
             SELECT * FROM album_requests
             WHERE status = 'wanted'
               AND (next_retry_after IS NULL OR next_retry_after <= %s)
-            ORDER BY RANDOM()
+            ORDER BY
+              CASE WHEN search_attempts = 0 THEN 0 ELSE 1 END,
+              RANDOM()
         """
         if limit:
             sql += f" LIMIT {int(limit)}"
