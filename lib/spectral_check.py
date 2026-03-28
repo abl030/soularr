@@ -248,10 +248,13 @@ def analyze_album(folder_path, trim_seconds=30):
 
     grade, suspect_pct = classify_album(track_results)
 
-    # Album-level estimated bitrate: min of all track estimates (worst case)
-    estimates = [t.estimated_bitrate_kbps for t in track_results
-                 if t.estimated_bitrate_kbps is not None]
-    album_estimated = min(estimates) if estimates else None
+    # Album-level estimated bitrate: only set when album is suspect/likely_transcode
+    # A single outlier track on a genuine album shouldn't set this
+    album_estimated = None
+    if grade in ("suspect", "likely_transcode"):
+        estimates = [t.estimated_bitrate_kbps for t in track_results
+                     if t.estimated_bitrate_kbps is not None]
+        album_estimated = min(estimates) if estimates else None
 
     return AlbumResult(
         grade=grade,
