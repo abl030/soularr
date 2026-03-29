@@ -29,6 +29,12 @@ if not TEST_DSN and shutil.which("initdb") and shutil.which("pg_ctl"):
         print(f"[WARN] Could not start ephemeral PostgreSQL: {e}", file=sys.stderr)
         _pg = None
 
+# Save the real slskd_api before test_beets_validation mocks it
+try:
+    import slskd_api as _real_slskd_api
+except ImportError:
+    _real_slskd_api = None
+
 # Try to start ephemeral slskd if docker + creds available
 _slskd = None
 CREDS_FILE = os.path.join(os.path.dirname(__file__), ".slskd-creds.json")
