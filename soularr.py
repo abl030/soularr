@@ -2649,88 +2649,65 @@ def main():
                 os.remove(lock_file_path)
             sys.exit(0)
 
-        slskd_api_key = config["Slskd"]["api_key"]
-        lidarr_api_key = config["Lidarr"]["api_key"]
+        # --- Parse config into typed dataclass ---
+        from lib.config import SoularrConfig
+        cfg = SoularrConfig.from_ini(config, config_dir=args.config_dir, var_dir=args.var_dir)
 
-        lidarr_download_dir = config["Lidarr"]["download_dir"]
-        lidarr_disable_sync = config.getboolean("Lidarr", "disable_sync", fallback=False)
-
-        slskd_download_dir = config["Slskd"]["download_dir"]
-
-        lidarr_host_url = config["Lidarr"]["host_url"]
-        slskd_host_url = config["Slskd"]["host_url"]
-
-        stalled_timeout = config.getint("Slskd", "stalled_timeout", fallback=3600)
-        remote_queue_timeout = config.getint("Slskd", "remote_queue_timeout", fallback=300)
-
-        delete_searches = config.getboolean("Slskd", "delete_searches", fallback=True)
-
-        slskd_url_base = config.get("Slskd", "url_base", fallback="/")
-
-        ignored_users = config.get("Search Settings", "ignored_users", fallback="").split(",")
-        search_blacklist = config.get("Search Settings", "search_blacklist", fallback="").split(",")
-        search_blacklist = [word.strip() for word in search_blacklist if word.strip()]
-        search_type = config.get("Search Settings", "search_type", fallback="first_page").lower().strip()
-        search_source = config.get("Search Settings", "search_source", fallback="missing").lower().strip()
-
-        download_filtering = config.getboolean("Download Settings", "download_filtering", fallback=False)
-        use_extension_whitelist = config.getboolean("Download Settings", "use_extension_whitelist", fallback=False)
-        extensions_whitelist = config.get("Download Settings", "extensions_whitelist", fallback="txt,nfo,jpg").split(",")
-
-        search_sources = [search_source]
-        if search_sources[0] == "all":
-            search_sources = ["missing", "cutoff_unmet"]
-
-        minimum_match_ratio = config.getfloat("Search Settings", "minimum_filename_match_ratio", fallback=0.5)
-        page_size = config.getint("Search Settings", "number_of_albums_to_grab", fallback=10)
-        remove_wanted_on_failure = config.getboolean("Search Settings", "remove_wanted_on_failure", fallback=True)
-        enable_search_denylist = config.getboolean("Search Settings", "enable_search_denylist", fallback=False)
-        max_search_failures = config.getint("Search Settings", "max_search_failures", fallback=3)
-
-        use_most_common_tracknum = config.getboolean("Release Settings", "use_most_common_tracknum", fallback=True)
-        allow_multi_disc = config.getboolean("Release Settings", "allow_multi_disc", fallback=True)
-
-        default_accepted_countries = "Europe,Japan,United Kingdom,United States,[Worldwide],Australia,Canada"
-        default_accepted_formats = "CD,Digital Media,Vinyl"
-        accepted_countries = config.get("Release Settings", "accepted_countries", fallback=default_accepted_countries).split(",")
-        skip_region_check = config.getboolean("Release Settings", "skip_region_check", fallback=False)
-        accepted_formats = config.get("Release Settings", "accepted_formats", fallback=default_accepted_formats).split(",")
-
-        raw_filetypes = config.get("Search Settings", "allowed_filetypes", fallback="flac,mp3")
-
-        if "," in raw_filetypes:
-            allowed_filetypes = raw_filetypes.split(",")
-        else:
-            allowed_filetypes = [raw_filetypes]
+        # --- Bridge: assign old globals from cfg so existing functions work ---
+        # These will be removed once all functions are migrated to use cfg directly.
+        slskd_api_key = cfg.slskd_api_key
+        lidarr_api_key = cfg.lidarr_api_key
+        lidarr_download_dir = cfg.lidarr_download_dir
+        lidarr_disable_sync = cfg.lidarr_disable_sync
+        slskd_download_dir = cfg.slskd_download_dir
+        lidarr_host_url = cfg.lidarr_host_url
+        slskd_host_url = cfg.slskd_host_url
+        stalled_timeout = cfg.stalled_timeout
+        remote_queue_timeout = cfg.remote_queue_timeout
+        delete_searches = cfg.delete_searches
+        slskd_url_base = cfg.slskd_url_base
+        ignored_users = list(cfg.ignored_users)
+        search_blacklist = list(cfg.search_blacklist)
+        search_type = cfg.search_type
+        search_source = cfg.search_source
+        download_filtering = cfg.download_filtering
+        use_extension_whitelist = cfg.use_extension_whitelist
+        extensions_whitelist = list(cfg.extensions_whitelist)
+        search_sources = list(cfg.search_sources)
+        minimum_match_ratio = cfg.minimum_match_ratio
+        page_size = cfg.page_size
+        remove_wanted_on_failure = cfg.remove_wanted_on_failure
+        enable_search_denylist = cfg.enable_search_denylist
+        max_search_failures = cfg.max_search_failures
+        use_most_common_tracknum = cfg.use_most_common_tracknum
+        allow_multi_disc = cfg.allow_multi_disc
+        accepted_countries = list(cfg.accepted_countries)
+        skip_region_check = cfg.skip_region_check
+        accepted_formats = list(cfg.accepted_formats)
+        allowed_filetypes = list(cfg.allowed_filetypes)
 
         setup_logging(config)
 
-        # Beets validation config
-        beets_validation_enabled = config.getboolean("Beets Validation", "enabled", fallback=False)
-        beets_harness_path = config.get("Beets Validation", "harness_path",
-                                        fallback="/mnt/virtio/Music/harness/run_beets_harness.sh")
-        beets_distance_threshold = config.getfloat("Beets Validation", "distance_threshold", fallback=0.15)
-        beets_staging_dir = config.get("Beets Validation", "staging_dir", fallback="/mnt/virtio/Music/AI")
-        audio_check_mode = config.get("Beets Validation", "audio_check", fallback="normal")
-        beets_tracking_file = config.get("Beets Validation", "tracking_file",
-                                         fallback="/mnt/virtio/Music/Re-download/beets-validated.jsonl")
+        beets_validation_enabled = cfg.beets_validation_enabled
+        beets_harness_path = cfg.beets_harness_path
+        beets_distance_threshold = cfg.beets_distance_threshold
+        beets_staging_dir = cfg.beets_staging_dir
+        audio_check_mode = cfg.audio_check_mode
+        beets_tracking_file = cfg.beets_tracking_file
         if beets_validation_enabled:
             logger.info(f"Beets validation ENABLED: harness={beets_harness_path}, "
                         f"threshold={beets_distance_threshold}, staging={beets_staging_dir}")
 
-        # Pipeline DB config
-        pipeline_db_enabled = config.getboolean("Pipeline DB", "enabled", fallback=False)
-        pipeline_db_dsn = config.get("Pipeline DB", "dsn",
-                                     fallback="postgresql://soularr@localhost/soularr")
+        pipeline_db_enabled = cfg.pipeline_db_enabled
+        pipeline_db_dsn = cfg.pipeline_db_dsn
         if pipeline_db_enabled:
             from album_source import DatabaseSource
             pipeline_db_source = DatabaseSource(pipeline_db_dsn)
             logger.info(f"Pipeline DB ENABLED: {pipeline_db_dsn}")
 
-        # Meelo config — trigger library scan after auto-import
-        meelo_url = config.get("Meelo", "url", fallback=None)
-        meelo_username = config.get("Meelo", "username", fallback=None)
-        meelo_password = config.get("Meelo", "password", fallback=None)
+        meelo_url = cfg.meelo_url
+        meelo_username = cfg.meelo_username
+        meelo_password = cfg.meelo_password
         if meelo_url:
             logger.info(f"Meelo post-import scan ENABLED: {meelo_url}")
 
