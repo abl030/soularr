@@ -251,17 +251,17 @@ def choose_release(artist_name, releases):
 
 
 def verify_filetype(file, allowed_filetype):
-    current_filetype = file.filename.split(".")[-1]
+    current_filetype = file["filename"].split(".")[-1]
     bitdepth = None
     samplerate = None
     bitrate = None
 
-    if file.bitRate is not None:
-        bitrate = file.bitRate
-    if file.sampleRate is not None:
-        samplerate = file.sampleRate
-    if file.bitDepth is not None:
-        bitdepth = file.bitDepth
+    if "bitRate" in file:
+        bitrate = file["bitRate"]
+    if "sampleRate" in file:
+        samplerate = file["sampleRate"]
+    if "bitDepth" in file:
+        bitdepth = file["bitDepth"]
 
     # Check if the types match up for the current files type and the current type from the config
     if current_filetype == allowed_filetype.split(" ")[0]:
@@ -288,8 +288,8 @@ def verify_filetype(file, allowed_filetype):
                     cbr_values = {128, 160, 192, 224, 256, 320}
                     is_vbr = bitrate not in cbr_values
                     # Prefer isVariableBitRate flag from slskd if available
-                    if file.isVariableBitRate is not None:
-                        is_vbr = file.isVariableBitRate
+                    if "isVariableBitRate" in file:
+                        is_vbr = file["isVariableBitRate"]
                     if not is_vbr:
                         return False
                     if selected_attributes.lower() == "v0":
@@ -338,17 +338,17 @@ def download_filter(allowed_filetype, directory):
         logger.debug(f"Accepted extensions: {whitelist}")
         for file in directory["files"]:
             for extension in whitelist:
-                if file.filename.split(".")[-1].lower() == extension.lower():
+                if file["filename"].split(".")[-1].lower() == extension.lower():
                     break  # Jump out and don't add wanted files to the unwanted list
             else:
-                unwanted.append(file.filename)  # Add to list of files to remove from the wanted list
-                logger.debug(f"Unwanted file: {file.filename}")
+                unwanted.append(file["filename"])  # Add to list of files to remove from the wanted list
+                logger.debug(f"Unwanted file: {file['filename']}")
         if len(unwanted) > 0:
             temp = []
             logger.debug(f"Unwanted Files: {unwanted}")
             for file in directory["files"]:
-                if file.filename not in unwanted:
-                    logger.debug(f"Added file to queue: {file.filename}")
+                if file["filename"] not in unwanted:
+                    logger.debug(f"Added file to queue: {file['filename']}")
                     temp.append(file)  # Build the new list of files
             directory["files"] = temp
             for files in temp:
