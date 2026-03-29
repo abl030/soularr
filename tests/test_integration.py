@@ -361,5 +361,29 @@ class TestCancelAndDelete(unittest.TestCase):
         )
 
 
+class TestAlbumRecordDictCompat(unittest.TestCase):
+    """Verify album_source methods work with both raw dicts and GrabListEntry."""
+
+    def test_get_tracks_with_raw_dict(self):
+        """get_tracks receives raw from_db_row() dicts — must use .get()."""
+        raw = {"_db_request_id": None, "title": "T"}
+        from album_source import DatabaseSource
+        source = DatabaseSource.__new__(DatabaseSource)
+        # Should return empty list for None request_id, not crash
+        result = source.get_tracks(raw)
+        self.assertEqual(result, [])
+
+    def test_get_tracks_with_grab_list_entry(self):
+        """get_tracks also works with GrabListEntry via bridge."""
+        entry = GrabListEntry(
+            album_id=-1, files=[], filetype="mp3", title="T", artist="A",
+            year="2024", mb_release_id="x", db_request_id=None,
+        )
+        from album_source import DatabaseSource
+        source = DatabaseSource.__new__(DatabaseSource)
+        result = source.get_tracks(entry)
+        self.assertEqual(result, [])
+
+
 if __name__ == "__main__":
     unittest.main()

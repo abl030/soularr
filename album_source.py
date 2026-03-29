@@ -119,7 +119,7 @@ class DatabaseSource:
 
         Returns list of dicts with keys: title, trackNumber, mediumNumber, duration.
         """
-        request_id = album_record.db_request_id
+        request_id = album_record.get("_db_request_id")
         if not request_id:
             return []
 
@@ -140,7 +140,7 @@ class DatabaseSource:
 
     def update_status(self, album_record, status, **extra):
         """Update album status in the pipeline DB."""
-        request_id = album_record.db_request_id
+        request_id = album_record.get("_db_request_id")
         if not request_id:
             return
         db = self._get_db()
@@ -149,7 +149,7 @@ class DatabaseSource:
     def mark_done(self, album_record, bv_result, dest_path=None,
                   download_info=None):
         """Mark album as imported."""
-        request_id = album_record.db_request_id
+        request_id = album_record.get("_db_request_id")
         if not request_id:
             return
 
@@ -205,7 +205,7 @@ class DatabaseSource:
     def mark_failed(self, album_record, bv_result, usernames=None,
                     download_info=None):
         """Log the failure and denylist users, but keep album wanted for retry."""
-        request_id = album_record.db_request_id
+        request_id = album_record.get("_db_request_id")
         if not request_id:
             return
 
@@ -250,7 +250,7 @@ class DatabaseSource:
 
     def get_denylisted_users(self, album_record):
         """Get denylisted usernames for an album."""
-        request_id = album_record.db_request_id
+        request_id = album_record.get("_db_request_id")
         if not request_id:
             return set()
         db = self._get_db()
