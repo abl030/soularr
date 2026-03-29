@@ -1230,12 +1230,17 @@ def _check_quality_gate(album_data, request_id):
                                min_bitrate=min_br_kbps)
             usernames = set(f.get("username") for f in album_data.get("files", [])
                            if f.get("username"))
+            gate_br = spectral_br if (spectral_br and spectral_br < min_br_kbps) else min_br_kbps
+            if spectral_br and spectral_br < min_br_kbps:
+                reason = (f"quality gate: spectral {spectral_br}kbps "
+                          f"(beets {min_br_kbps}kbps) < {QUALITY_MIN_BITRATE_KBPS}kbps")
+            else:
+                reason = f"quality gate: {min_br_kbps}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps"
             for username in usernames:
-                db.add_denylist(request_id, username,
-                                f"quality gate: {min_br_kbps}kbps < {QUALITY_MIN_BITRATE_KBPS}kbps")
+                db.add_denylist(request_id, username, reason)
             logger.info(
                 f"QUALITY GATE: {label} "
-                f"min_bitrate={min_br_kbps}kbps{spectral_note} < {QUALITY_MIN_BITRATE_KBPS}kbps, "
+                f"gate_bitrate={gate_br}kbps{spectral_note} < {QUALITY_MIN_BITRATE_KBPS}kbps, "
                 f"queued for upgrade, denylisted {usernames} "
                 f"(searching {QUALITY_UPGRADE_TIERS})")
         elif decision == "requeue_flac":
