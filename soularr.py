@@ -501,116 +501,21 @@ def filter_list(albums):
 
 
 def search_for_album(album):
+    from lib.search import build_query
+
     album_title = album["title"]
     artist_name = album["artist"]["artistName"]
     album_id = album["id"]
-    if len(album_title) == 1:
-        query = artist_name + " " + album_title
-    elif len(artist_name) <= 3:
-        # Short artist names (e.g. "AFI", "REM") poison Soulseek searches —
-        # the short token gets dropped or mismatched, causing 0 results.
-        # Skip prepending and search by album title alone.
-        query = album_title
-    else:
-        query = artist_name + " " + album_title if config.getboolean("Search Settings", "album_prepend_artist", fallback=False) else album_title
+    prepend = config.getboolean("Search Settings", "album_prepend_artist", fallback=False)
 
-    original_query = query
-    for word in search_blacklist:
-        if word:
-            # Case-insensitive replacement
-            pattern = re.compile(re.escape(word), re.IGNORECASE)
-            query = pattern.sub("", query)
+    query = build_query(artist_name, album_title, prepend_artist=prepend)
 
-    # Clean up double spaces
-    query = " ".join(query.split())
+    if not query:
+        logger.warning(f"Cannot build search query for '{artist_name} - {album_title}'")
+        return False
 
-    if query != original_query:
-        logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
-
-    # Strip special characters that poison Soulseek searches.
-    # Apostrophes (e.g. "Pink's"), underscores (e.g. "Euro_EP"),
-    # and other punctuation cause 0 results or wrong matches.
-    clean = re.sub(r"['\"\(\)\[\]\{\}!@#$%^&*_]", " ", query)
-    clean = " ".join(clean.split())  # collapse any double spaces
-    if clean != query:
-        logger.info(f"Stripped special characters from search: '{query}' -> '{clean}'")
-        query = clean
-
-    # Soulseek silently drops search tokens with <= 2 characters.
-    # Strip them proactively to avoid wasting a token slot.
-    # e.g. "A Tribe Called Quest" → "Tribe Called Quest"
-    # NOTE: Do NOT strip 3-char tokens (e.g. "New", "All", "Raw") —
-    # they are meaningful and Soulseek matches them fine.
-    tokens = query.split()
-    long_tokens = [t for t in tokens if len(t) > 2]
-    if long_tokens:
-        stripped = " ".join(long_tokens)
-        if stripped != query:
-            logger.info(
-                f"Stripped short tokens from search: '{query}' -> '{stripped}'"
-            )
-            query = stripped
-        tokens = query.split()
-
-    # Soulseek's distributed search returns 0 results when queries have
-    # too many tokens (typically > 4). Common words like "Post" appear in
-    # millions of paths; intersecting too many token result sets causes
-    # server-side timeouts. Cap at 4 tokens, dropping the shortest
-    # (most common/ambiguous) ones first.
-    # e.g. "Animal Collective Merriweather Post Pavilion"
-    #    → "Animal Collective Merriweather Pavilion" (drops "Post")
-    MAX_SEARCH_TOKENS = 4
-    if len(tokens) > MAX_SEARCH_TOKENS:
-        # Sort by length descending, keep the longest (most distinctive) tokens
-        kept = sorted(tokens, key=len, reverse=True)[:MAX_SEARCH_TOKENS]
-        # Restore original word order
-        capped = [t for t in tokens if t in kept]
-        # Handle duplicates: only keep as many as we selected
-        seen = {}
-        ordered = []
-        for t in capped:
-            count = seen.get(t, 0)
-            if count < kept.count(t):
-                ordered.append(t)
-                seen[t] = count + 1
-        capped_query = " ".join(ordered[:MAX_SEARCH_TOKENS])
-        logger.info(
-            f"Capped search tokens ({len(tokens)} -> {MAX_SEARCH_TOKENS}): "
-            f"'{query}' -> '{capped_query}'"
-        )
-        query = capped_query
-        tokens = query.split()
-
-    # When ALL tokens are short (e.g. "AFI AFI", "REM Up"), the search
-    # returns 0 results. Fall back to searching for the longest track
-    # title from the album — the existing check_for_match logic will
-    # still validate that the returned directories contain the full album.
-    if tokens and all(len(t) <= 3 for t in tokens):
-        try:
-            releases = album.get("releases") or lidarr.get_album(album_id)["releases"]
-            release = choose_release(artist_name, releases)
-            tracks = get_album_tracks(album, release_id=release["id"])
-            if tracks:
-                best_track = max(tracks, key=lambda t: len(t["title"]))
-                if len(best_track["title"]) > 3:
-                    logger.info(
-                        f"Short-name fallback for '{query}': all tokens <= 3 chars, "
-                        f"searching for track '{best_track['title']}' instead"
-                    )
-                    query = best_track["title"]
-                else:
-                    logger.warning(
-                        f"Cannot search for '{artist_name} - {album_title}': "
-                        f"all query tokens and track names are <= 3 chars"
-                    )
-                    return False
-        except Exception:
-            logger.exception(
-                f"Short-name fallback failed for '{artist_name} - {album_title}'"
-            )
-            return False
-
-    logger.info(f"Searching for album: {query}")
+    logger.info(f"Searching for album: {query} "
+                f"(from '{artist_name} - {album_title}')")
     try:
         search = slskd.searches.search_text(
             searchText=query,
