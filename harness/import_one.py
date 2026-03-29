@@ -110,7 +110,11 @@ def _get_beets_min_bitrate(mb_release_id):
 
 
 def _get_folder_min_bitrate(folder_path):
-    """Get min bitrate (kbps) of audio files in a folder via ffprobe."""
+    """Get min bitrate (kbps) of audio files in a folder via ffprobe.
+
+    Uses audio stream bitrate (excludes cover art overhead). Falls back
+    to format bitrate for VBR MP3s where stream bitrate is N/A.
+    """
     min_br = None
     for fname in os.listdir(folder_path):
         ext = os.path.splitext(fname)[1].lower()
@@ -118,15 +122,24 @@ def _get_folder_min_bitrate(folder_path):
             continue
         fpath = os.path.join(folder_path, fname)
         try:
-            # Use format=bit_rate (overall file bitrate) — stream=bit_rate
-            # returns N/A for VBR MP3s since there's no fixed stream bitrate.
+            # Try audio stream bitrate first (accurate for CBR, excludes cover art)
             result = subprocess.run(
                 ["ffprobe", "-v", "error",
-                 "-show_entries", "format=bit_rate",
+                 "-select_streams", "a:0",
+                 "-show_entries", "stream=bit_rate",
                  "-of", "csv=p=0", fpath],
                 capture_output=True, text=True, timeout=30,
             )
             br_str = result.stdout.strip()
+            # VBR MP3s return N/A for stream bitrate — fall back to format
+            if not br_str or not br_str.isdigit():
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error",
+                     "-show_entries", "format=bit_rate",
+                     "-of", "csv=p=0", fpath],
+                    capture_output=True, text=True, timeout=30,
+                )
+                br_str = result.stdout.strip()
             if br_str and br_str.isdigit():
                 br_kbps = int(br_str) // 1000
                 if br_kbps > 0 and (min_br is None or br_kbps < min_br):
