@@ -118,6 +118,11 @@ def build_query(artist, title, prepend_artist=True, max_tokens=MAX_SEARCH_TOKENS
     artist_lower = {t.lower() for t in artist_tokens}
     title_tokens = [t for t in title_tokens if t.lower() not in artist_lower]
 
+    # Drop artist entirely if it's "Various Artists" — adds nothing to search,
+    # and the wildcarded version (*arious *rtists) actively poisons results.
+    if clean_artist.lower() in ("various artists", "various"):
+        artist_tokens = []
+
     # Wildcard artist tokens
     artist_tokens = wildcard_artist_tokens(artist_tokens)
 

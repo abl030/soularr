@@ -171,6 +171,11 @@ class TestBuildQuery(unittest.TestCase):
         # Album title "Weezer" is duplicate of artist — only wildcarded version remains
         self.assertEqual(q, "*eezer")
 
+    def test_various_artists_dropped(self):
+        q = build_query("Various Artists", "Shelflife Collection")
+        self.assertEqual(q, "Shelflife Collection")
+        self.assertNotIn("*arious", q)
+
     def test_no_prepend(self):
         q = build_query("The Beatles", "Abbey Road", prepend_artist=False)
         self.assertEqual(q, "Abbey Road")
