@@ -55,7 +55,11 @@ class ValidationResult:
     target_mbid: Optional[str] = None
     candidate_count: int = 0
     candidates: list[CandidateSummary] = field(default_factory=list)
+    # Local file info (from harness choose_match items)
+    items: list[dict] = field(default_factory=list)
     local_track_count: Optional[int] = None
+    recommendation: Optional[str] = None        # beets confidence: "strong", "medium", "none"
+    path: Optional[str] = None                  # album path being validated
     # Source info (populated by soularr.py)
     soulseek_username: Optional[str] = None
     download_folder: Optional[str] = None
@@ -84,7 +88,10 @@ class ValidationResult:
             target_mbid=d.get("target_mbid"),
             candidate_count=d.get("candidate_count", 0),
             candidates=candidates,
+            items=d.get("items", []),
             local_track_count=d.get("local_track_count"),
+            recommendation=d.get("recommendation"),
+            path=d.get("path"),
             soulseek_username=d.get("soulseek_username"),
             download_folder=d.get("download_folder"),
             failed_path=d.get("failed_path"),
@@ -182,6 +189,7 @@ class QualityInfo:
     """Bitrate and quality decision data."""
     new_min_bitrate: Optional[int] = None
     prev_min_bitrate: Optional[int] = None
+    post_conversion_min_bitrate: Optional[int] = None
     is_transcode: bool = False
     will_be_verified_lossless: bool = False
 
@@ -192,8 +200,11 @@ class SpectralInfo:
     grade: Optional[str] = None
     bitrate: Optional[int] = None
     cliff_freq_hz: Optional[int] = None
+    suspect_pct: float = 0.0
+    per_track: list[dict] = field(default_factory=list)  # per-track grade/hf_deficit/cliff
     existing_grade: Optional[str] = None
     existing_bitrate: Optional[int] = None
+    existing_suspect_pct: float = 0.0
 
 
 @dataclass

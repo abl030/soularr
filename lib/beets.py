@@ -94,6 +94,11 @@ def beets_validate(harness_path, album_path, mb_release_id, distance_threshold=0
                     _candidate_from_harness(c, mb_release_id)
                     for c in raw_candidates
                 ]
+                # Store local file info and beets recommendation
+                result.items = msg.get("items", [])
+                result.local_track_count = msg.get("item_count")
+                result.recommendation = msg.get("recommendation")
+                result.path = msg.get("path")
                 logger.info(f"BEETS_VALIDATE: {len(raw_candidates)} candidates, "
                             f"looking for mbid={mb_release_id}")
                 for i, cand in enumerate(raw_candidates):

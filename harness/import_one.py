@@ -341,6 +341,14 @@ def main():
         spectral_result = spectral_analyze(args.path, trim_seconds=30)
         r.spectral.grade = spectral_result.grade
         r.spectral.bitrate = spectral_result.estimated_bitrate_kbps
+        r.spectral.suspect_pct = spectral_result.suspect_pct
+        r.spectral.per_track = [
+            {"grade": t.grade, "hf_deficit_db": round(t.hf_deficit_db, 1),
+             "cliff_detected": t.cliff_detected,
+             "cliff_freq_hz": t.cliff_freq_hz,
+             "estimated_bitrate_kbps": t.estimated_bitrate_kbps}
+            for t in spectral_result.tracks
+        ]
         _log(f"  spectral_grade={spectral_result.grade}")
         if spectral_result.estimated_bitrate_kbps is not None:
             _log(f"  spectral_bitrate={spectral_result.estimated_bitrate_kbps}")
@@ -356,6 +364,7 @@ def main():
                 existing_spectral = spectral_analyze(existing_path, trim_seconds=30)
                 r.spectral.existing_grade = existing_spectral.grade
                 r.spectral.existing_bitrate = existing_spectral.estimated_bitrate_kbps
+                r.spectral.existing_suspect_pct = existing_spectral.suspect_pct
                 _log(f"  existing_spectral_grade={existing_spectral.grade}")
                 if existing_spectral.estimated_bitrate_kbps is not None:
                     _log(f"  existing_spectral_bitrate={existing_spectral.estimated_bitrate_kbps}")
@@ -381,6 +390,7 @@ def main():
 
     # --- Transcode detection ---
     post_conv_br = _get_folder_min_bitrate(args.path) if converted > 0 else None
+    r.quality.post_conversion_min_bitrate = post_conv_br
     is_transcode = transcode_detection(converted, post_conv_br)
     r.quality.is_transcode = is_transcode
     if is_transcode:
