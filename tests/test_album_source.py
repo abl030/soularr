@@ -149,6 +149,7 @@ class TestDatabaseSource(unittest.TestCase):
         source.mark_done(record, bv_result, dest_path="/Incoming/A/B")
 
         req = db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["status"], "imported")
         self.assertAlmostEqual(req["beets_distance"], 0.08)
 
@@ -166,6 +167,7 @@ class TestDatabaseSource(unittest.TestCase):
         source.mark_done(record, bv_result, dest_path="/Incoming/A/B")
 
         req = db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["status"], "imported")
 
     def test_mark_failed_updates_status_and_denylists(self):
@@ -182,6 +184,7 @@ class TestDatabaseSource(unittest.TestCase):
         source.mark_failed(record, bv_result, usernames={"bad_user1", "bad_user2"})
 
         req = db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["status"], "wanted")
         self.assertEqual(req["validation_attempts"], 1)
 
@@ -209,6 +212,7 @@ class TestDatabaseSource(unittest.TestCase):
                          download_info=dl)
 
         req = db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["on_disk_spectral_grade"], "suspect")
         self.assertEqual(req["on_disk_spectral_bitrate"], 160)
 

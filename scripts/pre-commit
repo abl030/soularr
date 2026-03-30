@@ -8,6 +8,7 @@ if [ -z "$STAGED" ]; then
     exit 0
 fi
 
+FILES=$(echo "$STAGED" | tr '\n' ' ')
 echo "pre-commit: pyright on $(echo "$STAGED" | wc -l) staged Python files..."
-pyright $STAGED
+nix-shell --run "pyright $FILES"
 echo "pre-commit: pyright OK"

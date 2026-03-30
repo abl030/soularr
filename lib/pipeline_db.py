@@ -12,6 +12,7 @@ Usage:
 
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import psycopg2
 import psycopg2.extras
@@ -256,14 +257,14 @@ class PipelineDB:
         assert row is not None, "INSERT RETURNING should always return a row"
         return row["id"]
 
-    def get_request(self, request_id) -> dict[str, object] | None:
+    def get_request(self, request_id) -> dict[str, Any] | None:
         cur = self._execute(
             "SELECT * FROM album_requests WHERE id = %s", (request_id,)
         )
         row = cur.fetchone()
         return dict(row) if row else None
 
-    def get_request_by_mb_release_id(self, mb_release_id) -> dict[str, object] | None:
+    def get_request_by_mb_release_id(self, mb_release_id) -> dict[str, Any] | None:
         cur = self._execute(
             "SELECT * FROM album_requests WHERE mb_release_id = %s", (mb_release_id,)
         )

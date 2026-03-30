@@ -16,7 +16,7 @@ import json
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 import copy
 import music_tag
 import slskd_api
@@ -321,7 +321,7 @@ def verify_filetype(file, allowed_filetype):
         return False
 
 
-def download_filter(allowed_filetype, directory):
+def download_filter(allowed_filetype, directory: Any):
     """
     Filters the directory listing from SLSKD using the filetype whitelist.
     If not using the whitelist it will only return the audio files of the allowed filetype.
@@ -378,6 +378,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                 logger.info(f"Error checking slskd version number: {version}. Version check > 0.22.2: {version_check}. This would most likely be fixed by updating your slskd.")
 
             try:
+                directory: Any
                 if version_check:
                     directory = slskd.users.directory(username=username, directory=file_dir)[0]
                 else:
@@ -974,12 +975,13 @@ def _check_quality_gate(album_data, request_id):
         is_cbr = info.is_cbr
 
         # Gather pipeline DB state
-        spectral_br = None
+        spectral_br: int | None = None
         req = None
         if request_id:
             try:
                 req = pipeline_db_source._get_db().get_request(request_id)
-                spectral_br = req.get("spectral_bitrate") if req else None
+                raw_br = req.get("spectral_bitrate") if req else None
+                spectral_br = raw_br if isinstance(raw_br, int) else None
                 if spectral_br and spectral_br < min_br_kbps:
                     logger.info(f"QUALITY GATE: using spectral_bitrate={spectral_br}kbps "
                                 f"(lower than beets min_bitrate={min_br_kbps}kbps)")
@@ -1032,7 +1034,7 @@ def _check_quality_gate(album_data, request_id):
                 f"searching for FLAC to verify")
         else:  # accept
             db = pipeline_db_source._get_db()
-            update_fields = {"min_bitrate": min_br_kbps}
+            update_fields: dict[str, object] = {"min_bitrate": min_br_kbps}
             if spectral_br:
                 update_fields["spectral_bitrate"] = spectral_br
             db.update_status(request_id, "imported", **update_fields)
