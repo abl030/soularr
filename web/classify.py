@@ -93,6 +93,7 @@ class ClassifiedEntry:
     border_color: str
     verdict: str
     summary: str
+    downloaded_label: str = ""  # e.g. "MP3 320", "FLAC (converted to MP3 V0)"
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +128,15 @@ def quality_label(fmt: str, min_bitrate_kbps: int) -> str:
 def classify_log_entry(entry: LogEntry) -> ClassifiedEntry:
     """Classify a download_log entry for display.
 
-    Returns a ClassifiedEntry with badge, verdict, and summary.
+    Returns a ClassifiedEntry with badge, verdict, summary, and downloaded_label.
     """
     badge, badge_class, border_color, verdict = _classify(entry)
     summary = _build_summary(entry, badge, verdict)
+    downloaded_label = _build_downloaded_label(entry)
     return ClassifiedEntry(
         badge=badge, badge_class=badge_class,
         border_color=border_color, verdict=verdict,
-        summary=summary,
+        summary=summary, downloaded_label=downloaded_label,
     )
 
 
@@ -148,7 +150,12 @@ def _classify(entry: LogEntry) -> tuple[str, str, str, str]:
 
     # --- Failed / Timeout ---
     if entry.outcome in ("failed", "timeout"):
-        verdict = "Import timed out" if entry.beets_scenario == "timeout" else "Import error"
+        if entry.beets_scenario == "timeout":
+            verdict = "Import timed out"
+        elif entry.error_message:
+            verdict = f"Import error: {entry.error_message}"
+        else:
+            verdict = "Import error"
         return ("Failed", "badge-failed", "#a33", verdict)
 
     # --- Force import ---
@@ -326,3 +333,27 @@ def _build_summary(entry: LogEntry, badge: str, verdict: str) -> str:
         parts.append(entry.soulseek_username)
 
     return " \u00b7 ".join(p for p in parts if p)
+
+
+# ---------------------------------------------------------------------------
+# Downloaded label — server-computed quality description of the download
+# ---------------------------------------------------------------------------
+
+def _build_downloaded_label(entry: LogEntry) -> str:
+    """Build a label describing what was downloaded.
+
+    Examples: "MP3 320", "FLAC (converted to MP3 V0)", "MP3 V2"
+    """
+    fmt = entry.actual_filetype or entry.filetype or ""
+    if not fmt:
+        return ""
+
+    br_kbps = (entry.actual_min_bitrate
+               or (entry.bitrate // 1000 if entry.bitrate else None)
+               or 0)
+
+    if entry.was_converted and entry.original_filetype:
+        conv_label = quality_label("mp3", br_kbps)
+        return f"{entry.original_filetype.upper()} (converted to {conv_label})"
+
+    return quality_label(fmt, br_kbps) if br_kbps else fmt.upper()

@@ -480,5 +480,92 @@ class TestClassifyEdgeCases(unittest.TestCase):
             self.assertTrue(result.summary)
 
 
+# ============================================================================
+# Exception verdicts with error_message
+# ============================================================================
+
+class TestExceptionVerdicts(unittest.TestCase):
+
+    def test_exception_with_error_message(self):
+        """Exception verdict should include the error_message when available."""
+        result = classify_log_entry(_entry(
+            outcome="failed", beets_scenario="exception",
+            error_message="FileNotFoundError: /mnt/virtio/music/slskd/foo"))
+        self.assertIn("FileNotFoundError", result.verdict)
+
+    def test_exception_without_error_message(self):
+        """Exception verdict without error_message should still work."""
+        result = classify_log_entry(_entry(
+            outcome="failed", beets_scenario="exception",
+            error_message=None))
+        self.assertIn("error", result.verdict.lower())
+
+    def test_timeout_ignores_error_message(self):
+        """Timeout verdict is fixed, doesn't use error_message."""
+        result = classify_log_entry(_entry(
+            outcome="timeout", beets_scenario="timeout",
+            error_message="some error"))
+        self.assertIn("timed out", result.verdict.lower())
+
+
+# ============================================================================
+# downloaded_label — server-computed download quality label
+# ============================================================================
+
+class TestDownloadedLabel(unittest.TestCase):
+
+    def test_mp3_download(self):
+        """MP3 320 download gets a label."""
+        result = classify_log_entry(_entry(
+            outcome="success", actual_filetype="mp3", actual_min_bitrate=320))
+        self.assertTrue(hasattr(result, "downloaded_label"))
+        self.assertIn("320", result.downloaded_label)
+
+    def test_flac_converted_download(self):
+        """FLAC converted to V0 shows conversion."""
+        result = classify_log_entry(_entry(
+            outcome="success", was_converted=True,
+            original_filetype="flac", actual_filetype="mp3",
+            actual_min_bitrate=243, bitrate=243000))
+        self.assertTrue(hasattr(result, "downloaded_label"))
+        self.assertIn("FLAC", result.downloaded_label)
+        self.assertIn("V0", result.downloaded_label)
+
+    def test_no_filetype_download(self):
+        """Missing filetype doesn't crash."""
+        result = classify_log_entry(_entry(
+            outcome="force_import", actual_filetype=None, filetype=None))
+        self.assertTrue(hasattr(result, "downloaded_label"))
+
+    def test_bitrate_fallback(self):
+        """Falls back to bitrate (bps) when actual_min_bitrate is None."""
+        result = classify_log_entry(_entry(
+            outcome="success", actual_min_bitrate=None,
+            bitrate=155000, actual_filetype="mp3"))
+        self.assertTrue(hasattr(result, "downloaded_label"))
+        self.assertIn("155", result.downloaded_label)
+
+
+# ============================================================================
+# quality_override — should only trigger with existing files on disk
+# ============================================================================
+
+class TestQualityOverride(unittest.TestCase):
+
+    def test_quality_override_without_existing_is_new_import(self):
+        """quality_override set but nothing on disk = new import, not upgrade."""
+        result = classify_log_entry(_entry(
+            outcome="success", quality_override="flac",
+            existing_min_bitrate=None, actual_min_bitrate=243))
+        self.assertEqual(result.badge, "Imported")
+
+    def test_quality_override_with_existing_is_upgrade(self):
+        """quality_override set AND existing on disk = upgrade."""
+        result = classify_log_entry(_entry(
+            outcome="success", quality_override="flac",
+            existing_min_bitrate=320, actual_min_bitrate=243))
+        self.assertEqual(result.badge, "Upgraded")
+
+
 if __name__ == "__main__":
     unittest.main()
