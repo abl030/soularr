@@ -9,6 +9,7 @@ Commands:
     cancel <id>         Set a request to skipped
     set <id> <status>   Change status (wanted, imported, manual)
     show <id>           Show full details of a request
+    force-import <dl_id> Force-import a rejected download by download_log ID
 
 Usage:
     python3 scripts/pipeline_cli.py status
@@ -21,6 +22,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 import urllib.error
@@ -233,6 +235,119 @@ def cmd_show(db, args):
 
 
 
+IMPORT_ONE = os.path.join(os.path.dirname(__file__), "..", "harness", "import_one.py")
+
+# Known slskd download dirs to resolve old relative failed_paths against
+SLSKD_DOWNLOAD_DIRS = ["/mnt/virtio/music/slskd"]
+
+
+def _resolve_failed_path(failed_path: str) -> "str | None":
+    """Resolve a failed_path to an existing absolute directory.
+
+    Old entries stored relative paths (e.g. 'failed_imports/Foo - Bar').
+    New entries store absolute paths. Try the path as-is first, then
+    resolve against known slskd download dirs.
+    """
+    if os.path.isdir(failed_path):
+        return failed_path
+    for base in SLSKD_DOWNLOAD_DIRS:
+        candidate = os.path.join(base, failed_path)
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def cmd_force_import(db, args):
+    """Force-import a rejected download by download_log ID."""
+    log_id = args.download_log_id
+
+    # 1. Look up download_log entry
+    entry = db.get_download_log_entry(log_id)
+    if not entry:
+        print(f"  Download log entry {log_id} not found.")
+        return
+
+    request_id = entry["request_id"]
+
+    # 2. Extract failed_path from validation_result JSONB
+    vr_raw = entry.get("validation_result")
+    if not vr_raw:
+        print(f"  No validation_result on download_log {log_id}.")
+        return
+
+    vr = vr_raw if isinstance(vr_raw, dict) else json.loads(vr_raw)
+    failed_path = vr.get("failed_path")
+    if not failed_path:
+        print(f"  No failed_path in validation_result for download_log {log_id}.")
+        return
+
+    # 3. Look up album_request for MBID
+    req = db.get_request(request_id)
+    if not req:
+        print(f"  Album request {request_id} not found.")
+        return
+
+    mbid = req.get("mb_release_id")
+    if not mbid:
+        print(f"  Album request {request_id} has no mb_release_id (Discogs-only?).")
+        return
+
+    # 4. Resolve and verify files exist
+    resolved_path = _resolve_failed_path(failed_path)
+    if not resolved_path:
+        print(f"  Files not found at: {failed_path}")
+        if not os.path.isabs(failed_path):
+            print(f"  (also tried: {', '.join(os.path.join(b, failed_path) for b in SLSKD_DOWNLOAD_DIRS)})")
+        return
+    failed_path = resolved_path
+
+    print(f"  Force-importing: {req['artist_name']} - {req['album_title']}")
+    print(f"  Path: {failed_path}")
+    print(f"  MBID: {mbid}")
+
+    # 5. Call import_one.py --force
+    cmd = [
+        sys.executable, IMPORT_ONE,
+        failed_path, mbid,
+        "--request-id", str(request_id),
+        "--force",
+    ]
+    # Pass override-min-bitrate if album has one
+    if req.get("min_bitrate"):
+        cmd.extend(["--override-min-bitrate", str(req["min_bitrate"])])
+
+    print(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+    # 6. Parse ImportResult from stdout
+    import_result_json = None
+    for line in result.stdout.splitlines():
+        if "__IMPORT_RESULT__" in line:
+            try:
+                import_result_json = line.split("__IMPORT_RESULT__")[1].strip()
+            except (IndexError, json.JSONDecodeError):
+                pass
+
+    # Print stderr (human-readable logs)
+    if result.stderr:
+        for line in result.stderr.strip().splitlines():
+            print(f"  {line}")
+
+    # 7. Log result to download_log
+    db.log_download(
+        request_id=request_id,
+        outcome="force_import",
+        import_result=import_result_json,
+        staged_path=failed_path,
+    )
+
+    if result.returncode == 0:
+        print(f"  [OK] Force-import successful (exit code 0)")
+        db.update_status(request_id, "imported")
+    else:
+        print(f"  [WARN] import_one.py exited with code {result.returncode}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Pipeline CLI — manage download pipeline DB")
     parser.add_argument("--dsn", default=DEFAULT_DSN, help="PostgreSQL connection string")
@@ -268,6 +383,10 @@ def main():
     p_show = sub.add_parser("show", help="Show full details of a request")
     p_show.add_argument("id", type=int, help="Request ID")
 
+    # force-import
+    p_force = sub.add_parser("force-import", help="Force-import a rejected download by download_log ID")
+    p_force.add_argument("download_log_id", type=int, help="Download log ID")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -283,6 +402,7 @@ def main():
         "cancel": cmd_cancel,
         "set": cmd_set,
         "show": cmd_show,
+        "force-import": cmd_force_import,
     }
     commands[args.command](db, args)
     db.close()

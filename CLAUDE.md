@@ -41,7 +41,7 @@ lib/
   beets_db.py           — BeetsDB: read-only beets SQLite queries (AlbumInfo dataclass)
   config.py             — SoularrConfig dataclass (typed config from config.ini)
   grab_list.py          — GrabList: wanted-album selection with priority/ordering
-  pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema)
+  pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema, get_download_log_entry)
   quality.py            — Pure decision functions + typed dataclasses:
                            Decision functions:
                            - spectral_import_decision(), import_quality_decision()
@@ -63,17 +63,20 @@ harness/
                            all AlbumInfo/TrackInfo fields, extra items/tracks with detail
   run_beets_harness.sh  — Shell wrapper to bootstrap Nix beets Python environment
   import_one.py         — One-shot beets import: emits ImportResult JSON on stdout
+                           Flags: --force (skip distance check for force-importing rejected albums),
+                           --override-min-bitrate, --request-id, --dry-run
 scripts/
-  pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, migrate
+  pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, force-import, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
-tests/                     448 tests total
+tests/                     457 tests total
   test_album_source.py      — 11 tests for AlbumSource
   test_beets_db.py           — 14 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
   test_config.py             — 41 tests for SoularrConfig
   test_grab_list.py          — 60 tests for GrabList
   test_import_result.py      — 36 tests for ImportResult, DownloadInfo, JSON parsing
+  test_force_import.py       — 9 tests for force-import (CLI, DB, --force flag)
   test_pipeline_cli.py       — 7 tests for CLI
   test_pipeline_db.py        — 33 tests for PipelineDB
   test_quality_classification.py — 17 tests for quality classification (real audio fixtures)
@@ -165,6 +168,35 @@ Web UI (music.ablz.au)               CLI
 
 - **Requests** (`source='request'`): User-added via CLI or web UI. Auto-imported to beets if beets validation passes at distance ≤ 0.15. Files stage temporarily in `/Incoming`, then `import_one.py` converts (if FLAC), imports to beets (`/Beets`), and cleans up `/Incoming`.
 - **Redownloads** (`source='redownload'`): Replacing bad source material. Always staged to `/Incoming` for manual review, never auto-imported.
+
+## Force-Import (rejected downloads)
+
+Albums rejected by beets validation (high distance, wrong pressing) are moved to `failed_imports/` under the slskd download dir, with their `failed_path` stored in `download_log.validation_result` JSONB. After manual review, force-import bypasses the distance check and imports them.
+
+**Path resolution**: Old entries stored relative paths (`failed_imports/Foo - Bar`), new entries store absolute paths. Force-import resolves relative paths against `/mnt/virtio/music/slskd/` automatically.
+
+### How it works
+
+1. Look up `download_log` entry by ID via `get_download_log_entry()` → extract `failed_path` from `validation_result` JSONB
+2. Resolve path (handle both relative and absolute) → verify files still exist
+3. Look up `mb_release_id` from `album_requests` via `request_id`
+4. Call `import_one.py --force` (sets `MAX_DISTANCE=999` — everything else runs normally: conversion, spectral, quality comparison)
+5. Log result to new `download_log` row with `outcome='force_import'`
+6. Update `album_requests` status to `imported` on success
+
+### Usage
+
+```bash
+# CLI
+pipeline_cli.py force-import <download_log_id>
+
+# Web API
+POST /api/pipeline/force-import {"download_log_id": N}
+```
+
+### download_log outcomes
+
+5 valid values: `success`, `rejected`, `failed`, `timeout`, `force_import`
 
 ## Decision Architecture
 
@@ -283,6 +315,7 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 ### Downgrade Prevention (`import_one.py`)
 
 - `--override-min-bitrate` arg: soularr.py passes the pipeline DB `min_bitrate` to import_one.py. When existing files are known garbage (e.g. `min_bitrate=0`), this overrides the beets comparison so genuine V0 at 227kbps isn't rejected as "downgrade from 320kbps."
+- `--force` flag: skips the distance check (`MAX_DISTANCE=999`) for force-importing rejected albums. Used by `pipeline_cli.py force-import` and `POST /api/pipeline/force-import`.
 - Exit codes: 0=imported, 1=conversion failed, 2=beets failed, 3=path not found, 5=downgrade, 6=transcode (may or may not have imported as upgrade)
 
 ### New/Re-queued Album Priority

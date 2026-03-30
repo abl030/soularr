@@ -817,6 +817,99 @@ class Handler(BaseHTTPRequestHandler):
                     "beets_removed": beets_removed,
                 })
 
+            elif path == "/api/pipeline/force-import":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length)) if length else {}
+                log_id = body.get("download_log_id")
+
+                if not log_id:
+                    self._error("Missing download_log_id")
+                    return
+
+                # Look up download_log entry
+                entry = db.get_download_log_entry(int(log_id))
+                if not entry:
+                    self._error(f"Download log entry {log_id} not found", 404)
+                    return
+
+                request_id = entry["request_id"]
+
+                # Extract failed_path from validation_result
+                vr_raw = entry.get("validation_result")
+                if not vr_raw:
+                    self._error("No validation_result on this download log entry")
+                    return
+                vr = vr_raw if isinstance(vr_raw, dict) else json.loads(vr_raw)
+                failed_path = vr.get("failed_path")
+                if not failed_path:
+                    self._error("No failed_path in validation_result")
+                    return
+
+                # Look up album request for MBID
+                req = db.get_request(request_id)
+                if not req:
+                    self._error(f"Album request {request_id} not found", 404)
+                    return
+                mbid = req.get("mb_release_id")
+                if not mbid:
+                    self._error("Album has no MusicBrainz release ID")
+                    return
+
+                # Resolve failed_path (may be relative from old entries)
+                if not os.path.isdir(failed_path):
+                    for base in ["/mnt/virtio/music/slskd"]:
+                        candidate = os.path.join(base, failed_path)
+                        if os.path.isdir(candidate):
+                            failed_path = candidate
+                            break
+                if not os.path.isdir(failed_path):
+                    self._error(f"Files not found at: {failed_path}")
+                    return
+
+                # Run import_one.py --force
+                import_one_path = os.path.join(
+                    os.path.dirname(__file__), "..", "harness", "import_one.py")
+                cmd = [
+                    sys.executable, import_one_path,
+                    failed_path, mbid,
+                    "--request-id", str(request_id),
+                    "--force",
+                ]
+                if req.get("min_bitrate"):
+                    cmd.extend(["--override-min-bitrate", str(req["min_bitrate"])])
+
+                import subprocess as _sp
+                result = _sp.run(cmd, capture_output=True, text=True, timeout=1800)
+
+                # Parse ImportResult from stdout
+                import_result_json = None
+                for line in result.stdout.splitlines():
+                    if "__IMPORT_RESULT__" in line:
+                        try:
+                            import_result_json = line.split("__IMPORT_RESULT__")[1].strip()
+                        except (IndexError, json.JSONDecodeError):
+                            pass
+
+                # Log to download_log
+                db.log_download(
+                    request_id=request_id,
+                    outcome="force_import",
+                    import_result=import_result_json,
+                    staged_path=failed_path,
+                )
+
+                if result.returncode == 0:
+                    db.update_status(request_id, "imported")
+
+                self._json({
+                    "status": "ok" if result.returncode == 0 else "error",
+                    "exit_code": result.returncode,
+                    "request_id": request_id,
+                    "artist": req["artist_name"],
+                    "album": req["album_title"],
+                    "stderr": result.stderr[-500:] if result.stderr else "",
+                })
+
             elif path == "/api/pipeline/delete":
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length)) if length else {}

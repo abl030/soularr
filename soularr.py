@@ -1602,8 +1602,8 @@ def grab_most_wanted(albums):
 
 
 def move_failed_import(src_path) -> "str | None":
-    """Move a failed import to the failed_imports directory. Returns the destination path."""
-    failed_imports_dir = "failed_imports"
+    """Move a failed import to the failed_imports directory. Returns the absolute destination path."""
+    failed_imports_dir = os.path.join(os.getcwd(), "failed_imports")
 
     if not os.path.exists(failed_imports_dir):
         os.makedirs(failed_imports_dir)

@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS download_log (
     beets_scenario TEXT,
     beets_detail TEXT,
     valid BOOLEAN,
-    outcome TEXT CHECK(outcome IN ('success', 'rejected', 'failed', 'timeout')),
+    outcome TEXT CHECK(outcome IN ('success', 'rejected', 'failed', 'timeout', 'force_import')),
     staged_path TEXT,
     error_message TEXT,
     bitrate INTEGER,
@@ -205,6 +205,14 @@ class PipelineDB:
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
+            # Migrate outcome CHECK constraint to include 'force_import'
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE download_log DROP CONSTRAINT IF EXISTS download_log_outcome_check;
+                    ALTER TABLE download_log ADD CONSTRAINT download_log_outcome_check
+                        CHECK (outcome IN ('success', 'rejected', 'failed', 'timeout', 'force_import'));
+                END $$;
+            """)
         mig_conn.close()
 
     def close(self):
@@ -436,6 +444,14 @@ class PipelineDB:
             import_result, validation_result,
         ))
         self.conn.commit()
+
+    def get_download_log_entry(self, log_id):
+        """Get a single download_log entry by its ID."""
+        cur = self._execute(
+            "SELECT * FROM download_log WHERE id = %s", (log_id,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
 
     def get_download_history(self, request_id):
         cur = self._execute("""

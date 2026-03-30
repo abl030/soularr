@@ -57,7 +57,7 @@ Every download stores two JSONB blobs in `download_log` for complete auditabilit
 - Track mapping: which local file matched which MusicBrainz track
 - Local file list (path, title, bitrate, format) vs MB track list (title, length, track_id)
 - Beets recommendation confidence level
-- Soulseek username, download folder, failed_path, denylisted users, corrupt files
+- Soulseek username, download folder, failed_path (used by force-import), denylisted users, corrupt files
 
 ```sql
 -- Why was this rejected?
@@ -84,7 +84,8 @@ All types are fully typed dataclasses with pyright enforcement and JSON round-tr
 - **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout
 - **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
-- **448 tests** including spectral analysis with real audio fixtures and live slskd integration tests
+- **Force-import** -- manually import rejected downloads via CLI (`force-import <id>`) or web API
+- **457 tests** including spectral analysis with real audio fixtures and live slskd integration tests
 
 ## MusicBrainz mirror
 

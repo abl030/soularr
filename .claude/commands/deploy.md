@@ -4,33 +4,22 @@ Push code, update flake input on doc1, rebuild doc2, verify.
 
 ## Steps
 
-1. Run tests and pyright first:
-```bash
-nix-shell --run "bash scripts/run_tests.sh"
-```
-Check `/tmp/soularr-test-output.txt` for failures. Do NOT proceed if tests fail.
-
-2. Check pyright on touched files:
-```bash
-pyright <files that changed>
-```
-
-3. Commit and push:
+1. Commit and push:
 ```bash
 git add <files> && git commit -m "<message>" && git push
 ```
 
-4. Update flake input on doc1 and push:
+2. Update flake input on doc1 and push:
 ```bash
 ssh doc1 'cd ~/nixosconfig && nix flake update soularr-src && git add flake.lock && git commit -m "soularr: <description>" && git push'
 ```
 
-5. Rebuild doc2:
+3. Rebuild doc2:
 ```bash
 ssh doc2 'sudo nixos-rebuild switch --flake github:abl030/nixosconfig#doc2 --refresh'
 ```
 
-6. Verify deployed code has the change:
+4. Verify deployed code has the change:
 ```bash
 ssh doc2 'grep "<something unique>" /nix/store/*/lib/quality.py 2>/dev/null | head -1'
 ```

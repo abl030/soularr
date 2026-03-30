@@ -40,6 +40,7 @@ Browser → https://music.ablz.au
 | `/api/pipeline/add` | POST | Add a release to the pipeline DB `{"mb_release_id": "..."}` |
 | `/api/pipeline/status` | GET | Pipeline DB status counts + wanted list |
 | `/api/pipeline/<id>` | GET | Single request details |
+| `/api/pipeline/force-import` | POST | Force-import a rejected download `{"download_log_id": N}` |
 | `/api/library/artist?name=...` | GET | Albums by artist from beets library (MB vs Discogs source) |
 
 ## Frontend Features
