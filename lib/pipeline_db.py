@@ -198,6 +198,10 @@ class PipelineDB:
                 ("spectral_bitrate", "INTEGER"),
                 ("spectral_grade", "TEXT"),
                 ("verified_lossless", "BOOLEAN DEFAULT FALSE"),
+                # On-disk spectral data (describes files currently in beets,
+                # regardless of how they got there — updated on every spectral run)
+                ("on_disk_spectral_grade", "TEXT"),
+                ("on_disk_spectral_bitrate", "INTEGER"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN

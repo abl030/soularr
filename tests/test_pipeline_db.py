@@ -529,6 +529,21 @@ class TestSpectralColumns(unittest.TestCase):
         self.assertEqual(req["spectral_bitrate"], 128)
         self.assertEqual(req["spectral_grade"], "suspect")
 
+    def test_on_disk_spectral_columns(self):
+        """on_disk_spectral_grade/bitrate describe files currently in beets."""
+        self.db.update_status(self.req_id, "imported",
+                              on_disk_spectral_grade="suspect",
+                              on_disk_spectral_bitrate=160)
+        req = self.db.get_request(self.req_id)
+        self.assertEqual(req["on_disk_spectral_grade"], "suspect")
+        self.assertEqual(req["on_disk_spectral_bitrate"], 160)
+
+    def test_on_disk_spectral_null_by_default(self):
+        """on_disk_spectral columns are NULL for pre-existing albums."""
+        req = self.db.get_request(self.req_id)
+        self.assertIsNone(req.get("on_disk_spectral_grade"))
+        self.assertIsNone(req.get("on_disk_spectral_bitrate"))
+
 
 if __name__ == "__main__":
     unittest.main()

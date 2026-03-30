@@ -189,6 +189,29 @@ class TestDatabaseSource(unittest.TestCase):
         usernames = {d["username"] for d in denied}
         self.assertEqual(usernames, {"bad_user1", "bad_user2"})
 
+    def test_mark_done_sets_on_disk_spectral(self):
+        """Successful import updates on_disk_spectral_grade/bitrate."""
+        from lib.quality import DownloadInfo
+        source, db = self._make_source()
+        req_id = db.add_request(
+            mb_release_id="spectral-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        record = _make_record(db_request_id=req_id, db_source="request")
+        bv_result = {"valid": True, "distance": 0.05, "scenario": "strong_match"}
+        dl = DownloadInfo()
+        dl.spectral_grade = "suspect"
+        dl.spectral_bitrate = 160
+
+        source.mark_done(record, bv_result, dest_path="/Incoming/A/B",
+                         download_info=dl)
+
+        req = db.get_request(req_id)
+        self.assertEqual(req["on_disk_spectral_grade"], "suspect")
+        self.assertEqual(req["on_disk_spectral_bitrate"], 160)
+
     def test_get_denylisted_users(self):
         source, db = self._make_source()
         req_id = db.add_request(

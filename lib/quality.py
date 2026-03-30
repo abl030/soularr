@@ -233,6 +233,7 @@ class SpectralContext:
     suspect_pct: float = 0.0
     existing_min_bitrate: Optional[int] = None
     existing_spectral_bitrate: Optional[int] = None
+    existing_spectral_grade: Optional[str] = None
 
 
 IMPORT_RESULT_SENTINEL = "__IMPORT_RESULT__"

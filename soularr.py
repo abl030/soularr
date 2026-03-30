@@ -945,6 +945,7 @@ def _gather_spectral_context(album_data, import_folder: str) -> SpectralContext:
                             existing_info.album_path, trim_seconds=30)
                         ctx.existing_spectral_bitrate = (
                             existing_spectral.estimated_bitrate_kbps)
+                        ctx.existing_spectral_grade = existing_spectral.grade
                         logger.info(
                             f"SPECTRAL: existing on disk: "
                             f"grade={existing_spectral.grade}, "
@@ -1152,10 +1153,32 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                     album_data.existing_spectral_bitrate = spec_ctx.existing_spectral_bitrate
                     album_data.existing_min_bitrate = spec_ctx.existing_min_bitrate
 
+                    # Write on-disk spectral data back to album_requests
+                    # so the UI always knows what's on disk, even if this
+                    # download gets rejected
+                    request_id = album_data.db_request_id
+                    if request_id and pipeline_db_source:
+                        try:
+                            update_kwargs: dict[str, object] = {}
+                            if spec_ctx.existing_spectral_grade:
+                                update_kwargs["on_disk_spectral_grade"] = spec_ctx.existing_spectral_grade
+                            if spec_ctx.existing_spectral_bitrate is not None:
+                                update_kwargs["on_disk_spectral_bitrate"] = spec_ctx.existing_spectral_bitrate
+                            if update_kwargs:
+                                db = pipeline_db_source._get_db()
+                                req = db.get_request(request_id)
+                                if req:
+                                    db._execute(
+                                        "UPDATE album_requests SET "
+                                        + ", ".join(f"{k} = %s" for k in update_kwargs)
+                                        + " WHERE id = %s",
+                                        list(update_kwargs.values()) + [request_id])
+                        except Exception:
+                            logger.exception("Failed to update on-disk spectral data")
+
                     # Decision: use pure function from quality.py
                     new_quality = spec_ctx.bitrate
                     existing_quality = spec_ctx.existing_spectral_bitrate or 0
-                    request_id = album_data.db_request_id
                     label = f"{album_data.artist} - {album_data.title}"
 
                     spectral_decision = spectral_import_decision(

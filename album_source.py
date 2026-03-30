@@ -170,6 +170,11 @@ class DatabaseSource:
         if is_verified_lossless(dl.was_converted, dl.original_filetype,
                                 dl.spectral_grade):
             update_fields["verified_lossless"] = True
+        # After successful import, these files ARE what's on disk now
+        if dl.spectral_grade:
+            update_fields["on_disk_spectral_grade"] = dl.spectral_grade
+        if dl.spectral_bitrate is not None:
+            update_fields["on_disk_spectral_bitrate"] = dl.spectral_bitrate
         db.update_status(request_id, "imported", **update_fields)
 
         db.log_download(
