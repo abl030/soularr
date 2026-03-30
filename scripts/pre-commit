@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Git pre-commit hook: run pyright on staged Python files.
+# Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+set -e
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- "*.py" | head -30)
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+
+echo "pre-commit: pyright on $(echo "$STAGED" | wc -l) staged Python files..."
+pyright $STAGED
+echo "pre-commit: pyright OK"
