@@ -169,9 +169,10 @@ class DatabaseSource:
             update_fields["spectral_grade"] = dl["spectral_grade"]
         # verified_lossless: only True when we converted a FLAC that
         # spectral analysis confirmed as genuine lossless
-        if (dl.get("was_converted") and
-                dl.get("original_filetype") in ("flac", "FLAC") and
-                dl.get("spectral_grade") == "genuine"):
+        from lib.quality import is_verified_lossless
+        if is_verified_lossless(dl.get("was_converted", False),
+                                dl.get("original_filetype"),
+                                dl.get("spectral_grade")):
             update_fields["verified_lossless"] = True
         db.update_status(request_id, "imported", **update_fields)
 

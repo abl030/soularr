@@ -222,6 +222,27 @@ def transcode_detection(converted_count, post_conversion_min_bitrate):
 
 
 # ---------------------------------------------------------------------------
+# Verified lossless derivation (post-import, used by album_source.py)
+# ---------------------------------------------------------------------------
+
+def is_verified_lossless(was_converted: bool, original_filetype: Optional[str],
+                         spectral_grade: Optional[str]) -> bool:
+    """Determine if an import should be marked as verified lossless.
+
+    True only when we converted a genuine FLAC to V0 — the gold standard.
+
+    Inputs:
+        was_converted:     True if FLAC files were converted to MP3 V0
+        original_filetype: filetype before conversion (e.g. "flac")
+        spectral_grade:    spectral analysis grade of the source files
+    """
+    return (bool(was_converted)
+            and original_filetype is not None
+            and original_filetype.lower() == "flac"
+            and spectral_grade == "genuine")
+
+
+# ---------------------------------------------------------------------------
 # Post-import quality gate (runs after successful import in soularr.py)
 # ---------------------------------------------------------------------------
 

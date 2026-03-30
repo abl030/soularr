@@ -16,6 +16,7 @@ from lib.quality import (
     import_quality_decision,
     transcode_detection,
     quality_gate_decision,
+    is_verified_lossless,
     QUALITY_MIN_BITRATE_KBPS,
     TRANSCODE_MIN_BITRATE_KBPS,
 )
@@ -294,6 +295,50 @@ class TestQualityGateDecision(unittest.TestCase):
             quality_gate_decision(180, is_cbr=False, verified_lossless=True,
                                   spectral_bitrate=150),
             "accept")
+
+
+# ============================================================================
+# is_verified_lossless
+# ============================================================================
+
+class TestIsVerifiedLossless(unittest.TestCase):
+    """Test verified_lossless derivation."""
+
+    def test_gold_standard(self):
+        """Converted FLAC + genuine spectral = verified."""
+        self.assertTrue(is_verified_lossless(True, "flac", "genuine"))
+
+    def test_flac_uppercase(self):
+        self.assertTrue(is_verified_lossless(True, "FLAC", "genuine"))
+
+    def test_not_converted(self):
+        """MP3 download, no conversion — never verified."""
+        self.assertFalse(is_verified_lossless(False, None, "genuine"))
+
+    def test_not_flac_source(self):
+        """Converted from something other than FLAC — not verified."""
+        self.assertFalse(is_verified_lossless(True, "mp3", "genuine"))
+
+    def test_suspect_spectral(self):
+        """FLAC converted but spectral says suspect — fake FLAC, not verified."""
+        self.assertFalse(is_verified_lossless(True, "flac", "suspect"))
+
+    def test_likely_transcode(self):
+        self.assertFalse(is_verified_lossless(True, "flac", "likely_transcode"))
+
+    def test_marginal_spectral(self):
+        """Marginal spectral is NOT verified — only genuine counts."""
+        self.assertFalse(is_verified_lossless(True, "flac", "marginal"))
+
+    def test_none_spectral(self):
+        """No spectral data — can't verify."""
+        self.assertFalse(is_verified_lossless(True, "flac", None))
+
+    def test_none_filetype(self):
+        self.assertFalse(is_verified_lossless(True, None, "genuine"))
+
+    def test_all_none(self):
+        self.assertFalse(is_verified_lossless(False, None, None))
 
 
 if __name__ == "__main__":
