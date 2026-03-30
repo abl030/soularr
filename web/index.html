@@ -787,15 +787,25 @@ async function toggleDetail(elId, requestId) {
       // most recent download_log entry's existing_spectral_bitrate (what
       // was on disk when that download happened — if it's the latest entry,
       // that's still what's on disk now unless a later import replaced it)
+      // Spectral data from album_requests, or from the most recent
+      // download_log entry's existing_spectral_bitrate
       const spectralBr = req.spectral_bitrate
         || (history.length > 0 && history[0].existing_spectral_bitrate)
+        || null;
+      const spectralGrade = req.spectral_grade
+        || (history.length > 0 && history[0].spectral_grade)
         || null;
       const verified = req.verified_lossless === true || req.verified_lossless === 'True';
       let qualitySummary = nominal;
       if (verified) {
         qualitySummary += ' <span style="color:#6d6;">verified lossless</span>';
-      } else if (spectralBr && minBr && spectralBr < Math.round(minBr / 1000) - 20) {
-        qualitySummary += ` <span style="color:#d88;">spectral estimate ~${spectralBr}kbps</span>`;
+      } else if (spectralGrade === 'suspect' || spectralGrade === 'likely_transcode') {
+        // Only warn when spectral says it's a transcode — genuine files
+        // can have low spectral bitrate estimates (e.g. quiet/lo-fi music)
+        const brStr = spectralBr ? ` ~${spectralBr}kbps` : '';
+        qualitySummary += ` <span style="color:#d88;">spectral: ${spectralGrade}${brStr}</span>`;
+      } else if (spectralGrade === 'genuine') {
+        qualitySummary += ' <span style="color:#6d6;">spectral: genuine</span>';
       }
       html += `<div class="p-detail-row"><span class="p-detail-label">Quality</span><span class="p-detail-value">${qualitySummary}</span></div>`;
     }
