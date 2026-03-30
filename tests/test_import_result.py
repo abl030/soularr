@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.quality import (
     ImportResult, ConversionInfo, QualityInfo, SpectralInfo, PostflightInfo,
+    DownloadInfo,
     parse_import_result, IMPORT_RESULT_SENTINEL,
 )
 
@@ -327,76 +328,71 @@ class TestImportResultScenarios(unittest.TestCase):
         self.assertEqual(r.exit_code, 4)
 
 
-class TestImportResultToDlInfo(unittest.TestCase):
-    """Test that ImportResult fields map correctly to download_info dict.
+class TestDownloadInfo(unittest.TestCase):
+    """Test DownloadInfo dataclass."""
 
-    This validates the contract between ImportResult and soularr.py's
-    dl_info population logic.
-    """
+    def test_defaults(self) -> None:
+        dl = DownloadInfo()
+        self.assertIsNone(dl.username)
+        self.assertIsNone(dl.filetype)
+        self.assertFalse(dl.was_converted)
+        self.assertIsNone(dl.spectral_grade)
+        self.assertIsNone(dl.import_result)
 
-    def _result_to_dl_info(self, r):
-        """Simulate what soularr.py will do with an ImportResult."""
-        dl = {}
-        if r.conversion.was_converted:
-            dl["was_converted"] = True
-            dl["original_filetype"] = r.conversion.original_filetype
-            dl["filetype"] = r.conversion.target_filetype
-            dl["is_vbr"] = True
-            dl["slskd_filetype"] = r.conversion.original_filetype
-            dl["actual_filetype"] = r.conversion.target_filetype
-        if r.quality.new_min_bitrate is not None:
-            dl["bitrate"] = r.quality.new_min_bitrate * 1000
-        dl["spectral_grade"] = r.spectral.grade
-        dl["spectral_bitrate"] = r.spectral.bitrate
-        dl["existing_spectral_bitrate"] = r.spectral.existing_bitrate
-        dl["import_result"] = r.to_json()
-        return dl
+    def test_flac_conversion(self) -> None:
+        dl = DownloadInfo(
+            username="testuser",
+            filetype="mp3",
+            bitrate=245000,
+            is_vbr=True,
+            was_converted=True,
+            original_filetype="flac",
+            slskd_filetype="flac",
+            actual_filetype="mp3",
+            spectral_grade="genuine",
+        )
+        self.assertTrue(dl.was_converted)
+        self.assertEqual(dl.original_filetype, "flac")
+        self.assertEqual(dl.actual_filetype, "mp3")
+        self.assertEqual(dl.spectral_grade, "genuine")
 
-    def test_flac_conversion_dl_info(self):
-        r = ImportResult(
+    def test_attribute_error_on_typo(self) -> None:
+        """Key advantage over dict: typos are caught at attribute access."""
+        dl = DownloadInfo()
+        with self.assertRaises(AttributeError):
+            _ = dl.spectral_grad  # type: ignore[attr-defined]
+
+    def test_populate_from_import_result(self) -> None:
+        """Verify the contract: ImportResult fields map to DownloadInfo fields."""
+        ir = ImportResult(
             decision="import",
             conversion=ConversionInfo(
                 converted=10, was_converted=True,
                 original_filetype="flac", target_filetype="mp3"),
             quality=QualityInfo(new_min_bitrate=245),
-            spectral=SpectralInfo(grade="genuine"),
+            spectral=SpectralInfo(grade="genuine", bitrate=None,
+                                  existing_bitrate=128),
         )
-        dl = self._result_to_dl_info(r)
-        self.assertTrue(dl["was_converted"])
-        self.assertEqual(dl["original_filetype"], "flac")
-        self.assertEqual(dl["filetype"], "mp3")
-        self.assertTrue(dl["is_vbr"])
-        self.assertEqual(dl["slskd_filetype"], "flac")
-        self.assertEqual(dl["actual_filetype"], "mp3")
-        self.assertEqual(dl["bitrate"], 245000)
-        self.assertEqual(dl["spectral_grade"], "genuine")
-        # Full JSON stored
-        self.assertIn("import_result", dl)
-        stored = json.loads(dl["import_result"])
+        dl = DownloadInfo(
+            was_converted=ir.conversion.was_converted,
+            original_filetype=ir.conversion.original_filetype,
+            filetype=ir.conversion.target_filetype,
+            is_vbr=True,
+            slskd_filetype=ir.conversion.original_filetype,
+            actual_filetype=ir.conversion.target_filetype,
+            bitrate=(ir.quality.new_min_bitrate * 1000
+                     if ir.quality.new_min_bitrate else None),
+            spectral_grade=ir.spectral.grade,
+            spectral_bitrate=ir.spectral.bitrate,
+            existing_spectral_bitrate=ir.spectral.existing_bitrate,
+            import_result=ir.to_json(),
+        )
+        self.assertTrue(dl.was_converted)
+        self.assertEqual(dl.bitrate, 245000)
+        self.assertEqual(dl.spectral_grade, "genuine")
+        self.assertEqual(dl.existing_spectral_bitrate, 128)
+        stored = json.loads(dl.import_result)  # type: ignore[arg-type]
         self.assertEqual(stored["decision"], "import")
-
-    def test_mp3_no_conversion_dl_info(self):
-        r = ImportResult(
-            decision="import",
-            conversion=ConversionInfo(),  # no conversion
-            quality=QualityInfo(new_min_bitrate=320),
-            spectral=SpectralInfo(grade="genuine"),
-        )
-        dl = self._result_to_dl_info(r)
-        self.assertNotIn("was_converted", dl)
-        self.assertEqual(dl["bitrate"], 320000)
-
-    def test_spectral_data_preserved(self):
-        r = ImportResult(
-            decision="import",
-            spectral=SpectralInfo(
-                grade="suspect", bitrate=128, cliff_freq_hz=16500,
-                existing_grade="genuine", existing_bitrate=256),
-        )
-        dl = self._result_to_dl_info(r)
-        self.assertEqual(dl["spectral_grade"], "suspect")
-        self.assertEqual(dl["spectral_bitrate"], 128)
-        self.assertEqual(dl["existing_spectral_bitrate"], 256)
 
 
 if __name__ == "__main__":

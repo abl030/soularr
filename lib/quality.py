@@ -16,6 +16,42 @@ IMPORT_RESULT_SENTINEL = "__IMPORT_RESULT__"
 
 
 # ---------------------------------------------------------------------------
+# Download info — typed replacement for the untyped dl_info dict
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DownloadInfo:
+    """Audio quality metadata extracted from downloaded files.
+
+    Replaces the untyped dl_info dict that was passed through soularr.py,
+    album_source.py, and pipeline_db.py. Every field that ends up in
+    download_log has a typed slot here.
+    """
+    # Soulseek source
+    username: Optional[str] = None
+    filetype: Optional[str] = None
+    bitrate: Optional[int] = None           # bps (e.g. 320000)
+    sample_rate: Optional[int] = None
+    bit_depth: Optional[int] = None
+    is_vbr: Optional[bool] = None
+    # Conversion tracking
+    was_converted: bool = False
+    original_filetype: Optional[str] = None
+    # Quality verification
+    slskd_filetype: Optional[str] = None    # what slskd reported
+    slskd_bitrate: Optional[int] = None
+    actual_filetype: Optional[str] = None   # after conversion
+    actual_min_bitrate: Optional[int] = None
+    # Spectral analysis
+    spectral_grade: Optional[str] = None
+    spectral_bitrate: Optional[int] = None
+    existing_min_bitrate: Optional[int] = None
+    existing_spectral_bitrate: Optional[int] = None
+    # Full import_one.py result (JSON string)
+    import_result: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Structured result from import_one.py
 # ---------------------------------------------------------------------------
 

@@ -149,101 +149,94 @@ class DatabaseSource:
     def mark_done(self, album_record, bv_result, dest_path=None,
                   download_info=None):
         """Mark album as imported."""
+        from lib.quality import DownloadInfo, is_verified_lossless
         request_id = album_record.get("_db_request_id")
         if not request_id:
             return
 
         db = self._get_db()
         distance = bv_result.get("distance")
-        dl = download_info or {}
+        dl = download_info if isinstance(download_info, DownloadInfo) else DownloadInfo()
 
         update_fields = dict(
             beets_distance=distance,
             beets_scenario=bv_result.get("scenario"),
             imported_path=dest_path,
         )
-        # Propagate spectral data to album_requests
-        if dl.get("spectral_bitrate") is not None:
-            update_fields["spectral_bitrate"] = dl["spectral_bitrate"]
-        if dl.get("spectral_grade"):
-            update_fields["spectral_grade"] = dl["spectral_grade"]
-        # verified_lossless: only True when we converted a FLAC that
-        # spectral analysis confirmed as genuine lossless
-        from lib.quality import is_verified_lossless
-        if is_verified_lossless(dl.get("was_converted", False),
-                                dl.get("original_filetype"),
-                                dl.get("spectral_grade")):
+        if dl.spectral_bitrate is not None:
+            update_fields["spectral_bitrate"] = dl.spectral_bitrate
+        if dl.spectral_grade:
+            update_fields["spectral_grade"] = dl.spectral_grade
+        if is_verified_lossless(dl.was_converted, dl.original_filetype,
+                                dl.spectral_grade):
             update_fields["verified_lossless"] = True
         db.update_status(request_id, "imported", **update_fields)
 
-        # Log the download
         db.log_download(
             request_id=request_id,
-            soulseek_username=dl.get("username"),
-            filetype=dl.get("filetype"),
+            soulseek_username=dl.username,
+            filetype=dl.filetype,
             beets_distance=distance,
             beets_scenario=bv_result.get("scenario"),
             beets_detail=bv_result.get("detail"),
             outcome="success",
             staged_path=dest_path,
-            bitrate=dl.get("bitrate"),
-            sample_rate=dl.get("sample_rate"),
-            bit_depth=dl.get("bit_depth"),
-            is_vbr=dl.get("is_vbr"),
-            was_converted=dl.get("was_converted"),
-            original_filetype=dl.get("original_filetype"),
-            # Spectral quality verification
-            slskd_filetype=dl.get("slskd_filetype"),
-            slskd_bitrate=dl.get("slskd_bitrate"),
-            actual_filetype=dl.get("actual_filetype"),
-            actual_min_bitrate=dl.get("actual_min_bitrate"),
-            spectral_grade=dl.get("spectral_grade"),
-            spectral_bitrate=dl.get("spectral_bitrate"),
-            existing_min_bitrate=dl.get("existing_min_bitrate"),
-            existing_spectral_bitrate=dl.get("existing_spectral_bitrate"),
-            import_result=dl.get("import_result"),
+            bitrate=dl.bitrate,
+            sample_rate=dl.sample_rate,
+            bit_depth=dl.bit_depth,
+            is_vbr=dl.is_vbr,
+            was_converted=dl.was_converted,
+            original_filetype=dl.original_filetype,
+            slskd_filetype=dl.slskd_filetype,
+            slskd_bitrate=dl.slskd_bitrate,
+            actual_filetype=dl.actual_filetype,
+            actual_min_bitrate=dl.actual_min_bitrate,
+            spectral_grade=dl.spectral_grade,
+            spectral_bitrate=dl.spectral_bitrate,
+            existing_min_bitrate=dl.existing_min_bitrate,
+            existing_spectral_bitrate=dl.existing_spectral_bitrate,
+            import_result=dl.import_result,
         )
 
     def mark_failed(self, album_record, bv_result, usernames=None,
                     download_info=None):
         """Log the failure and denylist users, but keep album wanted for retry."""
+        from lib.quality import DownloadInfo
         request_id = album_record.get("_db_request_id")
         if not request_id:
             return
 
         db = self._get_db()
-        dl = download_info or {}
+        dl = download_info if isinstance(download_info, DownloadInfo) else DownloadInfo()
         db.update_status(request_id, "wanted",
                          beets_distance=bv_result.get("distance"),
                          beets_scenario=bv_result.get("scenario"))
         db.record_attempt(request_id, "validation")
 
-        # Log the download attempt
         db.log_download(
             request_id=request_id,
-            soulseek_username=dl.get("username"),
-            filetype=dl.get("filetype"),
+            soulseek_username=dl.username,
+            filetype=dl.filetype,
             beets_distance=bv_result.get("distance"),
             beets_scenario=bv_result.get("scenario"),
             beets_detail=bv_result.get("detail"),
             outcome="rejected",
             error_message=bv_result.get("error"),
-            bitrate=dl.get("bitrate"),
-            sample_rate=dl.get("sample_rate"),
-            bit_depth=dl.get("bit_depth"),
-            is_vbr=dl.get("is_vbr"),
-            was_converted=dl.get("was_converted"),
-            original_filetype=dl.get("original_filetype"),
-            # Spectral quality verification
-            slskd_filetype=dl.get("slskd_filetype"),
-            slskd_bitrate=dl.get("slskd_bitrate"),
-            actual_filetype=dl.get("actual_filetype"),
-            actual_min_bitrate=dl.get("actual_min_bitrate"),
-            spectral_grade=dl.get("spectral_grade"),
-            spectral_bitrate=dl.get("spectral_bitrate"),
-            existing_min_bitrate=dl.get("existing_min_bitrate"),
-            existing_spectral_bitrate=dl.get("existing_spectral_bitrate"),
-            import_result=dl.get("import_result"),
+            bitrate=dl.bitrate,
+            sample_rate=dl.sample_rate,
+            bit_depth=dl.bit_depth,
+            is_vbr=dl.is_vbr,
+            was_converted=dl.was_converted,
+            original_filetype=dl.original_filetype,
+            slskd_filetype=dl.slskd_filetype,
+            slskd_bitrate=dl.slskd_bitrate,
+            actual_filetype=dl.actual_filetype,
+            actual_min_bitrate=dl.actual_min_bitrate,
+            spectral_grade=dl.spectral_grade,
+            spectral_bitrate=dl.spectral_bitrate,
+            existing_min_bitrate=dl.existing_min_bitrate,
+            existing_spectral_bitrate=dl.existing_spectral_bitrate,
+            import_result=dl.import_result,
         )
 
         # Denylist source users

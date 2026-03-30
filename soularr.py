@@ -863,7 +863,7 @@ def search_and_queue(albums):
 
 from lib.grab_list import GrabListEntry, DownloadFile
 from lib.quality import (quality_gate_decision, spectral_import_decision,
-                         parse_import_result,
+                         parse_import_result, DownloadInfo,
                          QUALITY_UPGRADE_TIERS, QUALITY_MIN_BITRATE_KBPS)
 from lib.beets_db import BeetsDB
 
@@ -953,11 +953,11 @@ def _check_quality_gate(album_data, request_id):
         logger.exception("QUALITY GATE: failed to check quality")
 
 
-def _build_download_info(album_data):
+def _build_download_info(album_data) -> DownloadInfo:
     """Extract audio quality metadata from album files for download logging."""
     files = album_data.files
     if not files:
-        return {}
+        return DownloadInfo()
     usernames = set(f.username for f in files if f.username)
     filetypes = set(f.filename.split(".")[-1].lower() for f in files if "." in f.filename)
     bitrates = [f.bitRate for f in files if f.bitRate is not None]
@@ -965,20 +965,14 @@ def _build_download_info(album_data):
     bit_depths = [f.bitDepth for f in files if f.bitDepth is not None]
     vbr_flags = [f.isVariableBitRate for f in files if f.isVariableBitRate is not None]
 
-    info = {}
-    if usernames:
-        info["username"] = ", ".join(sorted(usernames))
-    if filetypes:
-        info["filetype"] = ", ".join(sorted(filetypes))
-    if bitrates:
-        info["bitrate"] = max(bitrates)  # representative max
-    if sample_rates:
-        info["sample_rate"] = max(sample_rates)
-    if bit_depths:
-        info["bit_depth"] = max(bit_depths)
-    if vbr_flags:
-        info["is_vbr"] = any(vbr_flags)
-    return info
+    return DownloadInfo(
+        username=", ".join(sorted(usernames)) if usernames else None,
+        filetype=", ".join(sorted(filetypes)) if filetypes else None,
+        bitrate=max(bitrates) if bitrates else None,
+        sample_rate=max(sample_rates) if sample_rates else None,
+        bit_depth=max(bit_depths) if bit_depths else None,
+        is_vbr=any(vbr_flags) if vbr_flags else None,
+    )
 
 
 def process_completed_album(album_data: GrabListEntry, failed_grab):
@@ -1060,8 +1054,8 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
             # Spectral check for non-VBR MP3 downloads (CBR 320 has no other quality signal)
             if bv_result["valid"]:
                 dl_info_pre = _build_download_info(album_data)
-                filetype_str = dl_info_pre.get("filetype", "").lower()
-                is_vbr = dl_info_pre.get("is_vbr", False)
+                filetype_str = (dl_info_pre.filetype or "").lower()
+                is_vbr = dl_info_pre.is_vbr or False
                 is_mp3 = "mp3" in filetype_str and "flac" not in filetype_str
                 if is_mp3 and not is_vbr:
                     try:
@@ -1120,11 +1114,11 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                                     db.add_denylist(request_id, username,
                                                     f"spectral: {new_quality}kbps <= existing {existing_quality}kbps")
                                 dl_info_rej = _build_download_info(album_data)
-                                dl_info_rej["spectral_grade"] = spectral_result.grade
-                                dl_info_rej["spectral_bitrate"] = new_quality
-                                dl_info_rej["existing_spectral_bitrate"] = existing_quality
-                                dl_info_rej["slskd_filetype"] = dl_info_rej.get("filetype")
-                                dl_info_rej["actual_filetype"] = dl_info_rej.get("filetype")
+                                dl_info_rej.spectral_grade = spectral_result.grade
+                                dl_info_rej.spectral_bitrate = new_quality
+                                dl_info_rej.existing_spectral_bitrate = existing_quality
+                                dl_info_rej.slskd_filetype = dl_info_rej.filetype
+                                dl_info_rej.actual_filetype = dl_info_rej.filetype
                                 pipeline_db_source.mark_failed(
                                     album_data,
                                     {"distance": bv_result.get("distance"), "scenario": "spectral_reject",
@@ -1155,12 +1149,12 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                 dl_info = _build_download_info(album_data)
                 # Inject spectral analysis results from pre-staging check
                 if album_data.spectral_grade:
-                    dl_info["spectral_grade"] = album_data.spectral_grade
-                    dl_info["spectral_bitrate"] = album_data.spectral_bitrate
-                    dl_info["existing_spectral_bitrate"] = album_data.existing_spectral_bitrate
-                    dl_info["existing_min_bitrate"] = album_data.existing_min_bitrate
-                    dl_info["slskd_filetype"] = dl_info.get("filetype")
-                    dl_info["actual_filetype"] = dl_info.get("filetype")
+                    dl_info.spectral_grade = album_data.spectral_grade
+                    dl_info.spectral_bitrate = album_data.spectral_bitrate
+                    dl_info.existing_spectral_bitrate = album_data.existing_spectral_bitrate
+                    dl_info.existing_min_bitrate = album_data.existing_min_bitrate
+                    dl_info.slskd_filetype = dl_info.filetype
+                    dl_info.actual_filetype = dl_info.filetype
                 source_type = album_data.db_source or "redownload"
                 request_id = album_data.db_request_id
                 if source_type == "request" and bv_result.get("distance", 1.0) <= cfg.beets_distance_threshold:
@@ -1205,22 +1199,22 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                             qual = ir.quality
                             spec = ir.spectral
                             if conv.was_converted:
-                                dl_info["was_converted"] = True
-                                dl_info["original_filetype"] = conv.original_filetype
-                                dl_info["filetype"] = conv.target_filetype
-                                dl_info["is_vbr"] = True
-                                dl_info["slskd_filetype"] = conv.original_filetype
-                                dl_info["actual_filetype"] = conv.target_filetype
+                                dl_info.was_converted = True
+                                dl_info.original_filetype = conv.original_filetype
+                                dl_info.filetype = conv.target_filetype
+                                dl_info.is_vbr = True
+                                dl_info.slskd_filetype = conv.original_filetype
+                                dl_info.actual_filetype = conv.target_filetype
                             else:
-                                dl_info["slskd_filetype"] = dl_info.get("filetype")
-                                dl_info["actual_filetype"] = dl_info.get("filetype")
+                                dl_info.slskd_filetype = dl_info.filetype
+                                dl_info.actual_filetype = dl_info.filetype
                             if qual.new_min_bitrate is not None:
-                                dl_info["bitrate"] = qual.new_min_bitrate * 1000
-                            dl_info["spectral_grade"] = spec.grade
-                            dl_info["spectral_bitrate"] = spec.bitrate
-                            dl_info["existing_spectral_bitrate"] = spec.existing_bitrate
+                                dl_info.bitrate = qual.new_min_bitrate * 1000
+                            dl_info.spectral_grade = spec.grade
+                            dl_info.spectral_bitrate = spec.bitrate
+                            dl_info.existing_spectral_bitrate = spec.existing_bitrate
                             # Store full JSON for audit trail
-                            dl_info["import_result"] = ir.to_json()
+                            dl_info.import_result = ir.to_json()
 
                             label = f"{album_data.artist} - {album_data.title}"
                             decision = ir.decision
