@@ -17,6 +17,7 @@ from lib.quality import (
     transcode_detection,
     quality_gate_decision,
     is_verified_lossless,
+    SpectralContext,
     QUALITY_MIN_BITRATE_KBPS,
     TRANSCODE_MIN_BITRATE_KBPS,
 )
@@ -339,6 +340,51 @@ class TestIsVerifiedLossless(unittest.TestCase):
 
     def test_all_none(self):
         self.assertFalse(is_verified_lossless(False, None, None))
+
+
+# ============================================================================
+# SpectralContext
+# ============================================================================
+
+class TestSpectralContext(unittest.TestCase):
+    """Test SpectralContext dataclass."""
+
+    def test_defaults(self):
+        ctx = SpectralContext()
+        self.assertFalse(ctx.needs_check)
+        self.assertIsNone(ctx.grade)
+        self.assertIsNone(ctx.bitrate)
+        self.assertEqual(ctx.suspect_pct, 0.0)
+        self.assertIsNone(ctx.existing_min_bitrate)
+        self.assertIsNone(ctx.existing_spectral_bitrate)
+
+    def test_full_construction(self):
+        ctx = SpectralContext(
+            needs_check=True,
+            grade="suspect",
+            bitrate=128,
+            suspect_pct=75.0,
+            existing_min_bitrate=320,
+            existing_spectral_bitrate=160,
+        )
+        self.assertTrue(ctx.needs_check)
+        self.assertEqual(ctx.grade, "suspect")
+        self.assertEqual(ctx.bitrate, 128)
+
+    def test_feeds_spectral_import_decision(self):
+        """SpectralContext fields map directly to spectral_import_decision args."""
+        ctx = SpectralContext(
+            grade="suspect", bitrate=192,
+            existing_spectral_bitrate=128)
+        result = spectral_import_decision(
+            ctx.grade, ctx.bitrate, ctx.existing_spectral_bitrate or 0)
+        self.assertEqual(result, "import_upgrade")
+
+    def test_no_check_needed(self):
+        """VBR MP3 — no spectral check needed."""
+        ctx = SpectralContext(needs_check=False)
+        self.assertFalse(ctx.needs_check)
+        self.assertIsNone(ctx.grade)
 
 
 if __name__ == "__main__":

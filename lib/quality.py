@@ -12,6 +12,21 @@ QUALITY_UPGRADE_TIERS = "flac,mp3 v0,mp3 320"
 QUALITY_MIN_BITRATE_KBPS = 210  # V0 floor — below this triggers upgrade
 TRANSCODE_MIN_BITRATE_KBPS = 210  # V0 from genuine lossless is always >= this
 
+@dataclass
+class SpectralContext:
+    """Gathered spectral analysis data for both new and existing files.
+
+    Returned by the spectral gathering function, consumed by the
+    spectral_import_decision() pure function.
+    """
+    needs_check: bool = False
+    grade: Optional[str] = None
+    bitrate: Optional[int] = None
+    suspect_pct: float = 0.0
+    existing_min_bitrate: Optional[int] = None
+    existing_spectral_bitrate: Optional[int] = None
+
+
 IMPORT_RESULT_SENTINEL = "__IMPORT_RESULT__"
 
 

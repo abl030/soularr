@@ -863,9 +863,63 @@ def search_and_queue(albums):
 
 from lib.grab_list import GrabListEntry, DownloadFile
 from lib.quality import (quality_gate_decision, spectral_import_decision,
-                         parse_import_result, DownloadInfo,
+                         parse_import_result, DownloadInfo, SpectralContext,
                          QUALITY_UPGRADE_TIERS, QUALITY_MIN_BITRATE_KBPS)
 from lib.beets_db import BeetsDB
+
+
+def _gather_spectral_context(album_data, import_folder: str) -> SpectralContext:
+    """Gather spectral analysis data for a non-VBR MP3 download.
+
+    Runs spectral analysis on the downloaded files and (if the album exists
+    in beets) on the existing files for comparison. Returns a SpectralContext
+    with all data needed by spectral_import_decision().
+    """
+    dl_pre = _build_download_info(album_data)
+    filetype_str = (dl_pre.filetype or "").lower()
+    is_vbr = dl_pre.is_vbr or False
+    is_mp3 = "mp3" in filetype_str and "flac" not in filetype_str
+    if not (is_mp3 and not is_vbr):
+        return SpectralContext(needs_check=False)
+
+    ctx = SpectralContext(needs_check=True)
+    try:
+        lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+        if lib_dir not in sys.path:
+            sys.path.insert(0, lib_dir)
+        from spectral_check import analyze_album as spectral_analyze
+        spectral_result = spectral_analyze(import_folder, trim_seconds=30)
+        ctx.grade = spectral_result.grade
+        ctx.bitrate = spectral_result.estimated_bitrate_kbps
+        ctx.suspect_pct = spectral_result.suspect_pct
+        logger.info(f"SPECTRAL: {album_data.artist} - {album_data.title} "
+                    f"grade={ctx.grade}, estimated_bitrate={ctx.bitrate}kbps, "
+                    f"suspect={ctx.suspect_pct:.0f}%")
+        # Check existing beets files for comparison
+        mb_id = album_data.mb_release_id
+        if mb_id:
+            try:
+                beets = BeetsDB()
+                existing_info = beets.get_album_info(mb_id)
+                beets.close()
+                if existing_info:
+                    ctx.existing_min_bitrate = existing_info.min_bitrate_kbps
+                    if os.path.isdir(existing_info.album_path):
+                        existing_spectral = spectral_analyze(
+                            existing_info.album_path, trim_seconds=30)
+                        ctx.existing_spectral_bitrate = (
+                            existing_spectral.estimated_bitrate_kbps)
+                        logger.info(
+                            f"SPECTRAL: existing on disk: "
+                            f"grade={existing_spectral.grade}, "
+                            f"estimated_bitrate="
+                            f"{existing_spectral.estimated_bitrate_kbps}kbps, "
+                            f"beets_min={existing_info.min_bitrate_kbps}kbps")
+            except Exception:
+                logger.exception("SPECTRAL: failed to check existing files")
+    except Exception:
+        logger.exception(f"SPECTRAL: failed for {album_data.artist} - {album_data.title}")
+    return ctx
 
 
 def _check_quality_gate(album_data, request_id):
@@ -1053,91 +1107,57 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
 
             # Spectral check for non-VBR MP3 downloads (CBR 320 has no other quality signal)
             if bv_result["valid"]:
-                dl_info_pre = _build_download_info(album_data)
-                filetype_str = (dl_info_pre.filetype or "").lower()
-                is_vbr = dl_info_pre.is_vbr or False
-                is_mp3 = "mp3" in filetype_str and "flac" not in filetype_str
-                if is_mp3 and not is_vbr:
-                    try:
-                        lib_dir = os.path.join(os.path.dirname(__file__), "lib")
-                        if lib_dir not in sys.path:
-                            sys.path.insert(0, lib_dir)
-                        from spectral_check import analyze_album as spectral_analyze
-                        spectral_result = spectral_analyze(import_folder_fullpath, trim_seconds=30)
-                        logger.info(f"SPECTRAL: {album_data.artist} - {album_data.title} "
-                                    f"grade={spectral_result.grade}, "
-                                    f"estimated_bitrate={spectral_result.estimated_bitrate_kbps}kbps, "
-                                    f"suspect={spectral_result.suspect_pct:.0f}%")
-                        # Store in album_data for downstream dl_info
-                        album_data.spectral_grade = spectral_result.grade
-                        album_data.spectral_bitrate = spectral_result.estimated_bitrate_kbps
-                        # Also check existing beets files for comparison
-                        mb_id = album_data.mb_release_id
-                        if mb_id:
-                            try:
-                                beets = BeetsDB()
-                                existing_info = beets.get_album_info(mb_id)
-                                beets.close()
-                                if existing_info:
-                                    album_data.existing_min_bitrate = existing_info.min_bitrate_kbps
-                                    if os.path.isdir(existing_info.album_path):
-                                        existing_spectral = spectral_analyze(
-                                            existing_info.album_path, trim_seconds=30)
-                                        album_data.existing_spectral_bitrate = (
-                                            existing_spectral.estimated_bitrate_kbps)
-                                        logger.info(
-                                            f"SPECTRAL: existing on disk: "
-                                            f"grade={existing_spectral.grade}, "
-                                            f"estimated_bitrate="
-                                            f"{existing_spectral.estimated_bitrate_kbps}kbps, "
-                                            f"beets_min={existing_info.min_bitrate_kbps}kbps")
-                            except Exception:
-                                logger.exception("SPECTRAL: failed to check existing files")
-                        # Decision: use pure function from quality.py
-                        new_quality = spectral_result.estimated_bitrate_kbps
-                        existing_quality = album_data.existing_spectral_bitrate or 0
-                        request_id = album_data.db_request_id
-                        label = f"{album_data.artist} - {album_data.title}"
+                spec_ctx = _gather_spectral_context(album_data, import_folder_fullpath)
+                if spec_ctx.needs_check and spec_ctx.grade:
+                    # Store in album_data for downstream dl_info
+                    album_data.spectral_grade = spec_ctx.grade
+                    album_data.spectral_bitrate = spec_ctx.bitrate
+                    album_data.existing_spectral_bitrate = spec_ctx.existing_spectral_bitrate
+                    album_data.existing_min_bitrate = spec_ctx.existing_min_bitrate
 
-                        spectral_decision = spectral_import_decision(
-                            spectral_result.grade, new_quality, existing_quality)
+                    # Decision: use pure function from quality.py
+                    new_quality = spec_ctx.bitrate
+                    existing_quality = spec_ctx.existing_spectral_bitrate or 0
+                    request_id = album_data.db_request_id
+                    label = f"{album_data.artist} - {album_data.title}"
 
-                        if spectral_decision == "reject":
-                            logger.warning(
-                                f"SPECTRAL REJECT: {label} "
-                                f"new spectral {new_quality}kbps <= existing {existing_quality}kbps")
-                            usernames = set(f.username for f in album_data.files
-                                            if f.username)
-                            if request_id and pipeline_db_source:
-                                db = pipeline_db_source._get_db()
-                                for username in usernames:
-                                    db.add_denylist(request_id, username,
-                                                    f"spectral: {new_quality}kbps <= existing {existing_quality}kbps")
-                                dl_info_rej = _build_download_info(album_data)
-                                dl_info_rej.spectral_grade = spectral_result.grade
-                                dl_info_rej.spectral_bitrate = new_quality
-                                dl_info_rej.existing_spectral_bitrate = existing_quality
-                                dl_info_rej.slskd_filetype = dl_info_rej.filetype
-                                dl_info_rej.actual_filetype = dl_info_rej.filetype
-                                pipeline_db_source.mark_failed(
-                                    album_data,
-                                    {"distance": bv_result.get("distance"), "scenario": "spectral_reject",
-                                     "detail": f"spectral {new_quality}kbps <= existing {existing_quality}kbps",
-                                     "error": None},
-                                    usernames=usernames, download_info=dl_info_rej)
-                                logger.info(f"  Denylisted {usernames} for request {request_id}")
-                            move_failed_import(import_folder_fullpath)
-                            bv_result["valid"] = False
-                        elif spectral_decision == "import_upgrade":
-                            logger.info(
-                                f"SPECTRAL UPGRADE: {label} "
-                                f"suspect at {new_quality}kbps but > existing {existing_quality}kbps, importing")
-                        elif spectral_decision == "import_no_exist":
-                            logger.info(
-                                f"SPECTRAL: {label} "
-                                f"suspect at {new_quality}kbps but no existing album, importing")
-                    except Exception:
-                        logger.exception(f"SPECTRAL: failed for {album_data.artist} - {album_data.title}")
+                    spectral_decision = spectral_import_decision(
+                        spec_ctx.grade, new_quality, existing_quality)
+
+                    if spectral_decision == "reject":
+                        logger.warning(
+                            f"SPECTRAL REJECT: {label} "
+                            f"new spectral {new_quality}kbps <= existing {existing_quality}kbps")
+                        usernames = set(f.username for f in album_data.files
+                                        if f.username)
+                        if request_id and pipeline_db_source:
+                            db = pipeline_db_source._get_db()
+                            for username in usernames:
+                                db.add_denylist(request_id, username,
+                                                f"spectral: {new_quality}kbps <= existing {existing_quality}kbps")
+                            dl_info_rej = _build_download_info(album_data)
+                            dl_info_rej.spectral_grade = spec_ctx.grade
+                            dl_info_rej.spectral_bitrate = new_quality
+                            dl_info_rej.existing_spectral_bitrate = existing_quality
+                            dl_info_rej.slskd_filetype = dl_info_rej.filetype
+                            dl_info_rej.actual_filetype = dl_info_rej.filetype
+                            pipeline_db_source.mark_failed(
+                                album_data,
+                                {"distance": bv_result.get("distance"), "scenario": "spectral_reject",
+                                 "detail": f"spectral {new_quality}kbps <= existing {existing_quality}kbps",
+                                 "error": None},
+                                usernames=usernames, download_info=dl_info_rej)
+                            logger.info(f"  Denylisted {usernames} for request {request_id}")
+                        move_failed_import(import_folder_fullpath)
+                        bv_result["valid"] = False
+                    elif spectral_decision == "import_upgrade":
+                        logger.info(
+                            f"SPECTRAL UPGRADE: {label} "
+                            f"suspect at {new_quality}kbps but > existing {existing_quality}kbps, importing")
+                    elif spectral_decision == "import_no_exist":
+                        logger.info(
+                            f"SPECTRAL: {label} "
+                            f"suspect at {new_quality}kbps but no existing album, importing")
 
             if bv_result["valid"]:
                 dest = stage_to_ai(album_data, import_folder_fullpath, cfg.beets_staging_dir)
