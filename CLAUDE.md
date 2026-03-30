@@ -372,6 +372,29 @@ nix-shell --run "python3 -m unittest tests.test_quality_decisions -v"
 nix-shell --run "python3 -m unittest tests.test_import_result -v"
 ```
 
+### Pre-commit hook
+
+A git pre-commit hook runs pyright on staged .py files automatically. Install with:
+```bash
+ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+```
+
+### Claude Code commands
+
+- `/deploy` — full push → flake update → rebuild → verify sequence
+- `/debug-download <id>` — query both JSONB audit blobs for a download_log entry
+- `/check` — pyright + full test suite pre-commit quality gate
+
+### Claude Code rules
+
+Path-scoped rules in `.claude/rules/` auto-load when editing matching files:
+- `code-quality.md` — type safety, TDD, logging, decision purity (always loaded)
+- `nix-shell.md` — always use nix-shell for Python (loaded for `*.py`)
+- `harness.md` — never discard harness data (loaded for `harness/`, `lib/beets.py`)
+- `web.md` — vanilla JS, no build step (loaded for `web/`)
+- `pipeline-db.md` — autocommit, idempotent migrations (loaded for `lib/pipeline_db.py`)
+- `deploy.md` — flake flow, verify deployed code (always loaded)
+
 ## Playwright MCP (Web UI Testing)
 
 The Playwright MCP server provides browser automation tools for testing the web UI at `https://music.ablz.au`. Configured in `.mcp.json` (not committed — platform-specific). Use `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill_form`, `browser_console_messages`, etc.
