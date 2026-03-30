@@ -14,7 +14,11 @@ TRANSCODE_MIN_BITRATE_KBPS = 210  # V0 from genuine lossless is always >= this
 
 @dataclass
 class CandidateSummary:
-    """Summary of a beets candidate match for audit logging."""
+    """Full beets candidate match data for audit logging.
+
+    Stores everything the harness sends: tracks, label, mediums, etc.
+    The tracks list contains {title, length, track_id} per track.
+    """
     mbid: str = ""
     artist: str = ""
     album: str = ""
@@ -22,8 +26,13 @@ class CandidateSummary:
     track_count: int = 0
     year: Optional[int] = None
     country: Optional[str] = None
+    label: Optional[str] = None
+    mediums: Optional[int] = None
+    albumtype: Optional[str] = None
+    albumstatus: Optional[str] = None
     extra_tracks: int = 0
     extra_items: int = 0
+    tracks: list[dict] = field(default_factory=list)
     is_target: bool = False
 
 

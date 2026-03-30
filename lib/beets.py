@@ -31,8 +31,13 @@ def _candidate_from_harness(cand: dict, target_mbid: str) -> CandidateSummary:
         track_count=cand.get("track_count", 0),
         year=cand.get("year"),
         country=cand.get("country"),
+        label=cand.get("label"),
+        mediums=cand.get("mediums"),
+        albumtype=cand.get("albumtype"),
+        albumstatus=cand.get("albumstatus"),
         extra_tracks=cand.get("extra_tracks", 0),
         extra_items=cand.get("extra_items", 0),
+        tracks=cand.get("tracks", []),
         is_target=(cand.get("album_id", "") == target_mbid),
     )
 

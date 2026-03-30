@@ -50,7 +50,13 @@ class TestCandidateSummary(unittest.TestCase):
             "album_id": "abc-123", "artist": "Blue Cheer",
             "album": "Vincebus Eruptum", "distance": 0.02,
             "track_count": 6, "year": 1968, "country": "US",
+            "label": "Philips", "mediums": 1,
+            "albumtype": "album", "albumstatus": "Official",
             "extra_tracks": 0, "extra_items": 0,
+            "tracks": [
+                {"title": "Summertime Blues", "length": 213.4, "track_id": "t1"},
+                {"title": "Rock Me Baby", "length": 244.1, "track_id": "t2"},
+            ],
         }
         c = CandidateSummary(
             mbid=harness_cand["album_id"],
@@ -60,11 +66,35 @@ class TestCandidateSummary(unittest.TestCase):
             track_count=harness_cand["track_count"],
             year=harness_cand["year"],
             country=harness_cand["country"],
+            label=harness_cand["label"],
+            mediums=harness_cand["mediums"],
+            albumtype=harness_cand["albumtype"],
+            albumstatus=harness_cand["albumstatus"],
             extra_tracks=harness_cand["extra_tracks"],
             extra_items=harness_cand["extra_items"],
+            tracks=harness_cand["tracks"],
         )
         self.assertEqual(c.mbid, "abc-123")
         self.assertEqual(c.distance, 0.02)
+        self.assertEqual(c.label, "Philips")
+        self.assertEqual(len(c.tracks), 2)
+        self.assertEqual(c.tracks[0]["title"], "Summertime Blues")
+
+    def test_tracks_survive_json_round_trip(self) -> None:
+        """Track lists serialize and deserialize through ValidationResult."""
+        vr = ValidationResult(
+            candidates=[CandidateSummary(
+                mbid="abc", distance=0.02, is_target=True,
+                tracks=[
+                    {"title": "Track 1", "length": 180.0, "track_id": "t1"},
+                    {"title": "Track 2", "length": 200.0, "track_id": "t2"},
+                ],
+            )],
+        )
+        j = vr.to_json()
+        vr2 = ValidationResult.from_json(j)
+        self.assertEqual(len(vr2.candidates[0].tracks), 2)
+        self.assertEqual(vr2.candidates[0].tracks[1]["title"], "Track 2")
 
 
 # ============================================================================
