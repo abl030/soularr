@@ -27,7 +27,7 @@ Pipeline DB (PostgreSQL)           |                       |
       |  source=redownload         |                       |
       |    stage to /Incoming      |  (manual review)      |
       |                            |                       |
-      |  mark_done() + ImportResult JSON                   |
+      |  ImportResult + ValidationResult JSON               |
       |<---------------------------------------------------+
 ```
 
@@ -35,40 +35,63 @@ Pipeline DB (PostgreSQL)           |                       |
 
 All quality decisions are pure functions in `lib/quality.py` with full unit test coverage:
 
-1. **`spectral_import_decision()`** -- Pre-import: should we import this CBR download? Compares spectral analysis of new files vs existing.
+1. **`spectral_import_decision()`** -- Pre-import: should we import this CBR download?
 2. **`import_quality_decision()`** -- Is this an upgrade or downgrade? Genuine FLAC->V0 always wins.
-3. **`transcode_detection()`** -- Post-FLAC-conversion: was the FLAC a transcode? (V0 bitrate < 210kbps = fake)
+3. **`transcode_detection()`** -- Post-FLAC-conversion: was the FLAC a transcode?
 4. **`quality_gate_decision()`** -- Post-import: accept, or re-queue for better quality?
 5. **`is_verified_lossless()`** -- Was this imported from a spectral-verified genuine FLAC?
 
-`import_one.py` emits a typed `ImportResult` JSON blob on stdout. The full JSON is stored in `download_log.import_result` (JSONB) for complete auditability:
+## Audit trail
+
+Every download stores two JSONB blobs in `download_log` for complete auditability:
+
+**`import_result`** -- from `import_one.py` via `ImportResult` dataclass:
+- Decision (import/downgrade/transcode_upgrade/transcode_downgrade/error)
+- Per-track spectral analysis (grade, HF deficit, cliff detection per track)
+- Conversion details (FLAC->V0, post-conversion bitrate)
+- Quality comparison (new vs existing bitrate, verified_lossless flag)
+- Postflight verification (beets ID, track count, imported path)
+
+**`validation_result`** -- from `beets_validate()` via `ValidationResult` dataclass:
+- Full beets candidate list with distance breakdown per component (album, artist, tracks, media, source, year...)
+- Track mapping: which local file matched which MusicBrainz track
+- Local file list (path, title, bitrate, format) vs MB track list (title, length, track_id)
+- Beets recommendation confidence level
+- Soulseek username, download folder, failed_path, denylisted users, corrupt files
 
 ```sql
-SELECT import_result->>'decision',
-       import_result->'quality'->>'new_min_bitrate',
+-- Why was this rejected?
+SELECT validation_result->'candidates'->0->'distance_breakdown',
+       import_result->>'decision',
        import_result->'spectral'->>'grade'
-FROM download_log ORDER BY id DESC LIMIT 10;
+FROM download_log WHERE id = <id>;
+
+-- Which tracks matched?
+SELECT m->'item'->>'title' as local, m->'track'->>'title' as mb
+FROM download_log, jsonb_array_elements(validation_result->'candidates'->0->'mapping') AS m
+WHERE id = <id>;
 ```
 
-## What's different from upstream
+All types are fully typed dataclasses with pyright enforcement and JSON round-trip serialization:
+`ImportResult`, `ValidationResult`, `CandidateSummary`, `HarnessItem`, `HarnessTrackInfo`, `TrackMapping`, `DownloadInfo`, `SpectralContext`, `AlbumInfo`.
 
-This fork is a significant rewrite:
+## What's different from upstream
 
 - **PostgreSQL pipeline DB** replaces Lidarr as the source of truth
 - **Web UI** (`music.ablz.au`) for browsing MusicBrainz and adding albums
 - **Beets validation** -- every download validated against target MusicBrainz release ID
 - **Auto-import** with FLAC->V0 conversion, spectral analysis, quality gating
-- **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout (`ImportResult`, `DownloadInfo`, `SpectralContext`, `AlbumInfo`)
+- **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout
+- **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
-- **421 tests** including spectral analysis with real audio fixtures and live slskd integration tests
+- **448 tests** including spectral analysis with real audio fixtures and live slskd integration tests
 
 ## MusicBrainz mirror
 
-All MusicBrainz lookups hit a local mirror at `http://192.168.1.35:5200` (doc2), not the public API. This avoids rate limits and provides sub-second response times for search and release lookups. The mirror runs [musicbrainz-docker](https://github.com/metabrainz/musicbrainz-docker) and replicates nightly from the MusicBrainz production database.
+All MusicBrainz lookups hit a local mirror at `http://192.168.1.35:5200` (doc2), not the public API. This avoids rate limits and provides sub-second response times. The mirror runs [musicbrainz-docker](https://github.com/metabrainz/musicbrainz-docker) and replicates nightly.
 
-The web UI (`web/mb.py`) and beets both query this mirror. Beets is configured with `musicbrainz.host: 192.168.1.35:5200` so all candidate lookups and MBID matching go through it.
+The web UI (`web/mb.py`) and beets both query this mirror. Beets is configured with `musicbrainz.host: 192.168.1.35:5200`.
 
-API examples:
 ```bash
 # Search releases
 curl -s "http://192.168.1.35:5200/ws/2/release?query=artist:radiohead+AND+release:ok+computer&fmt=json"
@@ -80,7 +103,8 @@ curl -s "http://192.168.1.35:5200/ws/2/release/<MBID>?inc=recordings+media&fmt=j
 ## Running tests
 
 ```bash
-nix-shell --run "python3 -m unittest discover tests -v"
+nix-shell --run "bash scripts/run_tests.sh"    # full suite, saves to /tmp/soularr-test-output.txt
+nix-shell --run "python3 -m unittest tests.<module> -v"  # single module
 ```
 
 ## Deployment

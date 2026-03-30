@@ -37,42 +37,58 @@ web/
   mb.py                 — MusicBrainz API helpers
   index.html            — Frontend (vanilla JS, inline CSS)
 lib/
-  beets.py              — Beets validation (dry-run import via harness)
+  beets.py              — Beets validation (dry-run import via harness, returns ValidationResult)
   beets_db.py           — BeetsDB: read-only beets SQLite queries (AlbumInfo dataclass)
   config.py             — SoularrConfig dataclass (typed config from config.ini)
   grab_list.py          — GrabList: wanted-album selection with priority/ordering
   pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema)
   quality.py            — Pure decision functions + typed dataclasses:
+                           Decision functions:
                            - spectral_import_decision(), import_quality_decision()
                            - transcode_detection(), quality_gate_decision()
-                           - is_verified_lossless()
-                           - ImportResult, DownloadInfo, SpectralContext (dataclasses)
-                           - parse_import_result() (JSON sentinel parser)
+                           - is_verified_lossless(), parse_import_result()
+                           Import result types:
+                           - ImportResult, ConversionInfo, QualityInfo, SpectralInfo, PostflightInfo
+                           Validation result types:
+                           - ValidationResult, CandidateSummary
+                           Harness data types:
+                           - HarnessItem, HarnessTrackInfo, TrackMapping
+                           Other:
+                           - DownloadInfo, SpectralContext
   search.py             — Search query building and normalization
   spectral_check.py     — Spectral analysis (sox-based transcode detection)
 harness/
   beets_harness.py      — Beets interactive import harness (JSON protocol over stdin/stdout)
+                           Serializes full AlbumMatch: distance breakdown, track mapping,
+                           all AlbumInfo/TrackInfo fields, extra items/tracks with detail
   run_beets_harness.sh  — Shell wrapper to bootstrap Nix beets Python environment
   import_one.py         — One-shot beets import: emits ImportResult JSON on stdout
 scripts/
   pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
-tests/
+  run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
+tests/                     448 tests total
   test_album_source.py      — 11 tests for AlbumSource
   test_beets_db.py           — 14 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
   test_config.py             — 41 tests for SoularrConfig
   test_grab_list.py          — 60 tests for GrabList
-  test_import_result.py      — 34 tests for ImportResult, DownloadInfo, JSON parsing
+  test_import_result.py      — 36 tests for ImportResult, DownloadInfo, JSON parsing
   test_pipeline_cli.py       — 7 tests for CLI
   test_pipeline_db.py        — 33 tests for PipelineDB
   test_quality_classification.py — 17 tests for quality classification (real audio fixtures)
-  test_quality_decisions.py  — 61 tests for pure decision functions
+  test_quality_decisions.py  — 65 tests for pure decision functions
   test_search.py             — 32 tests for search query building
   test_slskd_live.py         — 12 tests for live slskd integration (ephemeral Docker)
   test_spectral_check.py     — 39 tests for spectral analysis
   test_track_crosscheck.py   — 15 tests (track title cross-check)
+  test_validation_result.py  — 27 tests for ValidationResult, CandidateSummary, harness types
 test_soularr.py         — Isolated tests for verify_filetype (AST extraction)
+.claude/
+  commands/beets-docs.md — Skill: look up beets RST docs from nix store
+  rules/code-quality.md  — Type safety, TDD, logging, decision purity standards
+  rules/nix-shell.md     — Always use nix-shell for Python (path-scoped to *.py)
+  rules/harness.md       — Never discard harness data, typed dataclasses (path-scoped)
 ```
 
 ## Infrastructure
@@ -160,15 +176,39 @@ All quality decisions are pure functions in `lib/quality.py` — no I/O, no data
 4. **`quality_gate_decision()`** — Post-import: accept, or re-queue for better quality?
 5. **`is_verified_lossless()`** — Was this imported from a genuine FLAC source?
 
-`import_one.py` emits an `ImportResult` JSON blob (`__IMPORT_RESULT__` sentinel on stdout) containing every decision and measurement. soularr.py parses it with `parse_import_result()`. The full JSON is stored in `download_log.import_result` (JSONB) for debugging:
+### Import logging (`download_log.import_result` JSONB)
+
+`import_one.py` emits an `ImportResult` JSON blob (`__IMPORT_RESULT__` sentinel on stdout). Contains: decision, conversion details, per-track spectral analysis (grade, hf_deficit, cliff detection per track), quality comparison (new vs prev bitrate), postflight verification (beets_id, path). Every import path (success, downgrade, transcode, error, timeout, crash) logs to download_log.
 
 ```sql
 SELECT import_result->>'decision', import_result->'quality'->>'new_min_bitrate',
-       import_result->'spectral'->>'grade'
+       import_result->'spectral'->>'grade',
+       import_result->'spectral'->'per_track'->0->>'hf_deficit_db'
 FROM download_log ORDER BY id DESC LIMIT 10;
 ```
 
-Typed dataclasses used throughout: `ImportResult`, `DownloadInfo`, `SpectralContext`, `AlbumInfo` (beets), `ConversionInfo`, `QualityInfo`, `SpectralInfo`, `PostflightInfo`.
+### Validation logging (`download_log.validation_result` JSONB)
+
+`beets_validate()` returns a `ValidationResult` with the full candidate list from the harness. Every validation (success or rejection) stores this. Contains: all beets candidates with distance breakdown per component (album, artist, tracks, media, source, year...), full track lists per candidate, the item→track mapping (which local file matched which MB track), local file list, beets recommendation level, soulseek username, download folder, failed_path, denylisted users, corrupt files.
+
+```sql
+-- Why was distance high?
+SELECT validation_result->'candidates'->0->'distance_breakdown'
+FROM download_log WHERE id = <id>;
+
+-- Which local file matched which MB track?
+SELECT m->'item'->>'path', m->'item'->>'title', m->'track'->>'title'
+FROM download_log, jsonb_array_elements(validation_result->'candidates'->0->'mapping') AS m
+WHERE id = <id>;
+```
+
+### Type hierarchy
+
+All types in `lib/quality.py`, fully typed with pyright, JSON round-trip serialization:
+
+- **Import path**: `ImportResult` → `ConversionInfo`, `QualityInfo`, `SpectralInfo`, `PostflightInfo`
+- **Validation path**: `ValidationResult` → `CandidateSummary` → `HarnessTrackInfo`, `HarnessItem`, `TrackMapping`
+- **Shared**: `DownloadInfo` (replaces untyped dl_info dict), `SpectralContext` (pre-import spectral gathering), `AlbumInfo` (beets DB queries in `lib/beets_db.py`)
 
 ## Quality Upgrade System
 
