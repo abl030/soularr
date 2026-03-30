@@ -264,7 +264,14 @@ function renderDownloadHistoryItem(h) {
 // Convert UTC ISO string to AWST (UTC+8)
 function toAWST(isoStr) {
   if (!isoStr) return '';
-  const d = new Date(isoStr.endsWith('Z') ? isoStr : isoStr + 'Z');
+  // Handle timezone-aware strings (e.g. +00:00) and naive strings
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) {
+    // Fallback: try appending Z for naive timestamps
+    const d2 = new Date(isoStr + 'Z');
+    if (isNaN(d2.getTime())) return '';
+    return new Date(d2.getTime() + 8 * 3600000).toISOString();
+  }
   return new Date(d.getTime() + 8 * 3600000).toISOString();
 }
 function awstDate(isoStr) { return toAWST(isoStr).slice(0, 10); }
