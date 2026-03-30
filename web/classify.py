@@ -50,7 +50,6 @@ def classify_log_entry(item: dict) -> dict:
     existing_br = _get(item, "existing_min_bitrate")
     spectral_br = _get(item, "spectral_bitrate")
     existing_spectral_br = _get(item, "existing_spectral_bitrate")
-    prev_br = _get(item, "prev_min_bitrate")
     cur_br = _get(item, "request_min_bitrate")
     quality_override = _get(item, "quality_override")
     was_converted = _get(item, "was_converted", False)
@@ -112,20 +111,29 @@ def classify_log_entry(item: dict) -> dict:
                                 original_ft and original_ft.lower() == "flac" and
                                 spectral_grade == "genuine")
 
-        # Upgrade vs new import
-        if prev_br is not None:
-            # Had something before — is this an upgrade?
-            if quality_override and cur_br is not None and cur_br <= prev_br:
-                # quality_override means we're replacing garbage CBR
-                verdict = _upgrade_verdict(prev_br, cur_br, was_converted,
-                                           original_ft, is_verified_lossless)
+        # Upgrade vs new import — use existing_min_bitrate from the
+        # download_log entry (what was on disk at the time of THIS download),
+        # NOT prev_min_bitrate from album_requests (current state that
+        # changes over time as later downloads update it)
+        had_existing = existing_br is not None and existing_br > 0
+        if had_existing:
+            # Had something on disk — is this an upgrade?
+            if quality_override:
+                # Replacing unverified CBR with verified source
+                cur_label = quality_label("MP3", int(actual_br or cur_br or 0))
+                parts = [f"Replaced unverified CBR with {cur_label}"]
+                if was_converted and original_ft:
+                    parts.append(f"from {original_ft.upper()}")
+                if is_verified_lossless:
+                    parts.append("verified lossless")
+                verdict = ", ".join(parts)
                 return {
                     "badge": "Upgraded",
                     "badge_class": "badge-upgraded",
                     "border_color": "#3a6",
                     "verdict": verdict,
                 }
-            verdict = _upgrade_verdict(prev_br, cur_br or actual_br,
+            verdict = _upgrade_verdict(existing_br, actual_br or cur_br,
                                        was_converted, original_ft,
                                        is_verified_lossless)
             return {

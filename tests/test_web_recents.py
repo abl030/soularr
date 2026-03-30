@@ -102,8 +102,8 @@ class TestClassifyBadge(unittest.TestCase):
 
     def test_upgrade(self):
         """Successful import that upgraded existing quality."""
-        item = _item(outcome="success", prev_min_bitrate=192,
-                     request_min_bitrate=320)
+        item = _item(outcome="success", existing_min_bitrate=192,
+                     actual_min_bitrate=320)
         result = classify_log_entry(item)
         self.assertEqual(result["badge"], "Upgraded")
         self.assertEqual(result["badge_class"], "badge-upgraded")
@@ -203,7 +203,7 @@ class TestClassifyBadge(unittest.TestCase):
         """quality_override set — replacing garbage CBR with genuine V0.
         Even though nominal bitrate went down, this is an upgrade."""
         item = _item(outcome="success", quality_override="flac",
-                     prev_min_bitrate=320, request_min_bitrate=243)
+                     existing_min_bitrate=320, actual_min_bitrate=243)
         result = classify_log_entry(item)
         self.assertEqual(result["badge"], "Upgraded")
         self.assertEqual(result["badge_class"], "badge-upgraded")
@@ -319,8 +319,8 @@ class TestClassifyVerdict(unittest.TestCase):
 
     def test_upgrade_verdict(self):
         """Upgrade verdict mentions improvement."""
-        item = _item(outcome="success", prev_min_bitrate=192,
-                     request_min_bitrate=320, actual_min_bitrate=320)
+        item = _item(outcome="success", existing_min_bitrate=192,
+                     actual_min_bitrate=320)
         result = classify_log_entry(item)
         v = result["verdict"].lower()
         self.assertTrue("upgrade" in v or "improved" in v or
@@ -330,8 +330,8 @@ class TestClassifyVerdict(unittest.TestCase):
         """FLAC→V0 verified lossless upgrade mentions verified lossless."""
         item = _item(outcome="success", was_converted=True,
                      original_filetype="flac", actual_filetype="mp3",
-                     actual_min_bitrate=243, prev_min_bitrate=192,
-                     request_min_bitrate=243, spectral_grade="genuine")
+                     actual_min_bitrate=243, existing_min_bitrate=192,
+                     spectral_grade="genuine")
         result = classify_log_entry(item)
         self.assertIn("verified lossless", result["verdict"].lower())
 
@@ -369,8 +369,8 @@ class TestBuildSummaryLine(unittest.TestCase):
 
     def test_upgrade_summary(self):
         """Summary shows old → new quality."""
-        item = _item(outcome="success", prev_min_bitrate=192,
-                     request_min_bitrate=320, actual_min_bitrate=320,
+        item = _item(outcome="success", existing_min_bitrate=192,
+                     actual_min_bitrate=320,
                      soulseek_username="gooduser")
         classified = classify_log_entry(item)
         summary = build_summary_line(item, classified)
@@ -409,8 +409,8 @@ class TestBuildSummaryLine(unittest.TestCase):
 
     def test_summary_no_html(self):
         """Summary must not contain HTML tags."""
-        item = _item(outcome="success", prev_min_bitrate=192,
-                     request_min_bitrate=320)
+        item = _item(outcome="success", existing_min_bitrate=192,
+                     actual_min_bitrate=320)
         classified = classify_log_entry(item)
         summary = build_summary_line(item, classified)
         self.assertNotIn("<", summary)
