@@ -1249,6 +1249,13 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                                 f"{album_data.artist} - {album_data.title}")
                             for line in (result.stdout or "").strip().split("\n"):
                                 logger.error(f"  {line}")
+                            pipeline_db_source.mark_failed(
+                                album_data,
+                                {"distance": bv_result.get("distance"),
+                                 "scenario": "no_json_result",
+                                 "detail": f"import_one.py rc={result.returncode}, no JSON",
+                                 "error": f"rc={result.returncode}"},
+                                download_info=dl_info)
                         else:
                             _populate_dl_info_from_import_result(dl_info, ir)
 
@@ -1283,6 +1290,13 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                                     db.add_denylist(request_id, username,
                                                     "quality downgrade prevented")
                                 logger.info(f"  Denylisted {usernames} for request {request_id}")
+                                pipeline_db_source.mark_failed(
+                                    album_data,
+                                    {"distance": bv_result.get("distance"),
+                                     "scenario": "quality_downgrade",
+                                     "detail": f"new {ir.quality.new_min_bitrate}kbps <= existing {ir.quality.prev_min_bitrate}kbps",
+                                     "error": None},
+                                    usernames=usernames, download_info=dl_info)
                                 _cleanup_staged_dir(dest)
 
                             elif decision in ("transcode_upgrade", "transcode_first",
@@ -1302,6 +1316,14 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                                     logger.warning(
                                         f"TRANSCODE REJECTED: {label} "
                                         f"at {actual_br}kbps — not an upgrade")
+                                    pipeline_db_source.mark_failed(
+                                        album_data,
+                                        {"distance": bv_result.get("distance"),
+                                         "scenario": "transcode_downgrade",
+                                         "detail": f"transcode {actual_br}kbps <= existing {ir.quality.prev_min_bitrate}kbps",
+                                         "error": None},
+                                        usernames=set(f.username for f in album_data.files if f.username),
+                                        download_info=dl_info)
                                 # Denylist + reset to wanted
                                 usernames = set(f.username for f in album_data.files
                                                 if f.username)
@@ -1323,10 +1345,31 @@ def process_completed_album(album_data: GrabListEntry, failed_grab):
                                 logger.error(
                                     f"AUTO-IMPORT FAILED: {label} "
                                     f"(decision={decision}, error={ir.error})")
+                                pipeline_db_source.mark_failed(
+                                    album_data,
+                                    {"distance": bv_result.get("distance"),
+                                     "scenario": decision or "import_error",
+                                     "detail": ir.error,
+                                     "error": ir.error},
+                                    download_info=dl_info)
                     except sp.TimeoutExpired:
                         logger.error(f"AUTO-IMPORT TIMEOUT: {album_data.artist} - {album_data.title}")
+                        timeout_dl = _build_download_info(album_data)
+                        pipeline_db_source.mark_failed(
+                            album_data,
+                            {"distance": bv_result.get("distance"),
+                             "scenario": "timeout", "detail": "import_one.py timed out",
+                             "error": "timeout"},
+                            download_info=timeout_dl)
                     except Exception:
                         logger.exception(f"AUTO-IMPORT ERROR: {album_data.artist} - {album_data.title}")
+                        err_dl = _build_download_info(album_data)
+                        pipeline_db_source.mark_failed(
+                            album_data,
+                            {"distance": bv_result.get("distance"),
+                             "scenario": "exception", "detail": "unhandled exception in auto-import",
+                             "error": "exception"},
+                            download_info=err_dl)
                 else:
                     # Redownload or high distance: stage only, user reviews manually
                     pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest, download_info=dl_info)
