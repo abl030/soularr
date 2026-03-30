@@ -12,6 +12,7 @@ git add <files> && git commit -m "<message>" && git push
 2. Update flake input on doc1 and push:
 ```bash
 ssh doc1 'cd ~/nixosconfig && nix flake update soularr-src && git add flake.lock && git commit -m "soularr: <description>" && git push'
+# NOTE: If already on doc1 (hostname = proxmox-vm), run the inner command directly without ssh
 ```
 
 3. Rebuild doc2:

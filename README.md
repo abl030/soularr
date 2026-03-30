@@ -85,7 +85,7 @@ All types are fully typed dataclasses with pyright enforcement and JSON round-tr
 - **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
 - **Force-import** -- manually import rejected downloads via CLI (`force-import <id>`) or web API
-- **457 tests** including spectral analysis with real audio fixtures and live slskd integration tests
+- **460 tests** including spectral analysis with real audio fixtures and live slskd integration tests
 
 ## MusicBrainz mirror
 

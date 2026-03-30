@@ -1,4 +1,4 @@
-# **RUN `hostname` AT THE START OF EVERY CHAT. proxmox-vm = doc1, doc2 = doc2. You are likely already on doc1 — do NOT ssh to doc1 from doc1. If hostname returns a Windows machine (e.g. DESKTOP-*), you're on the Windows laptop — see below for SSH access.**
+# **RUN `hostname` AT THE START OF EVERY CHAT. proxmox-vm = doc1, doc2 = doc2, framework = Framework laptop (Linux). You are likely already on doc1 — do NOT ssh to doc1 from doc1. If hostname returns a Windows machine (e.g. DESKTOP-*), you're on the Windows laptop — see below for SSH access.**
 
 # **Windows laptop SSH access**: There is no native SSH key on Windows. A NixOS WSL2 instance has the SSH key via sops-nix at `/run/secrets/ssh_key_abl030`. To get SSH access to doc1/doc2, run: `mkdir -p ~/.ssh && wsl -d NixOS -- bash -c 'cat /run/secrets/ssh_key_abl030' > ~/.ssh/id_doc2 && chmod 600 ~/.ssh/id_doc2` then SSH with `ssh -i ~/.ssh/id_doc2 abl030@doc2` or `ssh -i ~/.ssh/id_doc2 abl030@proxmox-vm`. The key works for both machines. You may need `-o StrictHostKeyChecking=no` on first use.
 
@@ -69,14 +69,14 @@ scripts/
   pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, force-import, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
-tests/                     457 tests total
+tests/                     460 tests total
   test_album_source.py      — 11 tests for AlbumSource
   test_beets_db.py           — 14 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
   test_config.py             — 41 tests for SoularrConfig
   test_grab_list.py          — 60 tests for GrabList
   test_import_result.py      — 36 tests for ImportResult, DownloadInfo, JSON parsing
-  test_force_import.py       — 9 tests for force-import (CLI, DB, --force flag)
+  test_force_import.py       — 12 tests for force-import (CLI, DB, --force flag, path resolution)
   test_pipeline_cli.py       — 7 tests for CLI
   test_pipeline_db.py        — 33 tests for PipelineDB
   test_quality_classification.py — 17 tests for quality classification (real audio fixtures)
@@ -337,13 +337,12 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 
 ## Deploying Changes
 
-Flake input changes (step 2) MUST be done on doc1 and pushed from there. Doc2 has no git push credentials. Doc2 is only for building/running.
+Flake input changes MUST be done on doc1 and pushed from there. Doc2 has no git push credentials. Doc2 is only for building/running.
 
-**From doc1 (or Windows laptop via SSH to doc1):**
+**From any machine with SSH access (framework, doc1, Windows laptop):**
 ```bash
 # 1. Edit code, commit, push (from wherever the repo lives)
-cd ~/soularr
-git add . && git commit -m "description" && git push
+git add <files> && git commit -m "description" && git push
 
 # 2. Update Nix flake input (MUST be on doc1 — it has git push access)
 ssh doc1 'cd ~/nixosconfig && nix flake update soularr-src && git add flake.lock && git commit -m "soularr: description" && git push'
@@ -381,9 +380,10 @@ Key options under `homelab.services.soularr`:
 
 The module:
 1. Builds a Python environment with dependencies (requests, music-tag, slskd-api, psycopg2)
-2. Wraps `soularr.py` in a shell script
-3. Generates `config.ini` at runtime from sops secrets
-4. Pre-start: health-check slskd → integrity-check DB → start Soularr
+2. Wraps `soularr.py` in a shell script with ffmpeg, sox, mp3val, flac in PATH
+3. Wraps `pipeline-cli` with the same tools in PATH (needed for `force-import` which calls `import_one.py`)
+4. Generates `config.ini` at runtime from sops secrets
+5. Pre-start: health-check slskd → integrity-check DB → start Soularr
 
 ## Running Tests
 
