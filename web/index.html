@@ -179,13 +179,12 @@
 const API = '';
 let searchTimer = null;
 
-function qualityLabel(formats, minBitrate) {
-  // minBitrate is in bps from beets (e.g. 320000)
+function qualityLabel(formats, kbps) {
+  // kbps: bitrate in kilobits per second (e.g. 320, not 320000)
   if (!formats) return '?';
   const fmt = formats.split(',')[0].trim().toUpperCase();
   if (fmt === 'FLAC' || fmt === 'ALAC') return fmt;
-  if (!minBitrate || minBitrate <= 0) return fmt;
-  const kbps = Math.round(minBitrate / 1000);
+  if (!kbps || kbps <= 0) return fmt;
   if (kbps >= 295) return fmt + ' 320';
   if (kbps >= 220) return fmt + ' V0';
   if (kbps >= 170) return fmt + ' V2';
@@ -216,11 +215,11 @@ function renderDownloadHistoryItem(h) {
     if (h.was_converted) {
       const convBr = h.actual_min_bitrate || (h.bitrate ? Math.round(h.bitrate / 1000) : 0);
       dlLabel = h.original_filetype ? h.original_filetype.toUpperCase() : '?';
-      const convLabel = convBr ? qualityLabel('mp3', convBr * 1000) : 'MP3';
+      const convLabel = convBr ? qualityLabel('mp3', convBr) : 'MP3';
       dlLabel += ` (converted to ${convLabel})`;
     } else {
       const br = h.actual_min_bitrate || (h.bitrate ? Math.round(h.bitrate / 1000) : 0);
-      dlLabel = br ? qualityLabel(actualFmt, br * 1000) : actualFmt.toUpperCase();
+      dlLabel = br ? qualityLabel(actualFmt, br) : actualFmt.toUpperCase();
     }
     rows.push(['Downloaded', dlLabel]);
   }
@@ -781,8 +780,9 @@ async function toggleDetail(elId, requestId) {
     const beetsTracks = data.beets_tracks || [];
     if (beetsTracks.length > 0) {
       const minBr = Math.min(...beetsTracks.filter(t => t.bitrate).map(t => t.bitrate));
+      const minBrKbps = minBr ? Math.round(minBr / 1000) : 0;
       const fmt = beetsTracks[0]?.format || '';
-      const nominal = minBr ? qualityLabel(fmt, minBr) : fmt;
+      const nominal = minBrKbps ? qualityLabel(fmt, minBrKbps) : fmt;
       // Spectral data: album_requests has it if set, otherwise check the
       // most recent download_log entry's existing_spectral_bitrate (what
       // was on disk when that download happened — if it's the latest entry,
@@ -975,7 +975,7 @@ function renderLibraryResults(albums) {
           </div>
           <div class="p-meta">
             <span>${a.year || '?'}</span>
-            <span>${qualityLabel(a.formats, a.min_bitrate)}</span>
+            <span>${qualityLabel(a.formats, a.min_bitrate ? Math.round(a.min_bitrate / 1000) : 0)}</span>
             ${a.country ? `<span>${a.country}</span>` : ''}
             ${a.type ? `<span>${a.type}</span>` : ''}
             <span>added ${added}</span>

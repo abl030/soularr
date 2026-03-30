@@ -1,15 +1,103 @@
 """Pure classification functions for recents tab display.
 
-Given a download_log row (as a dict), these functions compute:
-- badge + badge_class + border_color (visual classification)
-- verdict (human-readable one-liner explaining what happened)
-- summary (concise line for the collapsed card view)
+Given a download_log row (as a LogEntry dataclass), computes a
+ClassifiedEntry with badge, verdict, and summary.
 
 No I/O, no database — fully unit-testable.
 """
 
+from dataclasses import dataclass, fields
 from typing import Any, Optional
 
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LogEntry:
+    """A download_log row, optionally joined with album_requests fields.
+
+    Constructed from psycopg2 RealDictRow via from_row(). All bitrate
+    fields are kbps unless noted otherwise.
+    """
+    # download_log identity
+    id: int = 0
+    request_id: int = 0
+    outcome: str = ""
+    created_at: Optional[str] = None  # ISO string after serialization
+
+    # match result
+    beets_scenario: Optional[str] = None
+    beets_distance: Optional[float] = None
+    beets_detail: Optional[str] = None
+    soulseek_username: Optional[str] = None
+    error_message: Optional[str] = None
+
+    # download quality
+    filetype: Optional[str] = None
+    bitrate: Optional[int] = None              # bps — the ONLY field in bps
+    was_converted: bool = False
+    original_filetype: Optional[str] = None
+    actual_filetype: Optional[str] = None
+    actual_min_bitrate: Optional[int] = None   # kbps
+    slskd_filetype: Optional[str] = None
+    slskd_bitrate: Optional[int] = None        # bps
+    spectral_grade: Optional[str] = None
+    spectral_bitrate: Optional[int] = None     # kbps
+    existing_min_bitrate: Optional[int] = None  # kbps
+    existing_spectral_bitrate: Optional[int] = None  # kbps
+
+    # album_requests columns (from JOIN — empty for history-only queries)
+    album_title: str = ""
+    artist_name: str = ""
+    mb_release_id: Optional[str] = None
+    request_status: Optional[str] = None
+    request_min_bitrate: Optional[int] = None  # kbps
+    quality_override: Optional[str] = None
+    source: Optional[str] = None
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> "LogEntry":
+        """Construct from a psycopg2 RealDictRow or plain dict.
+
+        Handles datetime serialization and missing fields gracefully.
+        """
+        known = {f.name for f in fields(cls)}
+        kwargs: dict[str, Any] = {}
+        for key, value in row.items():
+            if key not in known:
+                continue
+            # Serialize datetime objects to ISO strings
+            if hasattr(value, "isoformat"):
+                value = str(value.isoformat())
+            kwargs[key] = value
+        return cls(**kwargs)
+
+    def to_json_dict(self) -> dict[str, Any]:
+        """Convert to a plain dict suitable for JSON serialization."""
+        result: dict[str, Any] = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if hasattr(value, "isoformat"):
+                value = str(value.isoformat())
+            result[f.name] = value
+        return result
+
+
+@dataclass
+class ClassifiedEntry:
+    """Classification result for a LogEntry — badge, verdict, and summary."""
+    badge: str
+    badge_class: str
+    border_color: str
+    verdict: str
+    summary: str
+
+
+# ---------------------------------------------------------------------------
+# Quality label
+# ---------------------------------------------------------------------------
 
 def quality_label(fmt: str, min_bitrate_kbps: int) -> str:
     """Human-readable quality label from format + bitrate in kbps.
@@ -32,164 +120,138 @@ def quality_label(fmt: str, min_bitrate_kbps: int) -> str:
     return f"{fmt} {min_bitrate_kbps}k"
 
 
-def _get(item: dict, key: str, default: Any = None) -> Any:
-    """Safe dict get."""
-    v = item.get(key)
-    return v if v is not None else default
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
 
-
-def classify_log_entry(item: dict) -> dict:
+def classify_log_entry(entry: LogEntry) -> ClassifiedEntry:
     """Classify a download_log entry for display.
 
-    Returns dict with keys: badge, badge_class, border_color, verdict
+    Returns a ClassifiedEntry with badge, verdict, and summary.
     """
-    outcome = _get(item, "outcome", "")
-    scenario = _get(item, "beets_scenario", "")
-    distance = _get(item, "beets_distance")
-    actual_br = _get(item, "actual_min_bitrate")
-    existing_br = _get(item, "existing_min_bitrate")
-    spectral_br = _get(item, "spectral_bitrate")
-    existing_spectral_br = _get(item, "existing_spectral_bitrate")
-    cur_br = _get(item, "request_min_bitrate")
-    quality_override = _get(item, "quality_override")
-    was_converted = _get(item, "was_converted", False)
-    original_ft = _get(item, "original_filetype")
-    spectral_grade = _get(item, "spectral_grade")
+    badge, badge_class, border_color, verdict = _classify(entry)
+    summary = _build_summary(entry, badge, verdict)
+    return ClassifiedEntry(
+        badge=badge, badge_class=badge_class,
+        border_color=border_color, verdict=verdict,
+        summary=summary,
+    )
+
+
+def _classify(entry: LogEntry) -> tuple[str, str, str, str]:
+    """Core classification. Returns (badge, badge_class, border_color, verdict)."""
 
     # --- Rejected ---
-    if outcome == "rejected":
-        bitrate_bps = _get(item, "bitrate")
-        verdict = _rejection_verdict(scenario, distance, actual_br, existing_br,
-                                     spectral_br, existing_spectral_br,
-                                     bitrate_bps=bitrate_bps)
-        return {
-            "badge": "Rejected",
-            "badge_class": "badge-rejected",
-            "border_color": "#a33",
-            "verdict": verdict,
-        }
+    if entry.outcome == "rejected":
+        verdict = _rejection_verdict(entry)
+        return ("Rejected", "badge-rejected", "#a33", verdict)
 
     # --- Failed / Timeout ---
-    if outcome in ("failed", "timeout"):
-        if scenario == "timeout":
-            verdict = "Import timed out"
-        else:
-            verdict = "Import error"
-        return {
-            "badge": "Failed",
-            "badge_class": "badge-failed",
-            "border_color": "#a33",
-            "verdict": verdict,
-        }
+    if entry.outcome in ("failed", "timeout"):
+        verdict = "Import timed out" if entry.beets_scenario == "timeout" else "Import error"
+        return ("Failed", "badge-failed", "#a33", verdict)
 
     # --- Force import ---
-    if outcome == "force_import":
-        return {
-            "badge": "Force imported",
-            "badge_class": "badge-force",
-            "border_color": "#46a",
-            "verdict": "Force imported after manual review",
-        }
+    if entry.outcome == "force_import":
+        return ("Force imported", "badge-force", "#46a",
+                "Force imported after manual review")
 
     # --- Success ---
-    if outcome == "success":
+    if entry.outcome == "success":
         # Transcode scenarios
-        if scenario in ("transcode_upgrade", "transcode_first"):
-            bitrate_bps = _get(item, "bitrate")
-            br = actual_br or spectral_br or (int(bitrate_bps) // 1000 if bitrate_bps else None)
-            br_str = f"{br}kbps" if br else "unknown bitrate"
-            if scenario == "transcode_upgrade":
-                ex = existing_br or existing_spectral_br
-                ex_str = f" from {ex}kbps" if ex else ""
-                verdict = f"Transcode at {br_str} — imported as upgrade{ex_str}, searching for better"
-            else:
-                verdict = f"Transcode at {br_str} — imported (nothing on disk), searching for better"
-            return {
-                "badge": "Transcode",
-                "badge_class": "badge-transcode",
-                "border_color": "#a93",
-                "verdict": verdict,
-            }
+        if entry.beets_scenario in ("transcode_upgrade", "transcode_first"):
+            return _classify_transcode(entry)
 
-        # Verified lossless upgrade (FLAC→V0 with genuine spectral)
-        is_verified_lossless = (was_converted and
-                                original_ft and original_ft.lower() == "flac" and
-                                spectral_grade == "genuine")
+        is_verified_lossless = (
+            entry.was_converted
+            and entry.original_filetype is not None
+            and entry.original_filetype.lower() == "flac"
+            and entry.spectral_grade == "genuine"
+        )
 
         # Upgrade vs new import — use existing_min_bitrate from the
-        # download_log entry (what was on disk at the time of THIS download),
-        # NOT prev_min_bitrate from album_requests (current state that
-        # changes over time as later downloads update it)
-        had_existing = existing_br is not None and existing_br > 0
+        # download_log entry (what was on disk at the time of THIS download)
+        had_existing = (entry.existing_min_bitrate is not None
+                        and entry.existing_min_bitrate > 0)
+
         if had_existing:
-            # Had something on disk — is this an upgrade?
-            if quality_override:
-                # Replacing unverified CBR with verified source
-                cur_label = quality_label("MP3", int(actual_br or cur_br or 0))
-                parts = [f"Replaced unverified CBR with {cur_label}"]
-                if was_converted and original_ft:
-                    parts.append(f"from {original_ft.upper()}")
-                if is_verified_lossless:
-                    parts.append("verified lossless")
-                verdict = ", ".join(parts)
-                return {
-                    "badge": "Upgraded",
-                    "badge_class": "badge-upgraded",
-                    "border_color": "#3a6",
-                    "verdict": verdict,
-                }
-            verdict = _upgrade_verdict(existing_br, actual_br or cur_br,
-                                       was_converted, original_ft,
-                                       is_verified_lossless)
-            return {
-                "badge": "Upgraded",
-                "badge_class": "badge-upgraded",
-                "border_color": "#3a6",
-                "verdict": verdict,
-            }
-        else:
-            # New import
-            br = actual_br or cur_br
-            fmt = _get(item, "actual_filetype") or _get(item, "filetype") or "mp3"
-            label = quality_label(str(fmt), br or 0)
-            parts = [label]
-            if was_converted and original_ft:
-                parts.append(f"from {original_ft.upper()}")
-            if is_verified_lossless:
-                parts.append("verified lossless")
-            verdict = " - ".join(parts) if len(parts) > 1 else parts[0]
-            return {
-                "badge": "Imported",
-                "badge_class": "badge-new",
-                "border_color": "#1a4a2a",
-                "verdict": verdict,
-            }
+            if entry.quality_override:
+                return _classify_quality_override(entry, is_verified_lossless)
+            verdict = _upgrade_verdict(
+                entry.existing_min_bitrate,
+                entry.actual_min_bitrate or entry.request_min_bitrate,
+                entry.was_converted, entry.original_filetype,
+                is_verified_lossless)
+            return ("Upgraded", "badge-upgraded", "#3a6", verdict)
+
+        # New import
+        verdict = _new_import_verdict(entry, is_verified_lossless)
+        return ("Imported", "badge-new", "#1a4a2a", verdict)
 
     # --- Unknown outcome ---
-    return {
-        "badge": str(outcome).capitalize() if outcome else "Unknown",
-        "badge_class": "badge-rejected",
-        "border_color": "#444",
-        "verdict": str(outcome or "Unknown outcome"),
-    }
+    label = str(entry.outcome).capitalize() if entry.outcome else "Unknown"
+    return (label, "badge-rejected", "#444", str(entry.outcome or "Unknown outcome"))
 
 
-def _rejection_verdict(scenario: Any, distance: Any,
-                       actual_br: Any, existing_br: Any,
-                       spectral_br: Any, existing_spectral_br: Any,
-                       bitrate_bps: Any = None) -> str:
+def _classify_transcode(entry: LogEntry) -> tuple[str, str, str, str]:
+    """Classify a transcode_upgrade or transcode_first success."""
+    br = (entry.actual_min_bitrate
+          or entry.spectral_bitrate
+          or (entry.bitrate // 1000 if entry.bitrate else None))
+    br_str = f"{br}kbps" if br else "unknown bitrate"
+    if entry.beets_scenario == "transcode_upgrade":
+        ex = entry.existing_min_bitrate or entry.existing_spectral_bitrate
+        ex_str = f" from {ex}kbps" if ex else ""
+        verdict = f"Transcode at {br_str} — imported as upgrade{ex_str}, searching for better"
+    else:
+        verdict = f"Transcode at {br_str} — imported (nothing on disk), searching for better"
+    return ("Transcode", "badge-transcode", "#a93", verdict)
+
+
+def _classify_quality_override(entry: LogEntry,
+                               is_verified_lossless: bool) -> tuple[str, str, str, str]:
+    """Classify a quality_override upgrade (replacing unverified CBR)."""
+    cur_label = quality_label("MP3", entry.actual_min_bitrate
+                              or entry.request_min_bitrate or 0)
+    parts = [f"Replaced unverified CBR with {cur_label}"]
+    if entry.was_converted and entry.original_filetype:
+        parts.append(f"from {entry.original_filetype.upper()}")
+    if is_verified_lossless:
+        parts.append("verified lossless")
+    return ("Upgraded", "badge-upgraded", "#3a6", ", ".join(parts))
+
+
+def _new_import_verdict(entry: LogEntry, is_verified_lossless: bool) -> str:
+    """Build verdict for a new import (nothing on disk before)."""
+    br = entry.actual_min_bitrate or entry.request_min_bitrate
+    fmt = entry.actual_filetype or entry.filetype or "mp3"
+    label = quality_label(fmt, br or 0)
+    parts = [label]
+    if entry.was_converted and entry.original_filetype:
+        parts.append(f"from {entry.original_filetype.upper()}")
+    if is_verified_lossless:
+        parts.append("verified lossless")
+    return " - ".join(parts) if len(parts) > 1 else parts[0]
+
+
+# ---------------------------------------------------------------------------
+# Verdicts
+# ---------------------------------------------------------------------------
+
+def _rejection_verdict(entry: LogEntry) -> str:
     """Build human-readable verdict for a rejected entry.
 
     Bitrate fields have gaps — actual_min_bitrate is often NULL while
     bitrate (bps) or spectral_bitrate has the value. Fall through all
     available sources.
     """
+    scenario = entry.beets_scenario
     # Best available "new" bitrate in kbps
-    new_kbps = (actual_br
-                or spectral_br
-                or (int(bitrate_bps) // 1000 if bitrate_bps else None))
+    new_kbps = (entry.actual_min_bitrate
+                or entry.spectral_bitrate
+                or (entry.bitrate // 1000 if entry.bitrate else None))
     # Best available "existing" bitrate in kbps
-    old_kbps = existing_br or existing_spectral_br
+    old_kbps = entry.existing_min_bitrate or entry.existing_spectral_bitrate
 
     if scenario == "quality_downgrade":
         new = f"{new_kbps}kbps" if new_kbps else "unknown"
@@ -197,8 +259,9 @@ def _rejection_verdict(scenario: Any, distance: Any,
         return f"{new} is not better than existing {old}"
 
     if scenario == "spectral_reject":
-        new = f"{spectral_br}kbps" if spectral_br else "unknown"
-        old = f"{existing_spectral_br}kbps" if existing_spectral_br else "unknown"
+        new = f"{entry.spectral_bitrate}kbps" if entry.spectral_bitrate else "unknown"
+        old = (f"{entry.existing_spectral_bitrate}kbps"
+               if entry.existing_spectral_bitrate else "unknown")
         return f"Spectral: {new} is not better than existing {old}"
 
     if scenario == "transcode_downgrade":
@@ -207,7 +270,8 @@ def _rejection_verdict(scenario: Any, distance: Any,
         return f"Transcode at {new} — not better than existing {old}"
 
     if scenario == "high_distance":
-        dist = f"{float(distance):.3f}" if distance is not None else "?"
+        dist = (f"{float(entry.beets_distance):.3f}"
+                if entry.beets_distance is not None else "?")
         return f"Wrong match (dist {dist})"
 
     if scenario == "audio_corrupt":
@@ -219,16 +283,15 @@ def _rejection_verdict(scenario: Any, distance: Any,
     if scenario == "album_name_mismatch":
         return "Album name mismatch"
 
-    # Fallback for unknown scenarios
     return str(scenario) if scenario else "Rejected"
 
 
-def _upgrade_verdict(prev_br: Any, cur_br: Any,
+def _upgrade_verdict(prev_br: Optional[int], cur_br: Optional[int],
                      was_converted: bool, original_ft: Optional[str],
                      is_verified_lossless: bool) -> str:
     """Build verdict for a successful upgrade."""
-    prev_label = quality_label("MP3", int(prev_br)) if prev_br else "?"
-    cur_label = quality_label("MP3", int(cur_br)) if cur_br else "?"
+    prev_label = quality_label("MP3", prev_br) if prev_br else "?"
+    cur_label = quality_label("MP3", cur_br) if cur_br else "?"
     parts = [f"{prev_label} to {cur_label}"]
     if was_converted and original_ft:
         parts.append(f"from {original_ft.upper()}")
@@ -237,39 +300,29 @@ def _upgrade_verdict(prev_br: Any, cur_br: Any,
     return "Upgrade: " + ", ".join(parts)
 
 
-def build_summary_line(item: dict, classified: dict) -> str:
+# ---------------------------------------------------------------------------
+# Summary (folded in from build_summary_line)
+# ---------------------------------------------------------------------------
+
+def _build_summary(entry: LogEntry, badge: str, verdict: str) -> str:
     """Build a one-line summary for the collapsed card view.
 
     Returns a plain text string (no HTML).
     """
-    verdict = classified.get("verdict", "")
-    username = _get(item, "soulseek_username")
-    badge = classified.get("badge", "")
+    parts: list[str] = []
 
-    parts = []
-
-    if badge == "Rejected" or badge == "Failed":
-        parts.append(verdict)
-    elif badge == "Imported":
-        # Show format for new imports
-        br = _get(item, "actual_min_bitrate") or _get(item, "request_min_bitrate")
-        fmt = _get(item, "actual_filetype") or _get(item, "filetype") or "mp3"
-        label = quality_label(str(fmt), int(br) if br else 0)
-        was_converted = _get(item, "was_converted", False)
-        original_ft = _get(item, "original_filetype")
-        if was_converted and original_ft:
-            label += f" from {str(original_ft).upper()}"
+    if badge == "Imported":
+        # Show format label for new imports
+        br = entry.actual_min_bitrate or entry.request_min_bitrate
+        fmt = entry.actual_filetype or entry.filetype or "mp3"
+        label = quality_label(fmt, br or 0)
+        if entry.was_converted and entry.original_filetype:
+            label += f" from {entry.original_filetype.upper()}"
         parts.append(label)
-    elif badge == "Upgraded":
-        parts.append(verdict)
-    elif badge == "Transcode":
-        parts.append(verdict)
-    elif badge == "Force imported":
-        parts.append(verdict)
     else:
         parts.append(verdict)
 
-    if username:
-        parts.append(str(username))
+    if entry.soulseek_username:
+        parts.append(entry.soulseek_username)
 
     return " \u00b7 ".join(p for p in parts if p)

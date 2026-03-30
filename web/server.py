@@ -63,6 +63,17 @@ def _db() -> PipelineDB:
     return db
 
 
+def _serialize_row(row: dict[str, object]) -> dict[str, object]:
+    """Serialize a DB row dict — convert datetime objects to ISO strings."""
+    result: dict[str, object] = {}
+    for k, v in row.items():
+        if hasattr(v, "isoformat"):
+            result[k] = v.isoformat()  # type: ignore[union-attr]
+        else:
+            result[k] = v
+    return result
+
+
 def check_beets_library(mbids):
     """Check which MBIDs are already in the beets library. Returns set of found MBIDs."""
     if not beets_db_path or not os.path.exists(beets_db_path):
@@ -281,28 +292,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(data)
 
             elif path == "/api/pipeline/log":
+                from classify import classify_log_entry, LogEntry
                 entries = _db().get_log(limit=50)
-                # Batch-check beets for all MBIDs
                 mbids = list(set(e["mb_release_id"] for e in entries if e.get("mb_release_id")))
                 beets_info = check_beets_library_detail(mbids) if mbids else {}
                 result = []
-                from classify import classify_log_entry, build_summary_line
                 for e in entries:
-                    item = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in e.items()}
-                    mbid = e.get("mb_release_id")
-                    bi = beets_info.get(mbid)
+                    entry = LogEntry.from_row(e)
+                    classified = classify_log_entry(entry)
+                    item = entry.to_json_dict()
+                    mbid = entry.mb_release_id
+                    bi = beets_info.get(mbid) if mbid else None
+                    item["in_beets"] = bi is not None
                     if bi:
-                        item["in_beets"] = True
                         item["beets_format"] = bi.get("beets_format")
                         item["beets_bitrate"] = bi.get("beets_bitrate")
-                    else:
-                        item["in_beets"] = False
-                    classified = classify_log_entry(item)
-                    item["badge"] = classified["badge"]
-                    item["badge_class"] = classified["badge_class"]
-                    item["border_color"] = classified["border_color"]
-                    item["verdict"] = classified["verdict"]
-                    item["summary"] = build_summary_line(item, classified)
+                    item["badge"] = classified.badge
+                    item["badge_class"] = classified.badge_class
+                    item["border_color"] = classified.border_color
+                    item["verdict"] = classified.verdict
+                    item["summary"] = classified.summary
                     result.append(item)
                 self._json({"log": result})
 
@@ -325,18 +334,13 @@ class Handler(BaseHTTPRequestHandler):
                 })
 
             elif path == "/api/pipeline/recent":
-                def serialize_req(r):
-                    return {
-                        k: str(v) if hasattr(v, 'isoformat') else v
-                        for k, v in r.items()
-                    }
                 recent = _db().get_recent(limit=20)
                 # Check beets library for each and get track counts
                 mbids = [r["mb_release_id"] for r in recent if r.get("mb_release_id")]
                 beets_info = check_beets_library_detail(mbids) if mbids else {}
                 serialized = []
                 for r in recent:
-                    item = serialize_req(r)
+                    item = _serialize_row(r)
                     mbid = r.get("mb_release_id")
                     pipeline_tracks = len(_db().get_tracks(r["id"]))
                     item["pipeline_tracks"] = pipeline_tracks
@@ -372,15 +376,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"recent": serialized})
 
             elif path == "/api/pipeline/all":
-                def serialize_request(r):
-                    return {
-                        k: str(v) if hasattr(v, 'isoformat') else v
-                        for k, v in r.items()
-                    }
                 counts = _db().count_by_status()
                 all_data: dict[str, object] = {"counts": counts}
                 for status in ("wanted", "imported", "manual"):
-                    all_data[status] = [serialize_request(r) for r in _db().get_by_status(status)]
+                    all_data[status] = [_serialize_row(r) for r in _db().get_by_status(status)]
                 self._json(all_data)
 
             elif re.match(r"^/api/pipeline/\d+$", path):
@@ -391,15 +390,15 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 tracks = _db().get_tracks(req_id)
                 history = _db().get_download_history(req_id)
-                from classify import classify_log_entry
+                from classify import classify_log_entry, LogEntry
                 history_items = []
                 for h in history:
-                    hi = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()}
-                    classified = classify_log_entry(hi)
-                    hi["verdict"] = classified["verdict"]
+                    he = LogEntry.from_row(h)
+                    hi = he.to_json_dict()
+                    hi["verdict"] = classify_log_entry(he).verdict
                     history_items.append(hi)
                 result = {
-                    "request": {k: str(v) if hasattr(v, 'isoformat') else v for k, v in req.items()},
+                    "request": _serialize_row(req),
                     "tracks": tracks,
                     "history": history_items,
                 }
@@ -520,11 +519,12 @@ class Handler(BaseHTTPRequestHandler):
                         result["upgrade_queued"] = (
                             req["status"] == "wanted" and bool(req.get("quality_override"))
                         )
-                        from classify import classify_log_entry as _clf
+                        from classify import classify_log_entry as _clf, LogEntry as _LE
                         dh = []
                         for h in history:
-                            hi = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()}
-                            hi["verdict"] = _clf(hi)["verdict"]
+                            he = _LE.from_row(h)
+                            hi = he.to_json_dict()
+                            hi["verdict"] = _clf(he).verdict
                             dh.append(hi)
                         result["download_history"] = dh
                 self._json(result)
