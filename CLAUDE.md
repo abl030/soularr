@@ -316,11 +316,20 @@ The module:
 
 **ALWAYS use `nix-shell --run` to run tests and Python commands.** The dev shell (`shell.nix`) provides psycopg2, sox, ffmpeg, music-tag, slskd-api — without it, tests will fail with missing imports. Never run `python3` directly outside `nix-shell`.
 
+**Use the test runner script** — it saves output to `/tmp/soularr-test-output.txt` so you can grep failures without re-running the full 2-minute suite:
+
 ```bash
-cd ~/soularr
-nix-shell --run "python3 -m unittest discover tests -v"              # all tests
-nix-shell --run "python3 -m unittest tests.test_pipeline_db -v"      # just pipeline DB
-nix-shell --run "python3 -m unittest tests.test_track_crosscheck"    # just track matching
+nix-shell --run "bash scripts/run_tests.sh"           # full suite (~2 min), saves output
+grep "^FAIL\|^ERROR" /tmp/soularr-test-output.txt     # check for failures after the fact
+grep "^Ran " /tmp/soularr-test-output.txt              # quick pass/fail count
+```
+
+**NEVER re-run the full suite just to grep output differently.** Read `/tmp/soularr-test-output.txt` instead.
+
+For single test modules during development:
+```bash
+nix-shell --run "python3 -m unittest tests.test_quality_decisions -v"
+nix-shell --run "python3 -m unittest tests.test_import_result -v"
 ```
 
 ## Playwright MCP (Web UI Testing)
