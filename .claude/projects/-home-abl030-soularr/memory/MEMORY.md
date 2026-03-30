@@ -1,0 +1,5 @@
+- [Refactoring phases](project_refactoring_phases.md) — All phases done. 300 tests, 0 skips. soularr.py ~2100 lines.
+- [Pyright third-party gaps](project_pyright_gaps.md) — 21 remaining errors from slskd_api/psycopg2/sqlite3 stubs
+- [Dict boundary lesson](feedback_dict_boundary.md) — CRITICAL: two dict shapes in soularr.py, only one is DownloadFile. Three prod crashes from wrong conversion.
+- [User profile](user_profile.md) — Senior dev, curated music pipeline, TDD approach
+- [TDD feedback](feedback_tdd.md) — Always write tests first, green/green TDD to catch regressions
