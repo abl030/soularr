@@ -286,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
                 mbids = list(set(e["mb_release_id"] for e in entries if e.get("mb_release_id")))
                 beets_info = check_beets_library_detail(mbids) if mbids else {}
                 result = []
-                from web.classify import classify_log_entry, build_summary_line
+                from classify import classify_log_entry, build_summary_line
                 for e in entries:
                     item = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in e.items()}
                     mbid = e.get("mb_release_id")
@@ -391,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 tracks = _db().get_tracks(req_id)
                 history = _db().get_download_history(req_id)
-                from web.classify import classify_log_entry
+                from classify import classify_log_entry
                 history_items = []
                 for h in history:
                     hi = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()}
@@ -520,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
                         result["upgrade_queued"] = (
                             req["status"] == "wanted" and bool(req.get("quality_override"))
                         )
-                        from web.classify import classify_log_entry as _clf
+                        from classify import classify_log_entry as _clf
                         dh = []
                         for h in history:
                             hi = {k: str(v) if hasattr(v, 'isoformat') else v for k, v in h.items()}
