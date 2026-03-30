@@ -62,6 +62,21 @@ This fork is a significant rewrite:
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
 - **421 tests** including spectral analysis with real audio fixtures and live slskd integration tests
 
+## MusicBrainz mirror
+
+All MusicBrainz lookups hit a local mirror at `http://192.168.1.35:5200` (doc2), not the public API. This avoids rate limits and provides sub-second response times for search and release lookups. The mirror runs [musicbrainz-docker](https://github.com/metabrainz/musicbrainz-docker) and replicates nightly from the MusicBrainz production database.
+
+The web UI (`web/mb.py`) and beets both query this mirror. Beets is configured with `musicbrainz.host: 192.168.1.35:5200` so all candidate lookups and MBID matching go through it.
+
+API examples:
+```bash
+# Search releases
+curl -s "http://192.168.1.35:5200/ws/2/release?query=artist:radiohead+AND+release:ok+computer&fmt=json"
+
+# Get release with tracks
+curl -s "http://192.168.1.35:5200/ws/2/release/<MBID>?inc=recordings+media&fmt=json"
+```
+
 ## Running tests
 
 ```bash
