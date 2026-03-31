@@ -69,22 +69,23 @@ scripts/
   pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, force-import, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
-tests/                     553 tests total
-  test_album_source.py      — 14 tests for AlbumSource
-  test_beets_db.py           — 14 tests for BeetsDB queries
+tests/                     635 tests total
+  test_album_source.py      — 16 tests for AlbumSource (incl. verified_lossless override)
+  test_beets_db.py           — 17 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
-  test_config.py             — 41 tests for SoularrConfig
+  test_config.py             — 42 tests for SoularrConfig
+  test_disambiguation.py     — 7 tests for beets disambiguation (import_one path resolution)
   test_grab_list.py          — 60 tests for GrabList
-  test_import_result.py      — 36 tests for ImportResult, DownloadInfo, JSON parsing
+  test_import_dispatch.py    — 18 tests for import dispatch (incl. override computation)
+  test_import_result.py      — 35 tests for ImportResult, DownloadInfo, JSON parsing
   test_force_import.py       — 12 tests for force-import (CLI, DB, --force flag, path resolution)
   test_pipeline_cli.py       — 7 tests for CLI
-  test_pipeline_db.py        — 36 tests for PipelineDB
-  test_quality_classification.py — 17 tests for quality classification (real audio fixtures)
-  test_quality_decisions.py  — 65 tests for pure decision functions
+  test_pipeline_db.py        — 35 tests for PipelineDB
+  test_quality_classification.py — 38 tests for quality classification (real audio fixtures)
+  test_quality_decisions.py  — 79 tests for pure decision functions + pipeline contract tests
   test_search.py             — 32 tests for search query building
-  test_slskd_live.py         — 12 tests for live slskd integration (ephemeral Docker)
+  test_slskd_live.py         — 5 tests for live slskd integration (ephemeral Docker)
   test_spectral_check.py     — 39 tests for spectral analysis
-  test_track_crosscheck.py   — 15 tests (track title cross-check)
   test_validation_result.py  — 27 tests for ValidationResult, CandidateSummary, harness types
   test_web_recents.py        — 72 tests for recents tab classification (LogEntry, ClassifiedEntry)
   test_web_server.py         — 15 tests for HTTP endpoints (mocked DB, real server)
@@ -215,9 +216,10 @@ All quality decisions are pure functions in `lib/quality.py` — no I/O, no data
 
 1. **`spectral_import_decision()`** — Pre-import: should we import this MP3/CBR download? (genuine/suspect/reject)
 2. **`import_quality_decision()`** — Import-time: is this an upgrade or downgrade? (import/downgrade/transcode)
-3. **`transcode_detection()`** — Post-conversion: was this FLAC actually a transcode?
+3. **`transcode_detection(spectral_grade)`** — Post-conversion: was this FLAC actually a transcode? Spectral grade is authoritative when available (suspect/likely_transcode = transcode, genuine/marginal = not transcode). Bitrate < 210kbps threshold is fallback only when spectral is unavailable.
 4. **`quality_gate_decision()`** — Post-import: accept, or re-queue for better quality?
 5. **`is_verified_lossless()`** — Was this imported from a genuine FLAC source?
+6. **`get_decision_tree()`** — Returns the full pipeline decision structure as data (stages, rules, constants) for the web UI Decisions tab. Contract tests in `test_quality_decisions.py` verify this matches the actual functions.
 
 ### Import logging (`download_log.import_result` JSONB)
 
@@ -280,9 +282,10 @@ After every import, the quality gate decides what to do next. It checks these co
 **FLAC downloads** (in `import_one.py`):
 1. Spectral check on raw FLAC → grade stored on album_requests
 2. Convert FLAC → V0 via ffmpeg (`-q:a 0`)
-3. Compare new V0 bitrate against existing on disk (pipeline DB `min_bitrate` overrides beets via `--override-min-bitrate`)
-4. If upgrade → import to beets, set `verified_lossless=TRUE` if spectral=genuine
-5. Quality gate accepts regardless of bitrate if verified_lossless
+3. Transcode detection: spectral grade is authoritative (genuine/marginal = not transcode, suspect = transcode). Bitrate < 210kbps threshold is fallback only when spectral unavailable.
+4. Compare new V0 bitrate against existing on disk (override = `min(pipeline DB min_bitrate, on_disk_spectral_bitrate)` — catches fake 320s)
+5. If upgrade → import to beets. `verified_lossless` set by import_one.py's verdict (not re-derived). When verified lossless, `on_disk_spectral_bitrate` = actual V0 min bitrate (not spectral cliff estimate).
+6. Quality gate accepts regardless of bitrate if verified_lossless
 
 **MP3 VBR downloads** (V0/V2):
 1. No spectral check needed — VBR bitrate IS the quality signal
@@ -325,7 +328,8 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 
 ### Downgrade Prevention (`import_one.py`)
 
-- `--override-min-bitrate` arg: soularr.py passes the pipeline DB `min_bitrate` to import_one.py. When existing files are known garbage (e.g. `min_bitrate=0`), this overrides the beets comparison so genuine V0 at 227kbps isn't rejected as "downgrade from 320kbps."
+- `--override-min-bitrate` arg: `dispatch_import()` passes `min(min_bitrate, on_disk_spectral_bitrate)` from the pipeline DB. When spectral says the existing files are 128kbps but the container says 320kbps (fake CBR), the spectral truth is used so genuine upgrades aren't blocked.
+- `mark_done()` respects `verified_lossless_override` from import_one.py instead of re-deriving via `is_verified_lossless()`. When verified lossless, `on_disk_spectral_bitrate` is set to the actual V0 min bitrate (not the spectral cliff estimate, which can miscalibrate on genuine files).
 - `--force` flag: skips the distance check (`MAX_DISTANCE=999`) for force-importing rejected albums. Used by `pipeline_cli.py force-import` and `POST /api/pipeline/force-import`.
 - Exit codes: 0=imported, 1=conversion failed, 2=beets failed, 3=path not found, 5=downgrade, 6=transcode (may or may not have imported as upgrade)
 
@@ -335,8 +339,9 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 
 ### Web UI Controls
 
-- **Recents tab** ("validation pipeline log"): Shows every download with full quality flow (slskd reported → actual on disk → spectral → existing). Badges: Upgraded, New import, Wrong match, Transcode, Quality mismatch.
+- **Recents tab** ("validation pipeline log"): Shows every download with full quality flow (slskd reported → actual on disk → spectral → existing). Badges: Upgraded, New import, Wrong match, Transcode, Quality mismatch. "On disk (before)" shows pre-import state.
 - **Library tab**: Quality label per album (MP3 V0, MP3 320, etc.). Upgrade button. Accept button (sets avg bitrate for lo-fi edge cases).
+- **Decisions tab**: Pipeline decision diagram generated from `get_decision_tree()` — shows FLAC/MP3 branching paths, all stages and rules with live thresholds from the code. Interactive simulator calls `full_pipeline_decision()` via `/api/pipeline/simulate` with presets for known scenarios.
 - **Ban source**: Denylists user + removes from beets + requeues.
 
 ### Edge Cases
