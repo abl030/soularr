@@ -501,16 +501,34 @@ def _execute_search(album, search_cfg, slskd_client):
     logger.info(f"Searching for album: {query} "
                 f"(from '{artist_name} - {album_title}')")
     t0 = time.time()
-    try:
-        search = slskd_client.searches.search_text(
-            searchText=query,
-            searchTimeout=search_cfg.search_timeout,
-            filterResponses=True,
-            maximumPeerQueueLength=search_cfg.maximum_peer_queue,
-            minimumPeerUploadSpeed=search_cfg.minimum_peer_upload_speed,
-        )
-    except Exception:
-        logger.exception(f"Failed to perform search via SLSKD: {query}")
+
+    # Retry on 429 (slskd rate limit) with exponential backoff
+    import requests
+    search = None
+    for attempt in range(4):
+        try:
+            search = slskd_client.searches.search_text(
+                searchText=query,
+                searchTimeout=search_cfg.search_timeout,
+                filterResponses=True,
+                maximumPeerQueueLength=search_cfg.maximum_peer_queue,
+                minimumPeerUploadSpeed=search_cfg.minimum_peer_upload_speed,
+            )
+            break
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 429 and attempt < 3:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(f"429 rate limited on search for {query}, retrying in {wait}s")
+                time.sleep(wait)
+            else:
+                logger.exception(f"Failed to perform search via SLSKD: {query}")
+                return SearchResult(album_id=album_id, success=False, query=query,
+                                    elapsed_s=time.time() - t0)
+        except Exception:
+            logger.exception(f"Failed to perform search via SLSKD: {query}")
+            return SearchResult(album_id=album_id, success=False, query=query,
+                                elapsed_s=time.time() - t0)
+    if search is None:
         return SearchResult(album_id=album_id, success=False, query=query,
                             elapsed_s=time.time() - t0)
 
@@ -881,10 +899,14 @@ def _search_and_queue_parallel(albums):
     wall_start = time.time()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_execute_search, album, cfg, slskd): album
-            for album in albums
-        }
+        # Stagger submissions to avoid 429 from slskd's rate limiter.
+        # Each search sleeps 5s internally anyway, so 1s stagger between
+        # submissions is negligible vs total wall time.
+        futures: dict[Any, Any] = {}
+        for idx, album in enumerate(albums):
+            futures[pool.submit(_execute_search, album, cfg, slskd)] = album
+            if idx < len(albums) - 1:
+                time.sleep(1)
         for i, future in enumerate(as_completed(futures), 1):
             album = futures[future]
             try:
