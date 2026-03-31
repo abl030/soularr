@@ -276,7 +276,7 @@ function renderDownloadHistoryItem(h) {
     const existLabel = h.existing_spectral_bitrate
       ? `~${h.existing_spectral_bitrate}kbps (spectral)`
       : `${h.existing_min_bitrate}kbps`;
-    rows.push(['On disk', existLabel]);
+    rows.push(['On disk (before)', existLabel]);
   }
 
   // Distance (for match-related entries)
