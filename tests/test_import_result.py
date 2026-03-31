@@ -399,8 +399,7 @@ class TestPopulateDlInfoFromImportResult(unittest.TestCase):
     """Test the _populate_dl_info_from_import_result helper."""
 
     def setUp(self) -> None:
-        # Import from soularr (it's in sys.path from the test setup)
-        from soularr import _populate_dl_info_from_import_result
+        from lib.import_dispatch import _populate_dl_info_from_import_result
         self.populate = _populate_dl_info_from_import_result
 
     def test_flac_conversion(self) -> None:

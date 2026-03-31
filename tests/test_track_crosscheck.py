@@ -3,41 +3,13 @@
 TDD: these tests are written FIRST, then the functions are implemented until green.
 """
 
-import ast
-import difflib
-import logging
 import os
-import re
 import sys
-import unicodedata
+import unittest
 
-# Extract functions from soularr.py without importing the full module
-def _extract_functions(*names):
-    """Extract named functions from soularr.py via AST."""
-    soularr_path = os.path.join(os.path.dirname(__file__), "..", "soularr.py")
-    with open(soularr_path) as f:
-        source = f.read()
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-    tree = ast.parse(source)
-    ns = {
-        "logger": logging.getLogger("test"),
-        "logging": logging,
-        "re": re,
-        "unicodedata": unicodedata,
-        "difflib": difflib,
-    }
-
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in names:
-            func_source = ast.get_source_segment(source, node)
-            exec(compile(func_source, "soularr.py", "exec"), ns)
-
-    return tuple(ns[name] for name in names)
-
-
-_normalize_title, _extract_title_from_filename, _track_titles_cross_check = _extract_functions(
-    "_normalize_title", "_extract_title_from_filename", "_track_titles_cross_check"
-)
+from lib.util import _normalize_title, _extract_title_from_filename, _track_titles_cross_check
 
 
 # === Helper to build test data ===
@@ -196,5 +168,4 @@ class TestCrossCheckFail:
 
 
 if __name__ == "__main__":
-    import pytest
-    pytest.main([__file__, "-v"])
+    unittest.main()

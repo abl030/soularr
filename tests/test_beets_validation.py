@@ -21,11 +21,12 @@ sys.modules["slskd_api"] = MagicMock()
 sys.modules["slskd_api.apis"] = MagicMock()
 sys.modules["slskd_api.apis.users"] = MagicMock()
 
-# Now import soularr and lib.beets
+# Now import soularr and lib modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import soularr
 from lib.beets import beets_validate
 from lib.grab_list import GrabListEntry
+from lib.util import stage_to_ai, log_validation_result, sanitize_folder_name
 
 
 def make_choose_match_msg(mb_release_id, distance, extra_candidates=None):
@@ -341,7 +342,7 @@ class TestStageToAi(unittest.TestCase):
             open(os.path.join(source, name), "w").close()
 
         album_data = _make_album_data(artist="Test Artist", title="Test Album")
-        dest = soularr.stage_to_ai(album_data, source, staging)
+        dest = stage_to_ai(album_data, source, staging)
 
         self.assertEqual(dest, os.path.join(staging, "Test Artist", "Test Album"))
         self.assertTrue(os.path.exists(os.path.join(dest, "01 - Track.flac")))
@@ -357,7 +358,7 @@ class TestStageToAi(unittest.TestCase):
         open(os.path.join(source, "track.flac"), "w").close()
 
         album_data = _make_album_data(artist="Artist", title="Album")
-        soularr.stage_to_ai(album_data, source, staging)
+        stage_to_ai(album_data, source, staging)
 
         self.assertFalse(os.path.exists(source))
 
@@ -370,7 +371,7 @@ class TestStageToAi(unittest.TestCase):
         open(os.path.join(source, "track.flac"), "w").close()
 
         album_data = _make_album_data(artist='Test: "Artist"', title="Album/Title?")
-        dest = soularr.stage_to_ai(album_data, source, staging)
+        dest = stage_to_ai(album_data, source, staging)
 
         # sanitize_folder_name removes <>:"/\|?*
         self.assertNotIn(":", os.path.basename(os.path.dirname(dest)))
@@ -384,13 +385,10 @@ class TestLogValidationResult(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.tracking_file = os.path.join(self.tmpdir, "tracking.jsonl")
-        self._orig_cfg = soularr.cfg
-        mock_cfg = MagicMock()
-        mock_cfg.beets_tracking_file = self.tracking_file
-        soularr.cfg = mock_cfg
+        self.mock_cfg = MagicMock()
+        self.mock_cfg.beets_tracking_file = self.tracking_file
 
     def tearDown(self):
-        soularr.cfg = self._orig_cfg
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_appends_staged_entry(self):
@@ -401,7 +399,8 @@ class TestLogValidationResult(unittest.TestCase):
         )
         result = {"valid": True, "distance": 0.05, "mbid_found": True, "error": None}
 
-        soularr.log_validation_result(album_data, result, "/AI/Test Artist/Test Album")
+        log_validation_result(album_data, result, self.mock_cfg,
+                              dest_path="/AI/Test Artist/Test Album")
 
         with open(self.tracking_file) as f:
             entry = json.loads(f.readline())
@@ -417,7 +416,7 @@ class TestLogValidationResult(unittest.TestCase):
         album_data = _make_album_data(artist="A", title="B", album_id=1)
         result = {"valid": False, "distance": 0.40, "mbid_found": True, "error": None}
 
-        soularr.log_validation_result(album_data, result)
+        log_validation_result(album_data, result, self.mock_cfg)
 
         with open(self.tracking_file) as f:
             entry = json.loads(f.readline())
@@ -430,8 +429,8 @@ class TestLogValidationResult(unittest.TestCase):
         album_data = _make_album_data(artist="A", title="B", album_id=1)
         result = {"valid": True, "distance": 0.01, "error": None}
 
-        soularr.log_validation_result(album_data, result, "/dest1")
-        soularr.log_validation_result(album_data, result, "/dest2")
+        log_validation_result(album_data, result, self.mock_cfg, dest_path="/dest1")
+        log_validation_result(album_data, result, self.mock_cfg, dest_path="/dest2")
 
         with open(self.tracking_file) as f:
             lines = f.readlines()
@@ -443,9 +442,9 @@ class TestSanitizeFolderName(unittest.TestCase):
     """Verify sanitize_folder_name works correctly for stage_to_ai."""
 
     def test_removes_special_chars(self):
-        self.assertEqual(soularr.sanitize_folder_name('Test: "Artist"'), 'Test Artist')
-        self.assertEqual(soularr.sanitize_folder_name("Album/Title?"), "AlbumTitle")
-        self.assertEqual(soularr.sanitize_folder_name("Normal Name"), "Normal Name")
+        self.assertEqual(sanitize_folder_name('Test: "Artist"'), 'Test Artist')
+        self.assertEqual(sanitize_folder_name("Album/Title?"), "AlbumTitle")
+        self.assertEqual(sanitize_folder_name("Normal Name"), "Normal Name")
 
 
 if __name__ == "__main__":

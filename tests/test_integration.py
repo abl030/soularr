@@ -22,6 +22,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import soularr
 from lib.grab_list import GrabListEntry, DownloadFile
+from lib.download import (cancel_and_delete, slskd_download_status,
+                          slskd_do_enqueue, downloads_all_done)
+from lib.import_dispatch import _build_download_info
+from lib.context import SoularrContext
+
+
+def _make_ctx(cfg=None, slskd=None):
+    """Build a test SoularrContext."""
+    return SoularrContext(
+        cfg=cfg or MagicMock(),
+        slskd=slskd or MagicMock(),
+        pipeline_db_source=MagicMock(),
+    )
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────
@@ -176,28 +189,23 @@ class TestRawDictBoundary(unittest.TestCase):
 class TestSlskdDoEnqueue(unittest.TestCase):
     """Verify slskd_do_enqueue returns DownloadFile instances."""
 
-    def setUp(self):
-        self._orig_slskd = soularr.slskd
-        soularr.slskd = MagicMock()
-
-    def tearDown(self):
-        soularr.slskd = self._orig_slskd
-
     def test_returns_download_files(self):
         """slskd_do_enqueue should return list of DownloadFile, not dicts."""
+        ctx = _make_ctx()
         file_dir = "Music\\Artist\\Album"
         files = [{"filename": file_dir + "\\01 - Track.flac", "size": 52428800}]
 
-        soularr.slskd.transfers.enqueue.return_value = True
-        soularr.slskd.transfers.get_downloads.return_value = make_download_list([
+        ctx.slskd.transfers.enqueue.return_value = True
+        ctx.slskd.transfers.get_downloads.return_value = make_download_list([
             make_directory(file_dir, [
                 {"filename": file_dir + "\\01 - Track.flac", "id": "xfer-1", "size": 52428800},
             ])
         ])
 
-        result = soularr.slskd_do_enqueue("testuser", files, file_dir)
+        result = slskd_do_enqueue("testuser", files, file_dir, ctx)
 
         self.assertIsNotNone(result)
+        assert result is not None
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], DownloadFile)
         self.assertEqual(result[0].filename, file_dir + "\\01 - Track.flac")
@@ -206,25 +214,28 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         self.assertEqual(result[0].size, 52428800)
 
     def test_enqueue_failure_returns_none(self):
-        soularr.slskd.transfers.enqueue.side_effect = Exception("connection error")
-        result = soularr.slskd_do_enqueue("user", [{"filename": "f", "size": 1}], "dir")
+        ctx = _make_ctx()
+        ctx.slskd.transfers.enqueue.side_effect = Exception("connection error")
+        result = slskd_do_enqueue("user", [{"filename": "f", "size": 1}], "dir", ctx)
         self.assertIsNone(result)
 
     def test_multiple_files(self):
+        ctx = _make_ctx()
         file_dir = "Music\\Album"
         files = [
             {"filename": file_dir + "\\01 - A.flac", "size": 100},
             {"filename": file_dir + "\\02 - B.flac", "size": 200},
         ]
-        soularr.slskd.transfers.enqueue.return_value = True
-        soularr.slskd.transfers.get_downloads.return_value = make_download_list([
+        ctx.slskd.transfers.enqueue.return_value = True
+        ctx.slskd.transfers.get_downloads.return_value = make_download_list([
             make_directory(file_dir, [
                 {"filename": file_dir + "\\01 - A.flac", "id": "id1", "size": 100},
                 {"filename": file_dir + "\\02 - B.flac", "id": "id2", "size": 200},
             ])
         ])
 
-        result = soularr.slskd_do_enqueue("user", files, file_dir)
+        result = slskd_do_enqueue("user", files, file_dir, ctx)
+        assert result is not None
         self.assertEqual(len(result), 2)
         self.assertIsInstance(result[0], DownloadFile)
         self.assertIsInstance(result[1], DownloadFile)
@@ -233,23 +244,18 @@ class TestSlskdDoEnqueue(unittest.TestCase):
 class TestDownloadStatusFlow(unittest.TestCase):
     """Verify download status polling works with DownloadFile instances."""
 
-    def setUp(self):
-        self._orig_slskd = soularr.slskd
-        soularr.slskd = MagicMock()
-
-    def tearDown(self):
-        soularr.slskd = self._orig_slskd
-
     def test_status_set_on_download_file(self):
         """slskd_download_status sets .status on DownloadFile instances."""
+        ctx = _make_ctx()
         f = DownloadFile(filename="track.flac", id="xfer-1",
                          file_dir="dir", username="user", size=100)
-        soularr.slskd.transfers.get_download.return_value = DOWNLOAD_STATUS_DONE
+        ctx.slskd.transfers.get_download.return_value = DOWNLOAD_STATUS_DONE
 
-        ok = soularr.slskd_download_status([f])
+        ok = slskd_download_status([f], ctx)
 
         self.assertTrue(ok)
         self.assertIsNotNone(f.status)
+        assert f.status is not None
         self.assertEqual(f.status["state"], "Completed, Succeeded")
 
     def test_downloads_all_done(self):
@@ -259,7 +265,7 @@ class TestDownloadStatusFlow(unittest.TestCase):
         f1.status = DOWNLOAD_STATUS_DONE
         f2.status = DOWNLOAD_STATUS_DONE
 
-        done, problems, queued = soularr.downloads_all_done([f1, f2])
+        done, problems, queued = downloads_all_done([f1, f2])
 
         self.assertTrue(done)
         self.assertIsNone(problems)
@@ -271,7 +277,7 @@ class TestDownloadStatusFlow(unittest.TestCase):
         f1.status = DOWNLOAD_STATUS_DONE
         f2.status = DOWNLOAD_STATUS_QUEUED
 
-        done, problems, queued = soularr.downloads_all_done([f1, f2])
+        done, problems, queued = downloads_all_done([f1, f2])
 
         self.assertFalse(done)
         self.assertEqual(queued, 1)
@@ -280,10 +286,11 @@ class TestDownloadStatusFlow(unittest.TestCase):
         f1 = DownloadFile(filename="a.flac", id="1", file_dir="d", username="u", size=1)
         f1.status = DOWNLOAD_STATUS_FAILED
 
-        done, problems, queued = soularr.downloads_all_done([f1])
+        done, problems, queued = downloads_all_done([f1])
 
         self.assertFalse(done)
         self.assertIsNotNone(problems)
+        assert problems is not None
         self.assertEqual(len(problems), 1)
 
 
@@ -305,9 +312,10 @@ class TestBuildDownloadInfo(unittest.TestCase):
             year="2024", mb_release_id="x",
         )
 
-        info = soularr._build_download_info(entry)
+        info = _build_download_info(entry)
 
         self.assertEqual(info.username, "user1")
+        assert info.filetype is not None
         self.assertIn("flac", info.filetype)
         self.assertEqual(info.bitrate, 1411000)
         self.assertEqual(info.sample_rate, 44100)
@@ -328,7 +336,7 @@ class TestBuildDownloadInfo(unittest.TestCase):
             year="2024", mb_release_id="x",
         )
 
-        info = soularr._build_download_info(entry)
+        info = _build_download_info(entry)
 
         self.assertEqual(info.username, "user1")
         self.assertIsNone(info.bitrate)
@@ -338,25 +346,16 @@ class TestBuildDownloadInfo(unittest.TestCase):
 class TestCancelAndDelete(unittest.TestCase):
     """Verify cancel_and_delete works with DownloadFile instances."""
 
-    def setUp(self):
-        self._orig_slskd = soularr.slskd
-        self._orig_cfg = soularr.cfg
-        soularr.slskd = MagicMock()
+    def test_cancels_download_files(self):
         mock_cfg = MagicMock()
         mock_cfg.slskd_download_dir = tempfile.mkdtemp()
-        soularr.cfg = mock_cfg
-
-    def tearDown(self):
-        soularr.slskd = self._orig_slskd
-        soularr.cfg = self._orig_cfg
-
-    def test_cancels_download_files(self):
+        ctx = _make_ctx(cfg=mock_cfg)
         files = [
             DownloadFile(filename="track.flac", id="xfer-1",
                          file_dir="Music\\Album", username="user1", size=100),
         ]
-        soularr.cancel_and_delete(files)
-        soularr.slskd.transfers.cancel_download.assert_called_once_with(
+        cancel_and_delete(files, ctx)
+        ctx.slskd.transfers.cancel_download.assert_called_once_with(
             username="user1", id="xfer-1"
         )
 
