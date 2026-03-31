@@ -343,9 +343,17 @@ class PipelineDB:
         cur = self._execute(sql, (now,))
         return [dict(r) for r in cur.fetchall()]
 
-    def get_log(self, limit=50):
-        """Get recent download_log entries joined with album_requests."""
-        cur = self._execute("""
+    def get_log(self, limit: int = 50,
+                outcome_filter: str | None = None) -> list[dict[str, object]]:
+        """Get recent download_log entries joined with album_requests.
+
+        Args:
+            limit: max entries to return
+            outcome_filter: "imported" (success + force_import),
+                           "rejected" (rejected + failed + timeout),
+                           or None for all
+        """
+        base = """
             SELECT dl.*,
                    ar.album_title, ar.artist_name, ar.mb_release_id,
                    ar.year, ar.country, ar.status AS request_status,
@@ -353,9 +361,13 @@ class PipelineDB:
                    ar.prev_min_bitrate, ar.quality_override, ar.source
             FROM download_log dl
             JOIN album_requests ar ON dl.request_id = ar.id
-            ORDER BY dl.created_at DESC
-            LIMIT %s
-        """, (limit,))
+        """
+        if outcome_filter == "imported":
+            base += " WHERE dl.outcome IN ('success', 'force_import')"
+        elif outcome_filter == "rejected":
+            base += " WHERE dl.outcome IN ('rejected', 'failed', 'timeout')"
+        base += " ORDER BY dl.created_at DESC LIMIT %s"
+        cur = self._execute(base, (limit,))
         return [dict(r) for r in cur.fetchall()]
 
     def get_by_status(self, status):

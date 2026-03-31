@@ -578,42 +578,16 @@ async function toggleReleaseDetail(mbid) {
   } catch (e) { el.innerHTML = '<div class="loading" style="padding:8px;">Failed to load</div>'; }
 }
 
-let recentsData = null;
+let recentsCounts = {all: 0, imported: 0, rejected: 0};
 let recentsFilter = 'all';
 
 function setRecentsFilter(f) {
   recentsFilter = f;
-  renderRecents();
+  loadRecents();
 }
 
-function renderRecents() {
-  const el = document.getElementById('recents-content');
-  if (!recentsData || recentsData.length === 0) {
-    el.innerHTML = '<div class="loading">No pipeline activity</div>';
-    return;
-  }
-  const items = recentsFilter === 'all' ? recentsData
-    : recentsFilter === 'imported' ? recentsData.filter(i => i.outcome === 'success' || i.outcome === 'force_import')
-    : recentsData.filter(i => i.outcome === 'rejected' || i.outcome === 'failed' || i.outcome === 'timeout');
-
-  // Counts for filter buttons
-  const successCount = recentsData.filter(i => i.outcome === 'success' || i.outcome === 'force_import').length;
-  const rejectedCount = recentsData.length - successCount;
-
-  let html = `<div style="display:flex;gap:8px;margin-bottom:8px;">
-    <div class="count ${recentsFilter === 'all' ? 'active' : ''}" onclick="setRecentsFilter('all')">
-      <div class="count-num">${recentsData.length}</div><div class="count-label">all</div></div>
-    <div class="count ${recentsFilter === 'imported' ? 'active' : ''}" onclick="setRecentsFilter('imported')">
-      <div class="count-num">${successCount}</div><div class="count-label">imported</div></div>
-    <div class="count ${recentsFilter === 'rejected' ? 'active' : ''}" onclick="setRecentsFilter('rejected')">
-      <div class="count-num">${rejectedCount}</div><div class="count-label">rejected</div></div>
-  </div>`;
-
-  if (items.length === 0) {
-    html += '<div class="loading">No matching entries</div>';
-    el.innerHTML = html;
-    return;
-  }
+function renderRecentsItems(items) {
+  if (items.length === 0) return '<div class="loading">No matching entries</div>';
 
   // Group by date (AWST)
   const byDate = {};
@@ -624,7 +598,7 @@ function renderRecents() {
   }
   const dates = Object.keys(byDate).sort().reverse();
 
-  html += dates.map(date => `
+  return dates.map(date => `
     <div class="r-date-header">${date}</div>
     ${byDate[date].map(item => {
       const time = awstTime(item.created_at || '');
@@ -650,19 +624,29 @@ function renderRecents() {
       `;
     }).join('')}
   `).join('');
-
-  el.innerHTML = html;
 }
 
 async function loadRecents() {
   const el = document.getElementById('recents-content');
   el.innerHTML = '<div class="loading">Loading...</div>';
   try {
-    const r = await fetch(`${API}/api/pipeline/log`);
+    const filterParam = recentsFilter === 'all' ? '' : `?outcome=${recentsFilter}`;
+    const r = await fetch(`${API}/api/pipeline/log${filterParam}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    recentsData = data.log || [];
-    renderRecents();
+    const items = data.log || [];
+    if (data.counts) recentsCounts = data.counts;
+
+    let html = `<div style="display:flex;gap:8px;margin-bottom:8px;">
+      <div class="count ${recentsFilter === 'all' ? 'active' : ''}" onclick="setRecentsFilter('all')">
+        <div class="count-num">${recentsCounts.all}</div><div class="count-label">all</div></div>
+      <div class="count ${recentsFilter === 'imported' ? 'active' : ''}" onclick="setRecentsFilter('imported')">
+        <div class="count-num">${recentsCounts.imported}</div><div class="count-label">imported</div></div>
+      <div class="count ${recentsFilter === 'rejected' ? 'active' : ''}" onclick="setRecentsFilter('rejected')">
+        <div class="count-num">${recentsCounts.rejected}</div><div class="count-label">rejected</div></div>
+    </div>`;
+    html += renderRecentsItems(items);
+    el.innerHTML = html;
   } catch (e) { el.innerHTML = '<div class="loading">Failed to load log</div>'; }
 }
 

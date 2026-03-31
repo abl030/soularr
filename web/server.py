@@ -363,7 +363,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_pipeline_log(self, params: dict[str, list[str]]) -> None:
         from classify import classify_log_entry, LogEntry
-        entries = _db().get_log(limit=50)
+        outcome_filter = params.get("outcome", [None])[0]
+        if outcome_filter not in (None, "imported", "rejected"):
+            outcome_filter = None
+        entries = _db().get_log(limit=50, outcome_filter=outcome_filter)
         mbids = list(set(e["mb_release_id"] for e in entries if e.get("mb_release_id")))
         beets_info = check_beets_library_detail(mbids) if mbids else {}
         result = []
@@ -383,7 +386,24 @@ class Handler(BaseHTTPRequestHandler):
             item["verdict"] = classified.verdict
             item["summary"] = classified.summary
             result.append(item)
-        self._json({"log": result})
+        # Count outcomes for filter buttons (single query, no limit)
+        count_cur = _db()._execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE outcome IN ('success', 'force_import')) AS imported
+            FROM download_log
+        """)
+        count_row = count_cur.fetchone()
+        total = count_row["total"] if count_row else 0
+        imported_c = count_row["imported"] if count_row else 0
+        self._json({
+            "log": result,
+            "counts": {
+                "all": total,
+                "imported": imported_c,
+                "rejected": total - imported_c,
+            },
+        })
 
     def _get_pipeline_status(self, params: dict[str, list[str]]) -> None:
         counts = _db().count_by_status()
