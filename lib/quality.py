@@ -271,6 +271,8 @@ class DownloadInfo:
     spectral_bitrate: Optional[int] = None
     existing_min_bitrate: Optional[int] = None
     existing_spectral_bitrate: Optional[int] = None
+    # Verified lossless override (from import_one.py)
+    verified_lossless_override: Optional[bool] = None
     # Full import_one.py result (JSON string)
     import_result: Optional[str] = None
     # Full validation result (JSON string)
