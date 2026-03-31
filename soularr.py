@@ -439,14 +439,18 @@ def search_for_album(album):
     # Wait for slskd to process the search. Searches go through:
     #   Queued -> InProgress -> Completed, (TimedOut|ResponseLimitReached|Errored)
     # We must wait while state is Queued OR InProgress.
+    # slskd's searchTimeout is "time since last response", not absolute.
+    # Our poll timeout must be longer — let slskd complete on its own.
     time.sleep(5)
+    slskd_timeout_s = cfg.search_timeout / 1000 if cfg.search_timeout > 1000 else cfg.search_timeout
+    poll_timeout_s = slskd_timeout_s * 2 + 15
     start_time = time.time()
     while True:
         state = slskd.searches.state(search["id"], False)["state"]
         if "Completed" in state or ("InProgress" not in state and "Queued" not in state):
             break
         time.sleep(1)
-        if (time.time() - start_time) > cfg.search_timeout:
+        if (time.time() - start_time) > poll_timeout_s:
             logger.error("Failed to perform search via SLSKD due to timeout on search results.")
             return False
 
@@ -548,8 +552,12 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
     # Wait for search to complete. slskd search states:
     #   Queued -> InProgress -> Completed, (TimedOut|ResponseLimitReached|Errored)
     # We must wait while state is Queued OR InProgress.
+    # NOTE: slskd's searchTimeout is "time since last response", not absolute.
+    # A 30s timeout means slskd waits 30s after the last peer responds. Our
+    # poll timeout must be longer — slskd will complete the search on its own.
     time.sleep(5)
-    timeout_s = search_cfg.search_timeout / 1000 if search_cfg.search_timeout > 1000 else search_cfg.search_timeout
+    slskd_timeout_s = search_cfg.search_timeout / 1000 if search_cfg.search_timeout > 1000 else search_cfg.search_timeout
+    timeout_s = slskd_timeout_s + slskd_timeout_s + 15  # worst case: responses arrive at T=timeout, then wait another timeout
     start_time = time.time()
     while True:
         try:
