@@ -56,7 +56,7 @@ Browser → https://music.ablz.au
   - Click release metadata to open MB release page in new tab
 - **Add button** — adds release to pipeline DB (same logic as `pipeline-cli add`)
 - **Pipeline tab** — status dashboard (wanted/imported/manual counts + wanted list)
-- **Decisions tab** — pipeline decision diagram generated from `get_decision_tree()` with FLAC/MP3 branching paths, all stages/rules/thresholds from live code. Interactive simulator calls `full_pipeline_decision()` via `/api/pipeline/simulate` with presets for known scenarios.
+- **Decisions tab** — pipeline decision diagram generated from `get_decision_tree()` with FLAC/MP3 branching paths, all stages/rules/thresholds from live code. Includes a "dispatch" stage showing post-import action mapping (mark_done/failed, denylist, requeue) driven by `dispatch_action()`. Interactive simulator calls `full_pipeline_decision()` via `/api/pipeline/simulate` with presets for known scenarios.
 
 ## NixOS Configuration
 

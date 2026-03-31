@@ -45,14 +45,19 @@ lib/
   download.py           — Download monitoring, completion processing, spectral context
                            gathering, slskd transfer helpers. All functions accept ctx.
   grab_list.py          — GrabList: wanted-album selection with priority/ordering
-  import_dispatch.py    — Auto-import decision tree: runs import_one.py, dispatches on
-                           ImportResult (upgrade/downgrade/transcode). Quality gate.
+  import_dispatch.py    — Auto-import decision tree: runs import_one.py, uses
+                           dispatch_action() flags for mark_done/failed/denylist/requeue.
+                           Quality gate.
   pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema, get_download_log_entry)
   quality.py            — Pure decision functions + typed dataclasses:
                            Decision functions:
                            - spectral_import_decision(), import_quality_decision()
                            - transcode_detection(), quality_gate_decision()
                            - is_verified_lossless(), parse_import_result()
+                           Dispatch functions:
+                           - dispatch_action() → DispatchAction (mark_done/failed/denylist/requeue flags)
+                           - compute_effective_override_bitrate(), extract_usernames()
+                           - verify_filetype() (slskd file matching, moved from soularr.py)
                            Import result types:
                            - ImportResult, ConversionInfo, QualityInfo, SpectralInfo, PostflightInfo
                            Validation result types:
@@ -60,7 +65,7 @@ lib/
                            Harness data types:
                            - HarnessItem, HarnessTrackInfo, TrackMapping
                            Other:
-                           - DownloadInfo, SpectralContext
+                           - DownloadInfo, SpectralContext, DispatchAction
   search.py             — Search query building and normalization
   spectral_check.py     — Spectral analysis (sox-based transcode detection)
   util.py               — Pure utilities: sanitize_folder_name, move_failed_import,
@@ -71,14 +76,15 @@ harness/
                            Serializes full AlbumMatch: distance breakdown, track mapping,
                            all AlbumInfo/TrackInfo fields, extra items/tracks with detail
   run_beets_harness.sh  — Shell wrapper to bootstrap Nix beets Python environment
-  import_one.py         — One-shot beets import: emits ImportResult JSON on stdout
-                           Flags: --force (skip distance check for force-importing rejected albums),
-                           --override-min-bitrate, --request-id, --dry-run
+  import_one.py         — One-shot beets import: emits ImportResult JSON on stdout.
+                           Pure stage decisions: StageResult, preflight_decision(),
+                           conversion_decision(), quality_decision_stage(), final_exit_decision().
+                           Flags: --force, --override-min-bitrate, --request-id, --dry-run
 scripts/
   pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, force-import, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
-tests/                     635 tests total
+tests/                     695 tests total
   test_album_source.py      — 16 tests for AlbumSource (incl. verified_lossless override)
   test_beets_db.py           — 17 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
@@ -94,7 +100,7 @@ tests/                     635 tests total
   test_pipeline_cli.py       — 7 tests for CLI
   test_pipeline_db.py        — 35 tests for PipelineDB
   test_quality_classification.py — 38 tests for quality classification (real audio fixtures)
-  test_quality_decisions.py  — 79 tests for pure decision functions + pipeline contract tests
+  test_quality_decisions.py  — 98 tests for pure decision functions + pipeline contract tests
   test_search.py             — 32 tests for search query building
   test_slskd_live.py         — 5 tests for live slskd integration (ephemeral Docker)
   test_spectral_check.py     — 39 tests for spectral analysis
@@ -102,8 +108,10 @@ tests/                     635 tests total
   test_util.py               — tests for lib/util.py (move_failed_import, sanitize, etc.)
   test_validation_result.py  — 27 tests for ValidationResult, CandidateSummary, harness types
   test_web_recents.py        — 72 tests for recents tab classification (LogEntry, ClassifiedEntry)
-  test_web_server.py         — 15 tests for HTTP endpoints (mocked DB, real server)
-test_soularr.py         — Isolated tests for verify_filetype (AST extraction)
+  test_web_server.py         — 21 tests for HTTP endpoints + bitrate override (mocked DB, real server)
+  test_verify_filetype.py    — 7 tests for verify_filetype (direct import from lib/quality)
+  test_import_one_stages.py  — 18 tests for import_one.py pure stage decisions
+test_soularr.py         — Legacy verify_filetype tests (imports from lib/quality)
 .claude/
   commands/beets-docs.md — Skill: look up beets RST docs from nix store
   rules/code-quality.md  — Type safety, TDD, logging, decision purity standards
@@ -233,7 +241,10 @@ All quality decisions are pure functions in `lib/quality.py` — no I/O, no data
 3. **`transcode_detection(spectral_grade)`** — Post-conversion: was this FLAC actually a transcode? Spectral grade is authoritative when available (suspect/likely_transcode = transcode, genuine/marginal = not transcode). Bitrate < 210kbps threshold is fallback only when spectral is unavailable.
 4. **`quality_gate_decision()`** — Post-import: accept, or re-queue for better quality?
 5. **`is_verified_lossless()`** — Was this imported from a genuine FLAC source?
-6. **`get_decision_tree()`** — Returns the full pipeline decision structure as data (stages, rules, constants) for the web UI Decisions tab. Contract tests in `test_quality_decisions.py` verify this matches the actual functions.
+6. **`dispatch_action()`** — Post-import_one.py: map decision string to action flags (mark_done/failed, denylist, requeue, trigger_meelo, quality_gate). Used by `dispatch_import()`.
+7. **`compute_effective_override_bitrate()`** — Return the lower of container/spectral bitrate (conservative). Used for `--override-min-bitrate`.
+8. **`verify_filetype()`** — Pre-search: does a slskd file dict match an allowed filetype spec? (VBR V0/V2, CBR, min bitrate, bitdepth/samplerate)
+9. **`get_decision_tree()`** — Returns the full pipeline decision structure as data (stages, rules, constants) for the web UI Decisions tab. Includes "dispatch" stage showing post-import action mapping. Contract tests in `test_quality_decisions.py` verify this matches the actual functions.
 
 ### Import logging (`download_log.import_result` JSONB)
 
@@ -267,6 +278,7 @@ All types in `lib/quality.py`, fully typed with pyright, JSON round-trip seriali
 
 - **Import path**: `ImportResult` → `ConversionInfo`, `QualityInfo`, `SpectralInfo`, `PostflightInfo`
 - **Validation path**: `ValidationResult` → `CandidateSummary` → `HarnessTrackInfo`, `HarnessItem`, `TrackMapping`
+- **Dispatch path**: `DispatchAction` (action flags from `dispatch_action()`), `StageResult` (in `import_one.py` — pure stage decisions)
 - **Shared**: `DownloadInfo` (replaces untyped dl_info dict), `SpectralContext` (pre-import spectral gathering), `AlbumInfo` (beets DB queries in `lib/beets_db.py`)
 
 ## Quality Upgrade System

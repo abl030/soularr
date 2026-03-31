@@ -5,8 +5,11 @@ Used by soularr.py and import_one.py, tested directly against real audio fixture
 """
 
 import json
+import logging
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
+
+_logger = logging.getLogger("soularr")
 
 QUALITY_UPGRADE_TIERS = "flac,mp3 v0,mp3 320"
 QUALITY_MIN_BITRATE_KBPS = 210  # V0 floor — below this triggers upgrade
@@ -558,6 +561,147 @@ def quality_gate_decision(min_bitrate, is_cbr, verified_lossless, spectral_bitra
 
 
 # ---------------------------------------------------------------------------
+# Dispatch logic — extracted from import_dispatch.py for testability
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DispatchAction:
+    """What actions to take after import_one.py returns a decision."""
+    mark_done: bool = False
+    mark_failed: bool = False
+    denylist: bool = False
+    requeue: bool = False
+    cleanup: bool = True
+    trigger_meelo: bool = False
+    run_quality_gate: bool = False
+
+
+def dispatch_action(decision: str) -> DispatchAction:
+    """Map an ImportResult.decision string to the set of actions to take (pure).
+
+    Encodes the if/elif dispatch chain from dispatch_import().
+    """
+    if decision in ("import", "preflight_existing"):
+        return DispatchAction(mark_done=True, trigger_meelo=True,
+                              run_quality_gate=True, cleanup=True)
+    elif decision == "downgrade":
+        return DispatchAction(mark_failed=True, denylist=True, cleanup=True)
+    elif decision in ("transcode_upgrade", "transcode_first"):
+        return DispatchAction(mark_done=True, denylist=True, requeue=True,
+                              trigger_meelo=True, cleanup=True)
+    elif decision == "transcode_downgrade":
+        return DispatchAction(mark_failed=True, denylist=True, requeue=True,
+                              cleanup=True)
+    else:  # import_failed, conversion_failed, mbid_missing, crash, etc.
+        return DispatchAction(mark_failed=True)
+
+
+def compute_effective_override_bitrate(
+    container_bitrate: int | None,
+    spectral_bitrate: int | None,
+) -> int | None:
+    """Compute the effective override bitrate from container and spectral data.
+
+    Returns the lower of the two when both are available (more conservative).
+    Used by dispatch_import() to pass --override-min-bitrate to import_one.py,
+    and by _check_quality_gate() for spectral override.
+    """
+    if container_bitrate is None and spectral_bitrate is None:
+        return None
+    if container_bitrate is None:
+        return spectral_bitrate
+    if spectral_bitrate is None:
+        return container_bitrate
+    return min(container_bitrate, spectral_bitrate)
+
+
+def extract_usernames(files: Any) -> set[str]:
+    """Extract unique non-empty usernames from a list of file objects."""
+    return {f.username for f in files if f.username}
+
+
+# ---------------------------------------------------------------------------
+# Filetype verification — moved from soularr.py for testability
+# ---------------------------------------------------------------------------
+
+
+def verify_filetype(file: Any, allowed_filetype: str) -> bool:
+    """Check whether a slskd file dict matches an allowed filetype specification.
+
+    Handles: bare extension ("mp3"), exact bitrate ("mp3 320"),
+    bitdepth/samplerate ("flac 24/96"), VBR presets ("mp3 v0", "mp3 v2"),
+    and minimum bitrate ("aac 256+").
+    """
+    current_filetype = file["filename"].split(".")[-1]
+    bitdepth = None
+    samplerate = None
+    bitrate = None
+
+    if "bitRate" in file:
+        bitrate = file["bitRate"]
+    if "sampleRate" in file:
+        samplerate = file["sampleRate"]
+    if "bitDepth" in file:
+        bitdepth = file["bitDepth"]
+
+    # Check if the types match up for the current files type and the current type from the config
+    if current_filetype == allowed_filetype.split(" ")[0]:
+        # Check if the current type from the config specifies other attributes than the filetype (bitrate etc)
+        if " " in allowed_filetype:
+            selected_attributes = allowed_filetype.split(" ")[1]
+            # If it is a bitdepth/samplerate pair instead of a simple bitrate
+            if "/" in selected_attributes:
+                selected_bitdepth = selected_attributes.split("/")[0]
+                try:
+                    selected_samplerate = str(int(float(selected_attributes.split("/")[1]) * 1000))
+                except (ValueError, IndexError):
+                    _logger.warning("Invalid samplerate in selected_attributes")
+                    return False
+
+                if bitdepth and samplerate:
+                    return str(bitdepth) == str(selected_bitdepth) and str(samplerate) == str(selected_samplerate)
+                return False
+            # If it is a VBR quality preset (e.g. "mp3 v0", "mp3 v2")
+            elif selected_attributes.lower() in ("v0", "v2"):
+                if bitrate:
+                    cbr_values = {128, 160, 192, 224, 256, 320}
+                    is_vbr = bitrate not in cbr_values
+                    # Prefer isVariableBitRate flag from slskd if available
+                    if "isVariableBitRate" in file:
+                        is_vbr = file["isVariableBitRate"]
+                    if not is_vbr:
+                        return False
+                    if selected_attributes.lower() == "v0":
+                        return 220 <= bitrate <= 280
+                    else:  # v2
+                        return 170 <= bitrate <= 220
+                return False
+            # If it is a minimum bitrate (e.g. "aac 256+", "ogg 256+", "opus 192+")
+            elif selected_attributes.endswith("+"):
+                try:
+                    min_bitrate = int(selected_attributes[:-1])
+                except ValueError:
+                    _logger.warning(f"Invalid minimum bitrate in allowed_filetype: {allowed_filetype}")
+                    return False
+                if bitrate:
+                    return bitrate >= min_bitrate
+                return False
+            # If it is an exact bitrate
+            else:
+                selected_bitrate = selected_attributes
+                if bitrate:
+                    if str(bitrate) == str(selected_bitrate):
+                        return True
+                return False
+        # If no bitrate or other info then it is a match so return true
+        else:
+            return True
+    else:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Decision tree metadata — consumed by the web UI diagram
 # ---------------------------------------------------------------------------
 
@@ -745,6 +889,35 @@ def get_decision_tree() -> dict[str, Any]:
                      "effect": "done"},
                 ],
                 "outcomes": ["accept", "requeue_upgrade", "requeue_flac"],
+            },
+            {
+                "id": "dispatch",
+                "title": "Import Dispatch",
+                "path": "shared",
+                "function": "dispatch_action",
+                "when": "After import_one.py returns a decision",
+                "inputs": ["ImportResult.decision"],
+                "rules": [
+                    {"condition": "import / preflight_existing",
+                     "result": "mark_done + quality_gate", "color": "green",
+                     "effect": "imported, run quality gate"},
+                    {"condition": "downgrade",
+                     "result": "mark_failed + denylist", "color": "red",
+                     "effect": "not an upgrade, denylist source"},
+                    {"condition": "transcode_upgrade / transcode_first",
+                     "result": "mark_done + denylist + requeue", "color": "amber",
+                     "effect": "imported but transcode, keep searching"},
+                    {"condition": "transcode_downgrade",
+                     "result": "mark_failed + denylist + requeue", "color": "red",
+                     "effect": "transcode not an upgrade, keep searching"},
+                    {"condition": "other (error/crash/timeout)",
+                     "result": "mark_failed", "color": "red",
+                     "effect": "import failed"},
+                ],
+                "outcomes": ["import", "preflight_existing", "downgrade",
+                             "transcode_upgrade", "transcode_first",
+                             "transcode_downgrade", "conversion_failed",
+                             "import_failed", "mbid_missing"],
             },
         ],
     }

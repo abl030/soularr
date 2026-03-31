@@ -1,36 +1,6 @@
 """Tests for verify_filetype() — VBR V0/V2 support (TDD)."""
 
-import sys
-import types
-
-# soularr.py uses top-level globals and imports that make it hard to import
-# directly. We extract verify_filetype() by compiling just the function.
-import importlib.util
-import ast
-import textwrap
-
-def _extract_verify_filetype():
-    """Extract verify_filetype from soularr.py without running module-level code."""
-    with open("soularr.py") as f:
-        source = f.read()
-
-    tree = ast.parse(source)
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "verify_filetype":
-            func_source = ast.get_source_segment(source, node)
-            break
-    else:
-        raise RuntimeError("verify_filetype not found in soularr.py")
-
-    assert func_source is not None, "Could not extract source for verify_filetype"
-
-    # Create a minimal module with a logger stub
-    import logging
-    ns = {"logger": logging.getLogger("test"), "logging": logging}
-    exec(compile(func_source, "soularr.py", "exec"), ns)
-    return ns["verify_filetype"]
-
-verify_filetype = _extract_verify_filetype()
+from lib.quality import verify_filetype
 
 
 # === Existing behaviour (must not break) ===

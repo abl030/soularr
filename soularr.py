@@ -222,75 +222,6 @@ def choose_release(artist_name, releases):
     return default_release
 
 
-def verify_filetype(file, allowed_filetype):
-    current_filetype = file["filename"].split(".")[-1]
-    bitdepth = None
-    samplerate = None
-    bitrate = None
-
-    if "bitRate" in file:
-        bitrate = file["bitRate"]
-    if "sampleRate" in file:
-        samplerate = file["sampleRate"]
-    if "bitDepth" in file:
-        bitdepth = file["bitDepth"]
-
-    # Check if the types match up for the current files type and the current type from the config
-    if current_filetype == allowed_filetype.split(" ")[0]:
-        # Check if the current type from the config specifies other attributes than the filetype (bitrate etc)
-        if " " in allowed_filetype:
-            selected_attributes = allowed_filetype.split(" ")[1]
-            # If it is a bitdepth/samplerate pair instead of a simple bitrate
-            if "/" in selected_attributes:
-                selected_bitdepth = selected_attributes.split("/")[0]
-                try:
-                    selected_samplerate = str(int(float(selected_attributes.split("/")[1]) * 1000))
-                except (ValueError, IndexError):
-                    logger.warning("Invalid samplerate in selected_attributes")
-                    return False
-
-                if bitdepth and samplerate:
-                    if str(bitdepth) == str(selected_bitdepth) and str(samplerate) == str(selected_samplerate):
-                        return True
-                else:
-                    return False
-            # If it is a VBR quality preset (e.g. "mp3 v0", "mp3 v2")
-            elif selected_attributes.lower() in ("v0", "v2"):
-                if bitrate:
-                    cbr_values = {128, 160, 192, 224, 256, 320}
-                    is_vbr = bitrate not in cbr_values
-                    # Prefer isVariableBitRate flag from slskd if available
-                    if "isVariableBitRate" in file:
-                        is_vbr = file["isVariableBitRate"]
-                    if not is_vbr:
-                        return False
-                    if selected_attributes.lower() == "v0":
-                        return 220 <= bitrate <= 280
-                    else:  # v2
-                        return 170 <= bitrate <= 220
-                return False
-            # If it is a minimum bitrate (e.g. "aac 256+", "ogg 256+", "opus 192+")
-            elif selected_attributes.endswith("+"):
-                try:
-                    min_bitrate = int(selected_attributes[:-1])
-                except ValueError:
-                    logger.warning(f"Invalid minimum bitrate in allowed_filetype: {allowed_filetype}")
-                    return False
-                if bitrate:
-                    return bitrate >= min_bitrate
-                return False
-            # If it is an exact bitrate
-            else:
-                selected_bitrate = selected_attributes
-                if bitrate:
-                    if str(bitrate) == str(selected_bitrate):
-                        return True
-                return False
-        # If no bitrate or other info then it is a match so return true
-        else:
-            return True
-    else:
-        return False
 
 
 def download_filter(allowed_filetype, directory: Any):
@@ -1022,6 +953,7 @@ def _search_and_queue_parallel(albums):
 
 
 from lib.grab_list import GrabListEntry
+from lib.quality import verify_filetype
 
 from lib.download import (cancel_and_delete as _cancel_and_delete_impl,
                           slskd_do_enqueue as _slskd_do_enqueue_impl,

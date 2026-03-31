@@ -241,5 +241,43 @@ class TestServerEndpoints(unittest.TestCase):
             self.assertIn("2026", created)
 
 
+class TestApplyPipelineBitrateOverride(unittest.TestCase):
+    """Test the apply_pipeline_bitrate_override helper."""
+
+    def _apply(self, album, pipeline_info):
+        from web.server import apply_pipeline_bitrate_override
+        apply_pipeline_bitrate_override(album, pipeline_info)
+
+    def test_pipeline_higher_overrides_beets(self):
+        album = {"min_bitrate": 192000}
+        self._apply(album, {"min_bitrate": 320})
+        self.assertEqual(album["min_bitrate"], 320000)
+
+    def test_pipeline_lower_no_override(self):
+        album = {"min_bitrate": 320000}
+        self._apply(album, {"min_bitrate": 192})
+        self.assertEqual(album["min_bitrate"], 320000)
+
+    def test_pipeline_none_no_change(self):
+        album = {"min_bitrate": 192000}
+        self._apply(album, {"min_bitrate": None})
+        self.assertEqual(album["min_bitrate"], 192000)
+
+    def test_beets_none_no_change(self):
+        album = {"min_bitrate": None}
+        self._apply(album, {"min_bitrate": 320})
+        self.assertIsNone(album["min_bitrate"])
+
+    def test_upgrade_queued_flag_set(self):
+        album = {}
+        self._apply(album, {"status": "wanted", "quality_override": "flac,mp3 v0"})
+        self.assertTrue(album.get("upgrade_queued"))
+
+    def test_no_upgrade_queued_when_imported(self):
+        album = {}
+        self._apply(album, {"status": "imported", "quality_override": "flac"})
+        self.assertNotIn("upgrade_queued", album)
+
+
 if __name__ == "__main__":
     unittest.main()

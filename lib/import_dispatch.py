@@ -14,7 +14,9 @@ import sys
 from typing import Any, TYPE_CHECKING
 
 from lib.quality import (parse_import_result, DownloadInfo, ImportResult,
-                         QUALITY_UPGRADE_TIERS, QUALITY_MIN_BITRATE_KBPS)
+                         QUALITY_UPGRADE_TIERS, QUALITY_MIN_BITRATE_KBPS,
+                         dispatch_action, compute_effective_override_bitrate,
+                         extract_usernames)
 
 if TYPE_CHECKING:
     from lib.context import SoularrContext
@@ -108,7 +110,8 @@ def _check_quality_gate(album_data: Any, request_id: int | None,
                 req = ctx.pipeline_db_source._get_db().get_request(request_id)
                 raw_br = req.get("spectral_bitrate") if req else None
                 spectral_br = raw_br if isinstance(raw_br, int) else None
-                if spectral_br and spectral_br < min_br_kbps:
+                effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
+                if effective is not None and effective < min_br_kbps:
                     logger.info(f"QUALITY GATE: using spectral_bitrate={spectral_br}kbps "
                                 f"(lower than beets min_bitrate={min_br_kbps}kbps)")
             except Exception:
@@ -129,9 +132,8 @@ def _check_quality_gate(album_data: Any, request_id: int | None,
             db.reset_to_wanted(request_id,
                                quality_override=QUALITY_UPGRADE_TIERS,
                                min_bitrate=min_br_kbps)
-            usernames = set(f.username for f in album_data.files
-                           if f.username)
-            gate_br = spectral_br if (spectral_br and spectral_br < min_br_kbps) else min_br_kbps
+            usernames = extract_usernames(album_data.files)
+            gate_br = compute_effective_override_bitrate(min_br_kbps, spectral_br) or min_br_kbps
             if spectral_br and spectral_br < min_br_kbps:
                 reason = (f"quality gate: spectral {spectral_br}kbps "
                           f"(beets {min_br_kbps}kbps) < {QUALITY_MIN_BITRATE_KBPS}kbps")
@@ -194,14 +196,8 @@ def dispatch_import(album_data: Any, bv_result: Any, dest: str,
             try:
                 req = ctx.pipeline_db_source._get_db().get_request(request_id)
                 if req:
-                    db_min_br = req.get("min_bitrate")
-                    spectral_br = req.get("on_disk_spectral_bitrate")
-                    # Use spectral bitrate when available and lower — catches
-                    # fake 320s where container lies but spectral knows truth
-                    effective_br = db_min_br
-                    if spectral_br is not None and (effective_br is None
-                                                    or spectral_br < effective_br):
-                        effective_br = spectral_br
+                    effective_br = compute_effective_override_bitrate(
+                        req.get("min_bitrate"), req.get("on_disk_spectral_bitrate"))
                     if effective_br is not None:
                         cmd.extend(["--override-min-bitrate", str(effective_br)])
             except Exception:
@@ -228,93 +224,77 @@ def dispatch_import(album_data: Any, bv_result: Any, dest: str,
                 download_info=dl_info)
         else:
             _populate_dl_info_from_import_result(dl_info, ir)
-            decision = ir.decision
+            decision = ir.decision or "unknown"
+            action = dispatch_action(decision)
+            usernames = extract_usernames(album_data.files) if action.denylist else set()
 
-            if decision in ("import", "preflight_existing"):
+            # --- Mark done or failed with decision-specific details ---
+            if action.mark_done:
                 logger.info(f"AUTO-IMPORT OK: {label} (decision={decision})")
                 ctx.pipeline_db_source.mark_done(
                     album_data, bv_result, dest_path=dest, download_info=dl_info)
-                if request_id and (ir.quality.prev_min_bitrate is not None
-                                   or ir.quality.new_min_bitrate is not None):
-                    try:
-                        db = ctx.pipeline_db_source._get_db()
-                        db.update_status(request_id, "imported",
-                                         prev_min_bitrate=ir.quality.prev_min_bitrate,
-                                         min_bitrate=ir.quality.new_min_bitrate)
-                    except Exception:
-                        logger.exception("Failed to update upgrade delta")
-                _check_quality_gate(album_data, request_id, ctx)
-                trigger_meelo_scan(ctx)
-                _cleanup_staged_dir(dest)
-
-            elif decision == "downgrade":
-                logger.warning(f"QUALITY DOWNGRADE PREVENTED: {label}")
-                usernames = set(f.username for f in album_data.files
-                                if f.username)
-                db = ctx.pipeline_db_source._get_db()
-                for username in usernames:
-                    db.add_denylist(request_id, username,
-                                    "quality downgrade prevented")
-                logger.info(f"  Denylisted {usernames} for request {request_id}")
+                if decision in ("import", "preflight_existing"):
+                    if request_id and (ir.quality.prev_min_bitrate is not None
+                                       or ir.quality.new_min_bitrate is not None):
+                        try:
+                            db = ctx.pipeline_db_source._get_db()
+                            db.update_status(request_id, "imported",
+                                             prev_min_bitrate=ir.quality.prev_min_bitrate,
+                                             min_bitrate=ir.quality.new_min_bitrate)
+                        except Exception:
+                            logger.exception("Failed to update upgrade delta")
+            elif action.mark_failed:
+                if decision == "downgrade":
+                    scenario = "quality_downgrade"
+                    detail = (f"new {ir.quality.new_min_bitrate}kbps "
+                              f"<= existing {ir.quality.prev_min_bitrate}kbps")
+                    logger.warning(f"QUALITY DOWNGRADE PREVENTED: {label}")
+                elif decision == "transcode_downgrade":
+                    scenario = "transcode_downgrade"
+                    detail = (f"transcode {ir.quality.new_min_bitrate}kbps "
+                              f"<= existing {ir.quality.prev_min_bitrate}kbps")
+                    logger.warning(f"TRANSCODE REJECTED: {label} "
+                                   f"at {ir.quality.new_min_bitrate}kbps — not an upgrade")
+                else:
+                    scenario = decision or "import_error"
+                    detail = ir.error
+                    logger.error(f"AUTO-IMPORT FAILED: {label} "
+                                 f"(decision={decision}, error={ir.error})")
                 ctx.pipeline_db_source.mark_failed(
                     album_data,
                     {"distance": bv_result.get("distance"),
-                     "scenario": "quality_downgrade",
-                     "detail": f"new {ir.quality.new_min_bitrate}kbps <= existing {ir.quality.prev_min_bitrate}kbps",
-                     "error": None},
-                    usernames=usernames, download_info=dl_info)
-                _cleanup_staged_dir(dest)
+                     "scenario": scenario, "detail": detail,
+                     "error": ir.error if decision not in ("downgrade", "transcode_downgrade") else None},
+                    usernames=usernames if action.denylist else None,
+                    download_info=dl_info)
 
-            elif decision in ("transcode_upgrade", "transcode_first",
-                              "transcode_downgrade"):
-                imported_transcode = decision in ("transcode_upgrade",
-                                                   "transcode_first")
-                actual_br = ir.quality.new_min_bitrate
-                if imported_transcode:
-                    logger.info(
-                        f"TRANSCODE UPGRADE: {label} "
-                        f"imported at {actual_br}kbps, denylisting + continuing search")
-                    ctx.pipeline_db_source.mark_done(
-                        album_data, bv_result, dest_path=dest,
-                        download_info=dl_info)
-                    trigger_meelo_scan(ctx)
-                else:
-                    logger.warning(
-                        f"TRANSCODE REJECTED: {label} "
-                        f"at {actual_br}kbps — not an upgrade")
-                    ctx.pipeline_db_source.mark_failed(
-                        album_data,
-                        {"distance": bv_result.get("distance"),
-                         "scenario": "transcode_downgrade",
-                         "detail": f"transcode {actual_br}kbps <= existing {ir.quality.prev_min_bitrate}kbps",
-                         "error": None},
-                        usernames=set(f.username for f in album_data.files if f.username),
-                        download_info=dl_info)
-                usernames = set(f.username for f in album_data.files
-                                if f.username)
+            # --- Common actions driven by flags ---
+            if action.denylist:
                 db = ctx.pipeline_db_source._get_db()
-                reason = (f"transcode: {actual_br}kbps"
-                          if actual_br else "transcode detected")
+                if decision == "downgrade":
+                    reason = "quality downgrade prevented"
+                elif decision.startswith("transcode"):
+                    actual_br = ir.quality.new_min_bitrate
+                    reason = f"transcode: {actual_br}kbps" if actual_br else "transcode detected"
+                else:
+                    reason = f"rejected: {decision}"
                 for username in usernames:
                     db.add_denylist(request_id, username, reason)
                 logger.info(f"  Denylisted {usernames} for request {request_id}")
+
+            if action.requeue:
+                db = ctx.pipeline_db_source._get_db()
                 db.reset_to_wanted(
                     request_id,
                     quality_override=QUALITY_UPGRADE_TIERS,
-                    min_bitrate=actual_br if imported_transcode else None)
-                _cleanup_staged_dir(dest)
+                    min_bitrate=ir.quality.new_min_bitrate if action.mark_done else None)
 
-            else:
-                logger.error(
-                    f"AUTO-IMPORT FAILED: {label} "
-                    f"(decision={decision}, error={ir.error})")
-                ctx.pipeline_db_source.mark_failed(
-                    album_data,
-                    {"distance": bv_result.get("distance"),
-                     "scenario": decision or "import_error",
-                     "detail": ir.error,
-                     "error": ir.error},
-                    download_info=dl_info)
+            if action.run_quality_gate:
+                _check_quality_gate(album_data, request_id, ctx)
+            if action.trigger_meelo:
+                trigger_meelo_scan(ctx)
+            if action.cleanup:
+                _cleanup_staged_dir(dest)
     except sp.TimeoutExpired:
         logger.error(f"AUTO-IMPORT TIMEOUT: {label}")
         timeout_dl = _build_download_info(album_data)

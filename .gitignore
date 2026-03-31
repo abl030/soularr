@@ -10,3 +10,6 @@ __pycache__/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 tests/.slskd-creds.json
+tests/fixtures/albums/
+tests/fixtures/analysis_cache.json
+tests/fixtures/pipeline_db_snapshot_*.sql

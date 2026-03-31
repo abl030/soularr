@@ -190,6 +190,21 @@ def check_pipeline(mbids):
     }
 
 
+def apply_pipeline_bitrate_override(album: dict, pipeline_info: dict) -> None:
+    """Apply pipeline DB min_bitrate and upgrade_queued flag to a beets album dict.
+
+    Pipeline DB stores kbps, beets stores bps. Only overrides when pipeline is higher.
+    """
+    if pipeline_info.get("status") == "wanted" and pipeline_info.get("quality_override"):
+        album["upgrade_queued"] = True
+    pi_br = pipeline_info.get("min_bitrate")
+    a_br = album.get("min_bitrate")
+    if pi_br is not None and a_br is not None:
+        pi_br_bps = pi_br * 1000  # kbps → bps
+        if pi_br_bps > a_br:
+            album["min_bitrate"] = pi_br_bps
+
+
 class Handler(BaseHTTPRequestHandler):
 
     _GET_ROUTES: dict[str, str] = {
@@ -615,13 +630,7 @@ class Handler(BaseHTTPRequestHandler):
             for a in albums:
                 pi = pipeline_info.get(a.get("mb_albumid"))
                 if pi:
-                    if pi["status"] == "wanted" and pi.get("quality_override"):
-                        a["upgrade_queued"] = True
-                    # Use pipeline min_bitrate (avg after accept) if higher than beets min
-                    if pi.get("min_bitrate") and a.get("min_bitrate"):
-                        pi_br = pi["min_bitrate"] * 1000  # DB stores kbps, beets stores bps
-                        if pi_br > a["min_bitrate"]:
-                            a["min_bitrate"] = pi_br
+                    apply_pipeline_bitrate_override(a, pi)
         self._json({"albums": albums})
 
     def _get_beets_album(self, params: dict[str, list[str]], album_id_str: str) -> None:
@@ -713,12 +722,7 @@ class Handler(BaseHTTPRequestHandler):
             for a in albums:
                 pi = pipeline_info.get(a.get("mb_albumid"))
                 if pi:
-                    if pi["status"] == "wanted" and pi.get("quality_override"):
-                        a["upgrade_queued"] = True
-                    if pi.get("min_bitrate") and a.get("min_bitrate"):
-                        pi_br = pi["min_bitrate"] * 1000
-                        if pi_br > a["min_bitrate"]:
-                            a["min_bitrate"] = pi_br
+                    apply_pipeline_bitrate_override(a, pi)
         self._json({"albums": albums})
 
     # ── POST handlers ────────────────────────────────────────────────

@@ -541,7 +541,7 @@ class TestFullPipelineContract(unittest.TestCase):
         self.assertEqual(ids, ["flac_spectral", "flac_convert", "transcode",
                                "verified_lossless", "mp3_spectral",
                                "mp3_vbr_note", "import_decision",
-                               "quality_gate"])
+                               "quality_gate", "dispatch"])
 
     def test_decision_tree_outcomes_match_valid_values(self):
         """Outcomes declared in the tree must match what the contract allows."""
@@ -583,6 +583,154 @@ class TestFullPipelineContract(unittest.TestCase):
         for stage in tree["stages"]:
             self.assertIn(stage.get("path"), valid_paths,
                           f"Stage {stage['id']} has invalid path")
+
+
+# ============================================================================
+# compute_effective_override_bitrate
+# ============================================================================
+
+class TestComputeEffectiveOverrideBitrate(unittest.TestCase):
+    """Test the spectral/container override computation (pure)."""
+
+    def _compute(self, container, spectral):
+        from lib.quality import compute_effective_override_bitrate
+        return compute_effective_override_bitrate(container, spectral)
+
+    def test_spectral_lower_wins(self):
+        self.assertEqual(self._compute(320, 128), 128)
+
+    def test_container_lower_wins(self):
+        self.assertEqual(self._compute(192, 256), 192)
+
+    def test_no_spectral_returns_container(self):
+        self.assertEqual(self._compute(320, None), 320)
+
+    def test_no_container_no_spectral(self):
+        self.assertIsNone(self._compute(None, None))
+
+    def test_no_container_with_spectral(self):
+        self.assertEqual(self._compute(None, 128), 128)
+
+
+# ============================================================================
+# dispatch_action
+# ============================================================================
+
+class TestDispatchAction(unittest.TestCase):
+    """Test dispatch_action: map decision string to action flags."""
+
+    def _action(self, decision):
+        from lib.quality import dispatch_action
+        return dispatch_action(decision)
+
+    def test_import_action(self):
+        a = self._action("import")
+        self.assertTrue(a.mark_done)
+        self.assertFalse(a.mark_failed)
+        self.assertFalse(a.denylist)
+        self.assertFalse(a.requeue)
+        self.assertTrue(a.cleanup)
+        self.assertTrue(a.trigger_meelo)
+        self.assertTrue(a.run_quality_gate)
+
+    def test_preflight_existing_action(self):
+        a = self._action("preflight_existing")
+        self.assertTrue(a.mark_done)
+        self.assertTrue(a.trigger_meelo)
+        self.assertTrue(a.run_quality_gate)
+
+    def test_downgrade_action(self):
+        a = self._action("downgrade")
+        self.assertFalse(a.mark_done)
+        self.assertTrue(a.mark_failed)
+        self.assertTrue(a.denylist)
+        self.assertFalse(a.requeue)
+        self.assertTrue(a.cleanup)
+
+    def test_transcode_upgrade_action(self):
+        a = self._action("transcode_upgrade")
+        self.assertTrue(a.mark_done)
+        self.assertTrue(a.denylist)
+        self.assertTrue(a.requeue)
+        self.assertTrue(a.trigger_meelo)
+
+    def test_transcode_downgrade_action(self):
+        a = self._action("transcode_downgrade")
+        self.assertFalse(a.mark_done)
+        self.assertTrue(a.mark_failed)
+        self.assertTrue(a.denylist)
+        self.assertTrue(a.requeue)
+
+    def test_transcode_first_action(self):
+        a = self._action("transcode_first")
+        self.assertTrue(a.mark_done)
+        self.assertTrue(a.denylist)
+        self.assertTrue(a.requeue)
+        self.assertTrue(a.trigger_meelo)
+
+    def test_unknown_decision_marks_failed(self):
+        a = self._action("conversion_failed")
+        self.assertTrue(a.mark_failed)
+        self.assertFalse(a.denylist)
+
+    def test_import_failed_action(self):
+        a = self._action("import_failed")
+        self.assertTrue(a.mark_failed)
+
+
+# ============================================================================
+# extract_usernames
+# ============================================================================
+
+class TestExtractUsernames(unittest.TestCase):
+    """Test username extraction from file objects."""
+
+    def _extract(self, files):
+        from lib.quality import extract_usernames
+        return extract_usernames(files)
+
+    def _file(self, username):
+        """Create a minimal file-like object with a username attribute."""
+        from unittest.mock import MagicMock
+        f = MagicMock()
+        f.username = username
+        return f
+
+    def test_single_user(self):
+        files = [self._file("alice"), self._file("alice")]
+        self.assertEqual(self._extract(files), {"alice"})
+
+    def test_multiple_users(self):
+        files = [self._file("alice"), self._file("bob")]
+        self.assertEqual(self._extract(files), {"alice", "bob"})
+
+    def test_empty_username_excluded(self):
+        files = [self._file(""), self._file("alice")]
+        self.assertEqual(self._extract(files), {"alice"})
+
+    def test_none_username_excluded(self):
+        files = [self._file(None), self._file("alice")]
+        self.assertEqual(self._extract(files), {"alice"})
+
+    def test_empty_files(self):
+        self.assertEqual(self._extract([]), set())
+
+
+# ============================================================================
+# dispatch_action contract test
+# ============================================================================
+
+class TestDispatchActionContract(unittest.TestCase):
+    """Verify dispatch_action covers all import_decision outcomes."""
+
+    def test_covers_import_decision_outcomes(self):
+        from lib.quality import dispatch_action, get_decision_tree
+        tree = get_decision_tree()
+        import_stage = [s for s in tree["stages"] if s["id"] == "import_decision"][0]
+        for outcome in import_stage["outcomes"]:
+            a = dispatch_action(outcome)
+            self.assertTrue(a.mark_done or a.mark_failed,
+                            f"dispatch_action('{outcome}') must set mark_done or mark_failed")
 
 
 if __name__ == "__main__":
