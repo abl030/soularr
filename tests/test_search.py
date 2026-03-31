@@ -111,6 +111,7 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_long_title_caps_tokens(self):
         q = build_query("Animal Collective", "Merriweather Post Pavilion")
+        assert q is not None
         # Artist: *nimal *ollective
         # Title: Merriweather Post Pavilion
         # Total: 5 tokens, cap at 4 → drop "Post" (shortest)
@@ -120,6 +121,7 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_punctuation_stripped(self):
         q = build_query("P!nk", "Can't Get Enough")
+        assert q is not None
         # P!nk → "P nk" after stripping → tokens ["P", "nk"]
         # strip_short_tokens: both <=2, keep originals → ["P", "nk"]
         # wildcard: "P" dropped (single char), "nk" → "*k"
@@ -128,6 +130,7 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_short_tokens_in_artist_dropped(self):
         q = build_query("A Tribe Called Quest", "The Low End Theory")
+        assert q is not None
         # "A" stripped as short token from artist
         # Artist tokens: Tribe Called Quest → *ribe *alled *uest
         # Title tokens: The Low End Theory → "The", "Low", "End", "Theory"
@@ -142,12 +145,14 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_kanye(self):
         q = build_query("Kanye West", "My Beautiful Dark Twisted Fantasy")
+        assert q is not None
         self.assertIn("*anye", q)
         self.assertEqual(len(q.split()), 4)  # capped
         # "*est" gets dropped as shortest token during cap — that's fine
 
     def test_single_word_title(self):
         q = build_query("Beyoncé", "Lemonade")
+        assert q is not None
         # Beyoncé → strip special (é stays, it's not in the regex)
         # → *eyoncé Lemonade
         self.assertIn("*eyoncé", q)
@@ -159,6 +164,7 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_self_titled_dedup(self):
         q = build_query("The Castiles", "The Castiles Live (Vol. 1)")
+        assert q is not None
         # "Castiles" from title should be dropped (duplicate of artist)
         # "The" from title also dropped (duplicate)
         self.assertNotIn("Castiles", q.replace("*astiles", ""))
@@ -173,11 +179,13 @@ class TestBuildQuery(unittest.TestCase):
 
     def test_various_artists_dropped(self):
         q = build_query("Various Artists", "Shelflife Collection")
+        assert q is not None
         self.assertEqual(q, "Shelflife Collection")
         self.assertNotIn("*arious", q)
 
     def test_no_prepend(self):
         q = build_query("The Beatles", "Abbey Road", prepend_artist=False)
+        assert q is not None
         self.assertEqual(q, "Abbey Road")
         self.assertNotIn("*eatles", q)
 

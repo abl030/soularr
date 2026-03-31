@@ -108,6 +108,7 @@ class EphemeralPostgres:
             return
         self._started = False
 
+        assert self.tmpdir is not None
         datadir = os.path.join(self.tmpdir, "data")
         subprocess.run(
             ["pg_ctl", "-D", datadir, "-m", "immediate", "stop"],

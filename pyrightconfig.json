@@ -1,5 +1,5 @@
 {
-  "extraPaths": ["lib"],
+  "extraPaths": ["lib", "harness", "scripts"],
   "pythonVersion": "3.13",
   "reportMissingImports": "error"
 }

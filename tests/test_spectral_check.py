@@ -22,12 +22,16 @@ class TestParseRmsFromStat(unittest.TestCase):
             "RMS     amplitude:     0.170998\n"
             "Maximum delta:         0.816424\n"
         )
-        self.assertAlmostEqual(parse_rms_from_stat(stderr), 0.170998, places=6)
+        result = parse_rms_from_stat(stderr)
+        assert result is not None
+        self.assertAlmostEqual(result, 0.170998, places=6)
 
     def test_parse_very_small_rms(self):
         from spectral_check import parse_rms_from_stat
         stderr = "RMS     amplitude:     0.000003\n"
-        self.assertAlmostEqual(parse_rms_from_stat(stderr), 0.000003, places=9)
+        result = parse_rms_from_stat(stderr)
+        assert result is not None
+        self.assertAlmostEqual(result, 0.000003, places=9)
 
     def test_parse_missing_rms_returns_none(self):
         from spectral_check import parse_rms_from_stat
@@ -89,7 +93,7 @@ class TestGradientCalculation(unittest.TestCase):
             else:
                 slices.append({"freq": freq, "db": -90.0})  # -60 dB/kHz
         result = detect_cliff(slices, threshold_db_per_khz=-12, min_slices=2, slice_width_hz=500)
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertGreaterEqual(result, 15500)
         self.assertLessEqual(result, 16500)
 

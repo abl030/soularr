@@ -61,6 +61,19 @@ class TestImportResultConstruction(unittest.TestCase):
         self.assertIsNone(p.beets_id)
         self.assertIsNone(p.track_count)
         self.assertIsNone(p.imported_path)
+        self.assertFalse(p.disambiguated)
+
+    def test_postflight_disambiguated_roundtrip(self):
+        """disambiguated field survives JSON round-trip."""
+        r = ImportResult(
+            postflight=PostflightInfo(
+                beets_id=42, track_count=11,
+                imported_path="/Beets/Artist/Album [CAD 3X03]",
+                disambiguated=True))
+        j = r.to_json()
+        r2 = ImportResult.from_json(j)
+        self.assertTrue(r2.postflight.disambiguated)
+        self.assertEqual(r2.postflight.imported_path, "/Beets/Artist/Album [CAD 3X03]")
 
     def test_full_construction(self):
         r = ImportResult(

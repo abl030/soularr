@@ -136,6 +136,7 @@ flags:
 
     def _wait_for_api(self, timeout=30):
         """Wait for slskd HTTP API to respond."""
+        assert self.api_key is not None
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -154,6 +155,7 @@ flags:
 
     def wait_for_soulseek(self, timeout=60):
         """Wait for Soulseek network connection (logged in)."""
+        assert self.api_key is not None
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:

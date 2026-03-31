@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import conftest  # noqa: F401
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+_scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
+sys.path.insert(0, os.path.abspath(_scripts_dir))
 import pipeline_cli
 
 TEST_DSN = os.environ.get("TEST_DB_DSN")
@@ -60,7 +61,7 @@ class TestCmdAdd(unittest.TestCase):
         pipeline_cli.cmd_add(self.db, args)
 
         req = self.db.get_request_by_mb_release_id("44438bf9-26d9-4460-9b4f-1a1b015e37a1")
-        self.assertIsNotNone(req)
+        assert req is not None
         self.assertEqual(req["artist_name"], "Buke and Gase")
         self.assertEqual(req["album_title"], "Riposte")
         self.assertEqual(req["year"], 2014)
@@ -116,6 +117,7 @@ class TestCmdRetry(unittest.TestCase):
         args = MagicMock(id=req_id)
         pipeline_cli.cmd_retry(self.db, args)
         req = self.db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["status"], "wanted")
 
 
@@ -132,6 +134,7 @@ class TestCmdCancel(unittest.TestCase):
         args = MagicMock(id=req_id)
         pipeline_cli.cmd_cancel(self.db, args)
         req = self.db.get_request(req_id)
+        assert req is not None
         self.assertEqual(req["status"], "manual")
 
 

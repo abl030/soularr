@@ -493,6 +493,7 @@ class TestVerifiedLosslessOverride(unittest.TestCase):
     def test_quiet_v0_rejected_without_verified(self):
         """Quiet V0 below 210kbps should REQUEUE without verified_lossless."""
         a = self._get_analysis("18_genuine_v0_quiet")
+        assert a is not None
         if a.min_bitrate_kbps and a.min_bitrate_kbps < QUALITY_MIN_BITRATE_KBPS:
             decision = _call_quality_gate(
                 a.min_bitrate_kbps, a.is_cbr,
@@ -502,6 +503,7 @@ class TestVerifiedLosslessOverride(unittest.TestCase):
     def test_quiet_v0_accepted_with_verified(self):
         """Quiet V0 below 210kbps should ACCEPT with verified_lossless=True."""
         a = self._get_analysis("18_genuine_v0_quiet")
+        assert a is not None
         if a.min_bitrate_kbps and a.min_bitrate_kbps < QUALITY_MIN_BITRATE_KBPS:
             decision = _call_quality_gate(
                 a.min_bitrate_kbps, a.is_cbr,
@@ -512,6 +514,7 @@ class TestVerifiedLosslessOverride(unittest.TestCase):
         """CBR 320 with verified_lossless should still ACCEPT (above threshold).
         The re-queue for FLAC only happens when NOT verified."""
         a = self._get_analysis("04_cbr_320")
+        assert a is not None
         decision = _call_quality_gate(
             a.min_bitrate_kbps, a.is_cbr,
             verified_lossless=True)
@@ -534,37 +537,44 @@ class TestSpectralDetection(unittest.TestCase):
 
     def test_genuine_flac_not_suspect(self):
         a = self._get_analysis("01_genuine_flac")
+        assert a is not None
         self.assertNotEqual(a.spectral_grade, "suspect",
                             f"Genuine FLAC flagged as suspect (pct={a.spectral_suspect_pct:.0f}%)")
 
     def test_fake_flac_128_detected(self):
         a = self._get_analysis("09_fake_flac_128")
+        assert a is not None
         self.assertIn(a.spectral_grade, ("suspect", "likely_transcode"),
                       f"128k fake FLAC not detected: grade={a.spectral_grade}")
 
     def test_fake_flac_96_detected(self):
         a = self._get_analysis("10_fake_flac_96")
+        assert a is not None
         self.assertIn(a.spectral_grade, ("suspect", "likely_transcode"),
                       f"96k fake FLAC not detected: grade={a.spectral_grade}")
 
     def test_fake_flac_128_bitrate_estimate(self):
         a = self._get_analysis("09_fake_flac_128")
+        assert a is not None
         if a.spectral_bitrate is not None:
             self.assertLessEqual(a.spectral_bitrate, 160,
                                  f"128k fake estimated too high: {a.spectral_bitrate}")
 
     def test_fake_flac_96_bitrate_estimate(self):
         a = self._get_analysis("10_fake_flac_96")
+        assert a is not None
         if a.spectral_bitrate is not None:
             self.assertLessEqual(a.spectral_bitrate, 128,
                                  f"96k fake estimated too high: {a.spectral_bitrate}")
 
     def test_genuine_v0_not_suspect(self):
         a = self._get_analysis("02_genuine_v0")
+        assert a is not None
         self.assertNotEqual(a.spectral_grade, "suspect")
 
     def test_gold_standard_not_suspect(self):
         a = self._get_analysis("22_gold_standard_v0")
+        assert a is not None
         self.assertNotEqual(a.spectral_grade, "suspect")
 
 

@@ -24,7 +24,8 @@ if not TEST_DSN and shutil.which("initdb") and shutil.which("pg_ctl"):
         _pg = EphemeralPostgres()
         _pg.start()
         TEST_DSN = _pg.dsn
-        os.environ["TEST_DB_DSN"] = TEST_DSN
+        if TEST_DSN is not None:
+            os.environ["TEST_DB_DSN"] = TEST_DSN
     except Exception as e:
         print(f"[WARN] Could not start ephemeral PostgreSQL: {e}", file=sys.stderr)
         _pg = None
@@ -44,9 +45,12 @@ if not os.environ.get("SLSKD_TEST_HOST") and os.path.exists(CREDS_FILE) and shut
         from ephemeral_slskd import EphemeralSlskd
         _slskd = EphemeralSlskd(CREDS_FILE)
         _slskd.start()
-        os.environ["SLSKD_TEST_HOST"] = _slskd.host_url
-        os.environ["SLSKD_TEST_API_KEY"] = _slskd.api_key
-        os.environ["SLSKD_TEST_DOWNLOAD_DIR"] = _slskd.download_dir
+        if _slskd.host_url is not None:
+            os.environ["SLSKD_TEST_HOST"] = _slskd.host_url
+        if _slskd.api_key is not None:
+            os.environ["SLSKD_TEST_API_KEY"] = _slskd.api_key
+        if _slskd.download_dir is not None:
+            os.environ["SLSKD_TEST_DOWNLOAD_DIR"] = _slskd.download_dir
         # Wait for Soulseek connection (needed for search tests)
         if _slskd.wait_for_soulseek(timeout=60):
             print(f"[INFO] Ephemeral slskd connected to Soulseek on port {_slskd.port}", file=sys.stderr)

@@ -22,6 +22,8 @@ def _extract_verify_filetype():
     else:
         raise RuntimeError("verify_filetype not found in soularr.py")
 
+    assert func_source is not None, "Could not extract source for verify_filetype"
+
     # Create a minimal module with a logger stub
     import logging
     ns = {"logger": logging.getLogger("test"), "logging": logging}

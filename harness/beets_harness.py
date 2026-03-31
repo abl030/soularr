@@ -20,7 +20,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-from beets import config, library, plugins
+from beets import config, library, plugins  # type: ignore[attr-defined]
 from beets.importer.session import ImportSession
 from beets.importer.tasks import Action
 from beets.ui import get_path_formats, get_replacements
@@ -213,8 +213,8 @@ class HarnessImportSession(ImportSession):
             "task_id": task_id,
             "path": _path_str(task.paths[0]) if task.paths else "",
             "cur_artist": getattr(task, "cur_artist", "") or "",
-            "cur_title": getattr(task.item, "title", "") if hasattr(task, "item") else "",
-            "item": _serialize_item(task.item) if hasattr(task, "item") else {},
+            "cur_title": getattr(getattr(task, "item", None), "title", "") if hasattr(task, "item") else "",
+            "item": _serialize_item(getattr(task, "item")) if hasattr(task, "item") else {},
             "recommendation": task.rec.name if task.rec else "none",
             "candidate_count": len(task.candidates),
             "candidates": [
