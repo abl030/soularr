@@ -44,6 +44,8 @@ def _populate_dl_info_from_import_result(dl_info: DownloadInfo,
     dl_info.spectral_grade = spec.grade
     dl_info.spectral_bitrate = spec.bitrate
     dl_info.existing_spectral_bitrate = spec.existing_bitrate
+    if qual.prev_min_bitrate is not None:
+        dl_info.existing_min_bitrate = qual.prev_min_bitrate
     dl_info.verified_lossless_override = ir.quality.will_be_verified_lossless
     dl_info.import_result = ir.to_json()
 
