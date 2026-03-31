@@ -29,7 +29,8 @@ Beets (v2.5.1, Nix-managed on doc1) is the library's source of truth — it matc
 ## Repository Structure
 
 ```
-soularr.py              — Main Soularr script (search, download, import orchestration)
+soularr.py              — Search, match, enqueue logic + main(). Thin wrappers delegate
+                           to lib/ modules for download processing and utilities.
 album_source.py         — AlbumRecord, DatabaseSource abstraction
 config.ini              — Config template (not used in production — Nix generates it)
 web/
@@ -40,7 +41,12 @@ lib/
   beets.py              — Beets validation (dry-run import via harness, returns ValidationResult)
   beets_db.py           — BeetsDB: read-only beets SQLite queries (AlbumInfo dataclass)
   config.py             — SoularrConfig dataclass (typed config from config.ini)
+  context.py            — SoularrContext dataclass (replaces module globals for extracted functions)
+  download.py           — Download monitoring, completion processing, spectral context
+                           gathering, slskd transfer helpers. All functions accept ctx.
   grab_list.py          — GrabList: wanted-album selection with priority/ordering
+  import_dispatch.py    — Auto-import decision tree: runs import_one.py, dispatches on
+                           ImportResult (upgrade/downgrade/transcode). Quality gate.
   pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema, get_download_log_entry)
   quality.py            — Pure decision functions + typed dataclasses:
                            Decision functions:
@@ -57,6 +63,9 @@ lib/
                            - DownloadInfo, SpectralContext
   search.py             — Search query building and normalization
   spectral_check.py     — Spectral analysis (sox-based transcode detection)
+  util.py               — Pure utilities: sanitize_folder_name, move_failed_import,
+                           audio validation, track title cross-check, beets/meelo
+                           wrappers, denylist helpers, logging setup
 harness/
   beets_harness.py      — Beets interactive import harness (JSON protocol over stdin/stdout)
                            Serializes full AlbumMatch: distance breakdown, track mapping,
@@ -74,10 +83,13 @@ tests/                     635 tests total
   test_beets_db.py           — 17 tests for BeetsDB queries
   test_beets_validation.py   — 19 tests for beets validation
   test_config.py             — 42 tests for SoularrConfig
+  test_context.py            — tests for SoularrContext dataclass
   test_disambiguation.py     — 7 tests for beets disambiguation (import_one path resolution)
+  test_download.py           — 28 tests for lib/download.py (transfer helpers, spectral, monitoring)
   test_grab_list.py          — 60 tests for GrabList
   test_import_dispatch.py    — 18 tests for import dispatch (incl. override computation)
   test_import_result.py      — 35 tests for ImportResult, DownloadInfo, JSON parsing
+  test_integration.py        — 20 tests for full search→enqueue→download flow (mocked slskd)
   test_force_import.py       — 12 tests for force-import (CLI, DB, --force flag, path resolution)
   test_pipeline_cli.py       — 7 tests for CLI
   test_pipeline_db.py        — 35 tests for PipelineDB
@@ -86,6 +98,8 @@ tests/                     635 tests total
   test_search.py             — 32 tests for search query building
   test_slskd_live.py         — 5 tests for live slskd integration (ephemeral Docker)
   test_spectral_check.py     — 39 tests for spectral analysis
+  test_track_crosscheck.py   — 15 tests (track title cross-check)
+  test_util.py               — tests for lib/util.py (move_failed_import, sanitize, etc.)
   test_validation_result.py  — 27 tests for ValidationResult, CandidateSummary, harness types
   test_web_recents.py        — 72 tests for recents tab classification (LogEntry, ClassifiedEntry)
   test_web_server.py         — 15 tests for HTTP endpoints (mocked DB, real server)
