@@ -921,79 +921,92 @@ def search_and_queue(albums):
 
 
 def _search_and_queue_parallel(albums):
-    """Search albums in sliding-window batches of 2.
+    """Pipeline searches with result processing: always 2 searches in flight.
 
     slskd constraints (from source code):
     - SemaphoreSlim(1,1) on POST /searches: one submission at a time
     - maximumConcurrentSearches=2 in Soulseek.NET: only 2 active on network
 
-    Submitting all 16 at once means 14 queue behind 2, and our timeout fires
-    before queued searches even start. Instead: submit 2, wait for both,
-    process results, submit next 2. Wall time = ceil(N/2) * search_time.
+    We keep 2 searches running on the network at all times. When one completes,
+    we process its results (browse dirs, match tracks, enqueue) AND submit the
+    next search — so network wait and result processing overlap.
+
+    Timeline:
+      search_1 ─────────> process_1    search_5 ──────> process_5 ...
+      search_2 ─────────> process_2    search_6 ──────> ...
+        search_3 ─────────> process_3
+        search_4 ─────────> process_4
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    BATCH_SIZE = 2  # matches slskd maximumConcurrentSearches
+    MAX_INFLIGHT = 2  # matches slskd maximumConcurrentSearches
 
     grab_list: dict[Any, Any] = {}
     failed_grab: list[Any] = []
     failed_search: list[Any] = []
     total = len(albums)
+    album_queue = list(albums)  # mutable copy we pop from
 
-    logger.info(f"Parallel search: {total} albums in batches of {BATCH_SIZE}")
+    logger.info(f"Pipelined search: {total} albums, {MAX_INFLIGHT} in flight")
     wall_start = time.time()
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        batch = albums[batch_start:batch_start + BATCH_SIZE]
-        batch_num = batch_start // BATCH_SIZE + 1
-        total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
-        logger.info(f"Batch {batch_num}/{total_batches}: submitting {len(batch)} searches")
-
-        # Submit this batch
-        pending: list[tuple[Any, str, str, int]] = []
-        for album in batch:
+    def _submit_next() -> tuple[Any, Any] | None:
+        """Submit the next album from the queue. Returns (future, album) or None."""
+        while album_queue:
+            album = album_queue.pop(0)
             result = _submit_search(album, cfg, slskd)
             if result is None:
                 failed_search.append(album)
-            else:
-                search_id, query, album_id = result
-                pending.append((album, search_id, query, album_id))
+                continue
+            search_id, query, album_id = result
+            future = pool.submit(
+                _collect_search_results, search_id, query, album_id, cfg, slskd
+            )
+            return (future, album)
+        return None
 
-        if not pending:
-            continue
+    with ThreadPoolExecutor(max_workers=MAX_INFLIGHT) as pool:
+        # Seed the pipeline with initial searches
+        inflight: dict[Any, Any] = {}
+        for _ in range(min(MAX_INFLIGHT, len(album_queue))):
+            submitted = _submit_next()
+            if submitted:
+                future, album = submitted
+                inflight[future] = album
 
-        # Collect this batch in parallel
-        with ThreadPoolExecutor(max_workers=len(pending)) as pool:
-            futures: dict[Any, Any] = {}
-            for album, search_id, query, album_id in pending:
-                future = pool.submit(
-                    _collect_search_results, search_id, query, album_id, cfg, slskd
-                )
-                futures[future] = album
-
-            for future in as_completed(futures):
-                album = futures[future]
+        # Process completions and refill the pipeline
+        while inflight:
+            for future in as_completed(inflight):
+                album = inflight.pop(future)
                 try:
                     result = future.result()
                 except Exception:
                     logger.exception(f"Search collection crashed for {album['title']}")
                     failed_search.append(album)
-                    continue
-
-                done_count = len(grab_list) + len(failed_grab) + len(failed_search)
-                logger.info(
-                    f"Search {done_count + 1}/{total} done: {result.query} "
-                    f"({result.result_count} results, {result.elapsed_s:.1f}s)"
-                )
-                if result.success:
-                    _merge_search_result(result)
-                    if not find_download(album, grab_list):
-                        failed_grab.append(album)
                 else:
-                    failed_search.append(album)
+                    done_count = len(grab_list) + len(failed_grab) + len(failed_search)
+                    logger.info(
+                        f"Search {done_count + 1}/{total} done: {result.query} "
+                        f"({result.result_count} results, {result.elapsed_s:.1f}s)"
+                    )
+                    if result.success:
+                        _merge_search_result(result)
+                        if not find_download(album, grab_list):
+                            failed_grab.append(album)
+                    else:
+                        failed_search.append(album)
+
+                # Refill: submit next search to keep pipeline full
+                submitted = _submit_next()
+                if submitted:
+                    new_future, new_album = submitted
+                    inflight[new_future] = new_album
+
+                # Break out of the as_completed loop to re-enter with updated dict
+                break
 
     wall_elapsed = time.time() - wall_start
-    logger.info(f"Parallel search complete: {total} albums in {wall_elapsed:.1f}s "
+    logger.info(f"Pipelined search complete: {total} albums in {wall_elapsed:.1f}s "
                 f"(found={len(grab_list)}, no_match={len(failed_grab)}, "
                 f"no_results={len(failed_search)})")
 
