@@ -1296,28 +1296,74 @@ async function loadDecisions() {
   } catch (e) { el.innerHTML = '<div class="loading">Failed to load</div>'; }
 }
 
-function renderDiagram(tree) {
+function renderStage(s, consts) {
   const colorCls = c => c === 'green' ? 'dp-out-green' : c === 'red' ? 'dp-out-red' : 'dp-out-amber';
+  // Replace {CONSTANT} placeholders with actual values
+  function sub(text) {
+    return text.replace(/\{(\w+)\}/g, (_, k) => consts[k] != null ? consts[k] : k);
+  }
+  let html = `<div class="dp-stage">
+    <div class="dp-stage-hdr">
+      <span class="dp-stage-title">${s.title}</span>
+      <span class="dp-stage-fn">${s.function}</span>
+    </div>
+    <div class="dp-stage-when">${s.when}</div>`;
+  for (const r of s.rules) {
+    html += `<div class="dp-rule">
+      <span class="dp-rule-cond">${sub(r.condition)}</span>
+      <span class="dp-rule-result ${colorCls(r.color)}">\u2192 ${sub(r.result)}</span>
+    </div>`;
+    if (r.effect) html += `<div class="dp-rule"><span class="dp-rule-cond"></span><span class="dp-rule-effect">${r.effect}</span></div>`;
+  }
+  if (s.note) html += `<div class="dp-note">${sub(s.note)}</div>`;
+  html += '</div>';
+  return html;
+}
+
+function renderDiagram(tree) {
+  const consts = tree.constants;
+  const stages = tree.stages;
+  const paths = tree.paths || [];
+  const labels = tree.path_labels || {};
+
+  // Split stages by path
+  const byPath = {};
+  const shared = [];
+  for (const s of stages) {
+    if (s.path === 'shared') { shared.push(s); continue; }
+    if (!byPath[s.path]) byPath[s.path] = [];
+    byPath[s.path].push(s);
+  }
+
   let html = '';
-  for (let i = 0; i < tree.stages.length; i++) {
-    const s = tree.stages[i];
-    if (i > 0) html += '<div class="dp-arrow">\u2502</div>';
-    html += `<div class="dp-stage">
-      <div class="dp-stage-hdr">
-        <span class="dp-stage-title">${s.title}</span>
-        <span class="dp-stage-fn">${s.function}</span>
-      </div>
-      <div class="dp-stage-when">${s.when}</div>`;
-    for (const r of s.rules) {
-      html += `<div class="dp-rule">
-        <span class="dp-rule-cond">${r.condition}</span>
-        <span class="dp-rule-result ${colorCls(r.color)}">\u2192 ${r.result}</span>
-      </div>`;
-      if (r.effect) html += `<div class="dp-rule"><span class="dp-rule-cond"></span><span class="dp-rule-effect">${r.effect}</span></div>`;
+
+  // Render branching paths side by side
+  if (paths.length > 0) {
+    html += '<div style="display:flex;gap:12px;margin-bottom:4px;">';
+    for (const p of paths) {
+      const pStages = byPath[p] || [];
+      html += '<div style="flex:1;">';
+      html += `<div style="text-align:center;font-size:0.85em;font-weight:600;color:#888;margin-bottom:6px;">${labels[p] || p}</div>`;
+      for (let i = 0; i < pStages.length; i++) {
+        if (i > 0) html += '<div class="dp-arrow">\u2502</div>';
+        html += renderStage(pStages[i], consts);
+      }
+      html += '</div>';
     }
-    if (s.note) html += `<div class="dp-note">${s.note}</div>`;
     html += '</div>';
   }
+
+  // Merge arrow
+  if (paths.length > 0 && shared.length > 0) {
+    html += '<div class="dp-arrow">\u2502</div>';
+  }
+
+  // Render shared stages
+  for (let i = 0; i < shared.length; i++) {
+    if (i > 0) html += '<div class="dp-arrow">\u2502</div>';
+    html += renderStage(shared[i], consts);
+  }
+
   return html;
 }
 

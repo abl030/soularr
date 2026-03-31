@@ -512,15 +512,17 @@ class TestFullPipelineContract(unittest.TestCase):
         """Decision tree must have the expected stages in order."""
         tree = get_decision_tree()
         ids = [s["id"] for s in tree["stages"]]
-        self.assertEqual(ids, ["spectral", "transcode", "verified_lossless",
-                               "import_decision", "quality_gate"])
+        self.assertEqual(ids, ["flac_spectral", "flac_convert", "transcode",
+                               "verified_lossless", "mp3_spectral",
+                               "mp3_vbr_note", "import_decision",
+                               "quality_gate"])
 
     def test_decision_tree_outcomes_match_valid_values(self):
         """Outcomes declared in the tree must match what the contract allows."""
         tree = get_decision_tree()
         stage_map = {s["id"]: s for s in tree["stages"]}
-        # spectral stage outcomes must be subset of VALID_STAGE1
-        spectral_outcomes = set(stage_map["spectral"]["outcomes"])
+        # mp3_spectral stage outcomes must be subset of VALID_STAGE1
+        spectral_outcomes = set(stage_map["mp3_spectral"]["outcomes"])
         self.assertTrue(spectral_outcomes <= (VALID_STAGE1 - {None}),
                         f"Tree spectral outcomes {spectral_outcomes} not in {VALID_STAGE1}")
         # import_decision outcomes must be subset of VALID_STAGE2
@@ -547,6 +549,14 @@ class TestFullPipelineContract(unittest.TestCase):
         for stage in tree["stages"]:
             self.assertTrue(len(stage["rules"]) > 0,
                             f"Stage {stage['id']} has no rules")
+
+    def test_decision_tree_every_stage_has_path(self):
+        """Every stage must declare a path for the branching diagram."""
+        tree = get_decision_tree()
+        valid_paths = set(tree["paths"]) | {"shared"}
+        for stage in tree["stages"]:
+            self.assertIn(stage.get("path"), valid_paths,
+                          f"Stage {stage['id']} has invalid path")
 
 
 if __name__ == "__main__":
