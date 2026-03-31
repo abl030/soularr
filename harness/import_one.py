@@ -136,7 +136,12 @@ def convert_flac_to_v0(album_path, dry_run=False):
 # ---------------------------------------------------------------------------
 
 def run_import(path, mb_release_id):
-    """Drive the beets harness to import one album. Returns exit code."""
+    """Drive the beets harness to import one album.
+
+    Returns (exit_code, beets_lines, kept_duplicate) where kept_duplicate
+    is True if we told beets to keep a different edition during duplicate
+    resolution (triggers post-import `beet move` for %aunique disambiguation).
+    """
     cmd = [HARNESS, "--noincremental", "--search-id", mb_release_id, path]
     print(f"  [HARNESS] {' '.join(cmd)}", file=sys.stderr)
 
@@ -150,6 +155,7 @@ def run_import(path, mb_release_id):
     assert proc.stderr is not None
 
     applied = False
+    kept_duplicate = False
     timeout = HARNESS_TIMEOUT
 
     try:
@@ -159,7 +165,7 @@ def run_import(path, mb_release_id):
                 print(f"  [TIMEOUT] No output for {timeout}s", file=sys.stderr)
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 proc.wait()
-                return 2
+                return 2, [], False
 
             line = proc.stdout.readline()
             if not line:
@@ -193,9 +199,13 @@ def run_import(path, mb_release_id):
                     proc.stdin.flush()
                     print(f"  [DUP] Same MBID in library, removing stale entry", file=sys.stderr)
                 else:
-                    # Different edition of same album — keep both, let %aunique{} disambiguate.
+                    # Different edition of same album — keep both.
+                    # NOTE: beets %aunique{} does NOT fully disambiguate at
+                    # import time (the new album gets "" if its disambiguator
+                    # field is empty). We run `beet move` post-import to fix.
                     proc.stdin.write(json.dumps({"action": "keep"}) + "\n")
                     proc.stdin.flush()
+                    kept_duplicate = True
                     print(f"  [DUP] Different edition (existing: {dup_mbids}), keeping both", file=sys.stderr)
 
             elif msg_type in ("choose_match", "choose_item"):
@@ -216,7 +226,7 @@ def run_import(path, mb_release_id):
                           file=sys.stderr)
                     if proc.poll() is None:
                         proc.wait()
-                    return 4
+                    return 4, [], False
 
                 cand = candidates[matched_idx]
                 dist = cand.get("distance", 1.0)
@@ -227,7 +237,7 @@ def run_import(path, mb_release_id):
                     print(f"  [REJECT] distance={dist:.4f} > {MAX_DISTANCE}", file=sys.stderr)
                     if proc.poll() is None:
                         proc.wait()
-                    return 2
+                    return 2, [], False
 
                 proc.stdin.write(json.dumps({"action": "apply", "candidate_index": matched_idx}) + "\n")
                 proc.stdin.flush()
@@ -249,7 +259,7 @@ def run_import(path, mb_release_id):
                 print(f"  [BEETS] {line}", file=sys.stderr)
                 beets_lines.append(line.strip())
 
-    return (0 if applied else 2), beets_lines
+    return (0 if applied else 2), beets_lines, kept_duplicate
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +410,8 @@ def main():
     # --- Transcode detection ---
     post_conv_br = _get_folder_min_bitrate(args.path) if converted > 0 else None
     r.quality.post_conversion_min_bitrate = post_conv_br
-    is_transcode = transcode_detection(converted, post_conv_br)
+    is_transcode = transcode_detection(converted, post_conv_br,
+                                       spectral_grade=r.spectral.grade)
     r.quality.is_transcode = is_transcode
     if is_transcode:
         _log(f"[TRANSCODE] converted FLAC min bitrate {post_conv_br}kbps "
@@ -459,7 +470,7 @@ def main():
 
     # --- Import ---
     _log(f"[IMPORT] {args.path} → beets (mbid={mbid})")
-    rc, beets_lines = run_import(args.path, mbid)
+    rc, beets_lines, kept_duplicate = run_import(args.path, mbid)
     r.beets_log = beets_lines
 
     if rc != 0:
@@ -485,6 +496,34 @@ def main():
     album_path = pf_info.album_path
     _log(f"[POST-FLIGHT OK] mbid={mbid}, beets_id={pf_info.album_id}, "
          f"tracks={pf_info.track_count}, path={album_path}")
+
+    # --- Post-import %aunique disambiguation ---
+    # When beets kept a different edition during duplicate resolution,
+    # %aunique doesn't fully disambiguate at import time (the new album
+    # gets no disambiguator if its field value is empty). Running
+    # `beet move` re-evaluates all editions and fixes the paths.
+    if kept_duplicate:
+        _log(f"[DISAMBIGUATE] Running beet move for album id:{pf_info.album_id}")
+        move_result = subprocess.run(
+            ["beet", "move", f"mb_albumid:{mbid}"],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "HOME": "/home/abl030"},
+        )
+        if move_result.returncode == 0:
+            # Re-read path from beets DB — it may have changed
+            pf_info_after = beets.get_album_info(mbid)
+            if pf_info_after:
+                new_path = pf_info_after.album_path
+                if new_path != album_path:
+                    _log(f"  [DISAMBIGUATE] Path changed: {album_path} → {new_path}")
+                    album_path = new_path
+                    r.postflight.imported_path = new_path
+                else:
+                    _log(f"  [DISAMBIGUATE] Path unchanged (already unique)")
+            r.postflight.disambiguated = True
+        else:
+            _log(f"  [DISAMBIGUATE] beet move failed (rc={move_result.returncode}): "
+                 f"{move_result.stderr[:200]}")
 
     # --- Post-import extension check ---
     # Detect .bak files (known bug: track 01 sometimes renamed to .bak during import)

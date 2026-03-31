@@ -216,6 +216,67 @@ class TestDatabaseSource(unittest.TestCase):
         self.assertEqual(req["on_disk_spectral_grade"], "suspect")
         self.assertEqual(req["on_disk_spectral_bitrate"], 160)
 
+    def test_mark_done_override_false_prevents_verified_lossless(self):
+        """import_one says will_be_verified_lossless=False — mark_done must not
+        set verified_lossless=True even if is_verified_lossless() would."""
+        from lib.quality import DownloadInfo
+        source, db = self._make_source()
+        req_id = db.add_request(
+            mb_release_id="vl-override-uuid", artist_name="The National",
+            album_title="The Virginia EP", source="request")
+        record = _make_record(db_request_id=req_id, db_source="request")
+        bv_result = {"valid": True, "distance": 0.025, "scenario": "strong_match"}
+        dl = DownloadInfo()
+        dl.was_converted = True
+        dl.original_filetype = "flac"
+        dl.spectral_grade = "genuine"  # is_verified_lossless() would return True
+        dl.verified_lossless_override = False  # but import_one says no
+        source.mark_done(record, bv_result, dest_path="/Incoming/A/B",
+                         download_info=dl)
+        req = db.get_request(req_id)
+        assert req is not None
+        self.assertFalse(req.get("verified_lossless", False))
+
+    def test_mark_done_override_true_sets_verified_lossless(self):
+        """import_one says will_be_verified_lossless=True — sets it."""
+        from lib.quality import DownloadInfo
+        source, db = self._make_source()
+        req_id = db.add_request(
+            mb_release_id="vl-true-uuid", artist_name="A",
+            album_title="B", source="request")
+        record = _make_record(db_request_id=req_id, db_source="request")
+        bv_result = {"valid": True, "distance": 0.05, "scenario": "strong_match"}
+        dl = DownloadInfo()
+        dl.was_converted = True
+        dl.original_filetype = "flac"
+        dl.spectral_grade = "genuine"
+        dl.verified_lossless_override = True
+        source.mark_done(record, bv_result, dest_path="/Incoming/A/B",
+                         download_info=dl)
+        req = db.get_request(req_id)
+        assert req is not None
+        self.assertTrue(req["verified_lossless"])
+
+    def test_mark_done_no_override_falls_back(self):
+        """No override (legacy path) — derives from is_verified_lossless()."""
+        from lib.quality import DownloadInfo
+        source, db = self._make_source()
+        req_id = db.add_request(
+            mb_release_id="vl-fallback-uuid", artist_name="A",
+            album_title="B", source="request")
+        record = _make_record(db_request_id=req_id, db_source="request")
+        bv_result = {"valid": True, "distance": 0.05, "scenario": "strong_match"}
+        dl = DownloadInfo()
+        dl.was_converted = True
+        dl.original_filetype = "flac"
+        dl.spectral_grade = "genuine"
+        # No verified_lossless_override set
+        source.mark_done(record, bv_result, dest_path="/Incoming/A/B",
+                         download_info=dl)
+        req = db.get_request(req_id)
+        assert req is not None
+        self.assertTrue(req["verified_lossless"])
+
     def test_get_denylisted_users(self):
         source, db = self._make_source()
         req_id = db.add_request(

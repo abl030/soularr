@@ -323,6 +323,7 @@ class PostflightInfo:
     track_count: Optional[int] = None
     imported_path: Optional[str] = None
     bad_extensions: list[str] = field(default_factory=list)  # files with non-audio extensions
+    disambiguated: bool = False  # True if beet move ran to fix %aunique paths
 
 
 @dataclass
@@ -473,7 +474,8 @@ def import_quality_decision(new_min_bitrate, existing_min_bitrate, override_min_
         return "import"
 
 
-def transcode_detection(converted_count, post_conversion_min_bitrate):
+def transcode_detection(converted_count, post_conversion_min_bitrate,
+                        spectral_grade=None):
     """Detect whether a FLAC→V0 conversion produced a transcode.
 
     Called in import_one.py after convert_flac_to_v0().
@@ -484,11 +486,20 @@ def transcode_detection(converted_count, post_conversion_min_bitrate):
     Inputs:
         converted_count:            number of FLAC files converted
         post_conversion_min_bitrate: min bitrate after conversion (kbps), or None
+        spectral_grade:             album spectral grade, or None if unavailable
     """
     if converted_count == 0:
         return False
     if post_conversion_min_bitrate is None:
         return False
+    # When spectral data is available, it's authoritative
+    if spectral_grade is not None:
+        # Cliff detected = transcode regardless of bitrate
+        if spectral_grade in ("suspect", "likely_transcode"):
+            return True
+        # No cliff = not a transcode (lo-fi lossless produces low V0 bitrates)
+        return False
+    # No spectral data — fall back to bitrate threshold
     return post_conversion_min_bitrate < TRANSCODE_MIN_BITRATE_KBPS
 
 
@@ -604,15 +615,21 @@ def get_decision_tree() -> dict[str, Any]:
                 "path": "flac",
                 "function": "transcode_detection",
                 "when": "After FLAC \u2192 V0 conversion",
-                "inputs": ["converted_count", "post_conversion_min_bitrate"],
+                "inputs": ["converted_count", "post_conversion_min_bitrate",
+                           "spectral_grade"],
                 "rules": [
-                    {"condition": f"post_conv_br < {TRANSCODE_MIN_BITRATE_KBPS}kbps",
-                     "result": "is_transcode = true", "color": "red"},
-                    {"condition": f"post_conv_br >= {TRANSCODE_MIN_BITRATE_KBPS}kbps",
-                     "result": "is_transcode = false", "color": "green"},
+                    {"condition": "spectral = suspect/likely_transcode",
+                     "result": "is_transcode = true", "color": "red",
+                     "effect": "cliff detected = transcode regardless of bitrate"},
+                    {"condition": "spectral = genuine/marginal",
+                     "result": "is_transcode = false", "color": "green",
+                     "effect": "no cliff = not transcode (lo-fi OK)"},
+                    {"condition": f"no spectral: post_conv_br < {TRANSCODE_MIN_BITRATE_KBPS}kbps",
+                     "result": "is_transcode = true", "color": "red",
+                     "effect": "fallback when spectral unavailable"},
                 ],
-                "note": "Lo-fi lossless (demos, live) can produce genuine "
-                        f"V0 below {TRANSCODE_MIN_BITRATE_KBPS}kbps",
+                "note": f"Spectral grade is authoritative when available. "
+                        f"Bitrate threshold ({TRANSCODE_MIN_BITRATE_KBPS}kbps) is fallback only",
             },
             {
                 "id": "verified_lossless",
@@ -797,7 +814,8 @@ def full_pipeline_decision(
     # --- Stage 2: Import decision ---
     if is_flac:
         # FLAC path: convert first, then decide
-        is_transcode = transcode_detection(converted_count, post_conversion_min_bitrate)
+        is_transcode = transcode_detection(converted_count, post_conversion_min_bitrate,
+                                           spectral_grade=spectral_grade)
         import_br = post_conversion_min_bitrate if post_conversion_min_bitrate else min_bitrate
 
         will_be_verified = (converted_count > 0 and not is_transcode)

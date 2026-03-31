@@ -191,9 +191,17 @@ def dispatch_import(album_data: Any, bv_result: Any, dest: str,
             cmd.extend(["--request-id", str(request_id)])
             try:
                 req = ctx.pipeline_db_source._get_db().get_request(request_id)
-                db_min_br = req.get("min_bitrate") if req else None
-                if db_min_br is not None:
-                    cmd.extend(["--override-min-bitrate", str(db_min_br)])
+                if req:
+                    db_min_br = req.get("min_bitrate")
+                    spectral_br = req.get("on_disk_spectral_bitrate")
+                    # Use spectral bitrate when available and lower — catches
+                    # fake 320s where container lies but spectral knows truth
+                    effective_br = db_min_br
+                    if spectral_br is not None and (effective_br is None
+                                                    or spectral_br < effective_br):
+                        effective_br = spectral_br
+                    if effective_br is not None:
+                        cmd.extend(["--override-min-bitrate", str(effective_br)])
             except Exception:
                 pass
         import_env = {**os.environ, "HOME": "/home/abl030"}

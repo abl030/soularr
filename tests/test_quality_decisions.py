@@ -209,6 +209,32 @@ class TestTranscodeDetection(unittest.TestCase):
     def test_just_below_threshold_is_transcode(self):
         self.assertTrue(transcode_detection(5, TRANSCODE_MIN_BITRATE_KBPS - 1))
 
+    # --- spectral grade override ---
+
+    def test_spectral_genuine_overrides_low_bitrate(self):
+        """Lo-fi lossless: genuine spectral + low V0 bitrate = NOT transcode."""
+        self.assertFalse(transcode_detection(12, 190, spectral_grade="genuine"))
+
+    def test_spectral_marginal_overrides_low_bitrate(self):
+        """Lo-fi lossless: marginal spectral (demos/live) = NOT transcode."""
+        self.assertFalse(transcode_detection(12, 190, spectral_grade="marginal"))
+
+    def test_spectral_suspect_is_transcode_even_above_threshold(self):
+        """Cliff detected: suspect grade = transcode even at high bitrate."""
+        self.assertTrue(transcode_detection(12, 240, spectral_grade="suspect"))
+
+    def test_spectral_likely_transcode_is_transcode(self):
+        self.assertTrue(transcode_detection(12, 240, spectral_grade="likely_transcode"))
+
+    def test_no_spectral_falls_back_to_threshold(self):
+        """No spectral data — use bitrate threshold (backward compat)."""
+        self.assertTrue(transcode_detection(12, 190, spectral_grade=None))
+        self.assertFalse(transcode_detection(12, 240, spectral_grade=None))
+
+    def test_spectral_no_conversion_still_false(self):
+        """Zero conversions = not transcode regardless of spectral."""
+        self.assertFalse(transcode_detection(0, 190, spectral_grade="suspect"))
+
 
 # ============================================================================
 # quality_gate_decision

@@ -167,8 +167,12 @@ class DatabaseSource:
             update_fields["spectral_bitrate"] = dl.spectral_bitrate
         if dl.spectral_grade:
             update_fields["spectral_grade"] = dl.spectral_grade
-        if is_verified_lossless(dl.was_converted, dl.original_filetype,
-                                dl.spectral_grade):
+        if dl.verified_lossless_override is not None:
+            # import_one.py computed this — trust it over re-derivation
+            if dl.verified_lossless_override:
+                update_fields["verified_lossless"] = True
+        elif is_verified_lossless(dl.was_converted, dl.original_filetype,
+                                  dl.spectral_grade):
             update_fields["verified_lossless"] = True
         # After successful import, these files ARE what's on disk now
         if dl.spectral_grade:

@@ -264,5 +264,69 @@ class TestDispatchImport(unittest.TestCase):
         ctx.pipeline_db_source.mark_failed.assert_called_once()
 
 
+class TestOverrideMinBitrate(unittest.TestCase):
+    """Test that --override-min-bitrate uses spectral when lower than container."""
+
+    def _get_override_value(self, db_request):
+        """Run dispatch_import with a mock DB request, return the override passed."""
+        from lib.import_dispatch import dispatch_import
+        album_data = _make_album_data()
+        ctx = _make_ctx()
+        db_mock = ctx.pipeline_db_source._get_db.return_value
+        db_mock.get_request.return_value = db_request
+        bv_result = _make_bv_result()
+        dl_info = DownloadInfo(filetype="mp3")
+        ir = _make_import_result(decision="import")
+
+        with patch("lib.import_dispatch.sp.run") as mock_run, \
+             patch("lib.import_dispatch._cleanup_staged_dir"), \
+             patch("lib.import_dispatch.trigger_meelo_scan"), \
+             patch("lib.import_dispatch._check_quality_gate"), \
+             patch("lib.import_dispatch.parse_import_result", return_value=ir):
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr="")
+            dispatch_import(album_data, bv_result, "/tmp/dest", dl_info,
+                            42, ctx)
+            cmd = mock_run.call_args[0][0]
+
+        # Find --override-min-bitrate value in cmd
+        for i, arg in enumerate(cmd):
+            if arg == "--override-min-bitrate" and i + 1 < len(cmd):
+                return int(cmd[i + 1])
+        return None
+
+    def test_uses_spectral_when_lower(self):
+        """Container says 320, spectral says 128 — should pass 128."""
+        val = self._get_override_value({
+            "min_bitrate": 320,
+            "on_disk_spectral_bitrate": 128,
+        })
+        self.assertEqual(val, 128)
+
+    def test_uses_container_when_no_spectral(self):
+        """No spectral data — should pass container bitrate."""
+        val = self._get_override_value({
+            "min_bitrate": 320,
+            "on_disk_spectral_bitrate": None,
+        })
+        self.assertEqual(val, 320)
+
+    def test_uses_container_when_spectral_higher(self):
+        """Spectral is higher than container — use container (more conservative)."""
+        val = self._get_override_value({
+            "min_bitrate": 192,
+            "on_disk_spectral_bitrate": 256,
+        })
+        self.assertEqual(val, 192)
+
+    def test_no_override_when_no_bitrate(self):
+        """No min_bitrate and no spectral — no override passed."""
+        val = self._get_override_value({
+            "min_bitrate": None,
+            "on_disk_spectral_bitrate": None,
+        })
+        self.assertIsNone(val)
+
+
 if __name__ == "__main__":
     unittest.main()
