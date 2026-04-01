@@ -183,6 +183,12 @@ def get_release(release_mbid):
     }
 
 
+def get_artist_name(artist_mbid):
+    """Look up an artist's name by MBID."""
+    data = _get(f"{MB_API_BASE}/artist/{artist_mbid}?fmt=json")
+    return data.get("name", "")
+
+
 def get_artist_releases_with_recordings(artist_mbid):
     """Paginated fetch of all releases for an artist with recordings and release-group info.
 

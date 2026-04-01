@@ -388,12 +388,7 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             })
 
-        # Look up artist name from first release's credit
-        artist_name = ""
-        if raw_releases:
-            ac = raw_releases[0].get("artist-credit", [])
-            if ac:
-                artist_name = ac[0].get("name", "")
+        artist_name = mb_api.get_artist_name(artist_id)
 
         result = ArtistDisambiguation(
             artist_id=artist_id,
