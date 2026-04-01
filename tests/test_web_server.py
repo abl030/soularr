@@ -313,6 +313,11 @@ class TestServerEndpoints(unittest.TestCase):
         track_a = [t for t in single_rg["tracks"] if t["title"] == "Track A"][0]
         self.assertFalse(track_a["unique"])
 
+        # Pressings should be present with recording_ids
+        self.assertEqual(len(album_rg["pressings"]), 1)
+        self.assertEqual(album_rg["pressings"][0]["release_id"], "rel-1")
+        self.assertIn("rec-1", album_rg["pressings"][0]["recording_ids"])
+
     def test_disambiguate_filters_live(self):
         """Disambiguate endpoint filters out live releases."""
         fake_releases = [

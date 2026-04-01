@@ -1717,6 +1717,32 @@ async function disambRemove(pipelineId, btn) {
 
 const _PRESSING_COLORS = ['#6af','#fa6','#6d6','#f6a','#af6','#6ff','#ff6','#a6f'];
 
+async function disambDeleteFromLibrary(beetsId, btn) {
+  if (!confirm(`Delete album #${beetsId} from beets library? This removes files from disk.`)) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch(`${API}/api/beets/delete`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: beetsId, confirm: 'DELETE'}),
+    });
+    const data = await r.json();
+    if (data.status === 'ok') {
+      btn.textContent = 'Deleted';
+      btn.style.background = '#333';
+      btn.style.color = '#666';
+      toast(`Deleted: ${data.artist} - ${data.album} (${data.deleted_files} files)`);
+    } else {
+      btn.textContent = 'Error';
+      toast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    toast('Delete failed', true);
+  }
+}
+
 function toggleDisambRGTracks(rgId) {
   const el = document.getElementById('disamb-rg-' + rgId);
   if (el.style.display !== 'none') { el.style.display = 'none'; return; }
@@ -1761,11 +1787,14 @@ function toggleDisambRGTracks(rgId) {
 
       const canAdd = !p.in_library && !p.pipeline_status;
       const canRemove = p.pipeline_status === 'wanted' && p.pipeline_id;
+      const canDeleteLib = p.in_library && p.beets_album_id;
       let btnHtml;
       if (canAdd) {
         btnHtml = `<button class="btn btn-add" style="font-size:0.8em;padding:2px 8px;" onclick="event.stopPropagation(); addRelease('${p.release_id}', this)">Add</button>`;
       } else if (canRemove) {
         btnHtml = `<button class="btn" style="background:#5a2a2a;color:#f88;font-size:0.8em;padding:2px 8px;" onclick="event.stopPropagation(); disambRemove(${p.pipeline_id}, this)">Remove</button>`;
+      } else if (canDeleteLib) {
+        btnHtml = `<button class="btn" style="background:#3a2a2a;color:#f88;font-size:0.8em;padding:2px 8px;" onclick="event.stopPropagation(); disambDeleteFromLibrary(${p.beets_album_id}, this)">Delete from library</button>`;
       } else {
         btnHtml = `<button class="btn btn-add" disabled style="font-size:0.8em;padding:2px 8px;">${p.in_library ? 'Owned' : p.pipeline_status || '?'}</button>`;
       }

@@ -372,6 +372,19 @@ class Handler(BaseHTTPRequestHandler):
                     pip_id = pip["id"]
                     break
 
+            # Look up beets album IDs for in-library pressings
+            lib_mbids = [p.release_id for p in rg.pressings if p.release_id in in_library]
+            beets_ids: dict[str, int] = {}
+            if lib_mbids and beets_db_path and os.path.exists(beets_db_path):
+                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+                ph = ",".join("?" for _ in lib_mbids)
+                for row in conn.execute(
+                    f"SELECT id, mb_albumid FROM albums WHERE mb_albumid IN ({ph})",
+                    lib_mbids,
+                ).fetchall():
+                    beets_ids[row[1]] = row[0]
+                conn.close()
+
             pressings_json = []
             for p in rg.pressings:
                 p_lib = p.release_id in in_library
@@ -385,6 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                     "country": p.country,
                     "recording_ids": p.recording_ids,
                     "in_library": p_lib,
+                    "beets_album_id": beets_ids.get(p.release_id),
                     "pipeline_status": p_pip["status"] if p_pip else None,
                     "pipeline_id": p_pip["id"] if p_pip else None,
                 })

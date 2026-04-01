@@ -3,6 +3,7 @@
 import unittest
 from lib.artist_releases import (
     TrackInfo,
+    PressingInfo,
     ReleaseGroupInfo,
     ArtistDisambiguation,
     filter_non_live,
@@ -375,6 +376,28 @@ class TestAnalyseArtistReleases(unittest.TestCase):
         result = analyse_artist_releases(releases)
         single = [rg for rg in result if rg.release_group_id == "rg-single"][0]
         self.assertEqual(single.covered_by, "Album")
+
+    def test_pressing_info_collected(self) -> None:
+        """Each pressing should have release_id, format, country, recording_ids."""
+        releases = [
+            _release("r1", "Album (CD)", [
+                {"title": "Song", "rec_id": "rec-1"},
+            ], rg_id="rg-1", rg_title="Album", primary_type="Album"),
+            _release("r2", "Album (Vinyl)", [
+                {"title": "Song", "rec_id": "rec-1"},
+                {"title": "Bonus", "rec_id": "rec-2"},
+            ], rg_id="rg-1", rg_title="Album", primary_type="Album"),
+        ]
+        result = analyse_artist_releases(releases)
+        rg = result[0]
+        self.assertEqual(len(rg.pressings), 2)
+        cd = [p for p in rg.pressings if p.release_id == "r1"][0]
+        vinyl = [p for p in rg.pressings if p.release_id == "r2"][0]
+        self.assertEqual(cd.track_count, 1)
+        self.assertEqual(cd.format, "CD")
+        self.assertEqual(cd.recording_ids, ["rec-1"])
+        self.assertEqual(vinyl.track_count, 2)
+        self.assertIn("rec-2", vinyl.recording_ids)
 
     def test_bonus_tracks_still_shown(self) -> None:
         """Bonus tracks on deluxe pressings still appear in track list."""
