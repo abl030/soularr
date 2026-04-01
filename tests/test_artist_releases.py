@@ -1,13 +1,12 @@
-"""Tests for lib.artist_releases — pure recording uniqueness logic."""
+"""Tests for lib.artist_releases — release group coverage analysis."""
 
 import unittest
 from lib.artist_releases import (
     TrackInfo,
-    ReleaseInfo,
+    ReleaseGroupInfo,
     ArtistDisambiguation,
     filter_non_live,
-    build_recording_map,
-    mark_unique_tracks,
+    analyse_artist_releases,
 )
 
 
@@ -94,130 +93,177 @@ class TestFilterNonLive(unittest.TestCase):
         self.assertEqual(filter_non_live([]), [])
 
 
-class TestBuildRecordingMap(unittest.TestCase):
-    def test_single_release(self) -> None:
+class TestAnalyseArtistReleases(unittest.TestCase):
+    """Tests for the tier-based release group coverage algorithm."""
+
+    def test_single_covered_by_album(self) -> None:
+        """A single whose track also appears on an album is fully covered."""
         releases = [
             _release("r1", "Album", [
                 {"title": "Track A", "rec_id": "rec-1"},
                 {"title": "Track B", "rec_id": "rec-2"},
-            ]),
+            ], rg_id="rg-album", rg_title="The Album", primary_type="Album"),
+            _release("r2", "Track A", [
+                {"title": "Track A", "rec_id": "rec-1"},
+            ], rg_id="rg-single", rg_title="Track A", primary_type="Single"),
         ]
-        rec_map = build_recording_map(releases)
-        self.assertEqual(rec_map["rec-1"], {"r1"})
-        self.assertEqual(rec_map["rec-2"], {"r1"})
+        result = analyse_artist_releases(releases)
+        album_rg = [rg for rg in result if rg.release_group_id == "rg-album"][0]
+        single_rg = [rg for rg in result if rg.release_group_id == "rg-single"][0]
 
-    def test_shared_recording_across_releases(self) -> None:
+        self.assertEqual(album_rg.unique_track_count, 2)
+        self.assertIsNone(album_rg.covered_by)
+        self.assertEqual(single_rg.unique_track_count, 0)
+        self.assertEqual(single_rg.covered_by, "The Album")
+
+    def test_single_with_bside_has_unique(self) -> None:
+        """A single with a B-side not on any album has unique tracks."""
         releases = [
             _release("r1", "Album", [
                 {"title": "Track A", "rec_id": "rec-1"},
-                {"title": "Track B", "rec_id": "rec-2"},
-            ], rg_id="rg-1"),
-            _release("r2", "Single", [
-                {"title": "Track A", "rec_id": "rec-1"},  # same recording
-                {"title": "B-side", "rec_id": "rec-3"},
-            ], rg_id="rg-2"),
-        ]
-        rec_map = build_recording_map(releases)
-        self.assertEqual(rec_map["rec-1"], {"r1", "r2"})  # shared
-        self.assertEqual(rec_map["rec-2"], {"r1"})  # unique to r1
-        self.assertEqual(rec_map["rec-3"], {"r2"})  # unique to r2
-
-    def test_same_recording_different_pressings(self) -> None:
-        """Two pressings of same album share recording IDs."""
-        releases = [
-            _release("r1", "Album (US)", [
-                {"title": "Track A", "rec_id": "rec-1"},
-            ], rg_id="rg-1"),
-            _release("r2", "Album (UK)", [
-                {"title": "Track A", "rec_id": "rec-1"},
-            ], rg_id="rg-1"),
-        ]
-        rec_map = build_recording_map(releases)
-        self.assertEqual(rec_map["rec-1"], {"r1", "r2"})
-
-    def test_empty_releases(self) -> None:
-        self.assertEqual(build_recording_map([]), {})
-
-
-class TestMarkUniqueTracks(unittest.TestCase):
-    def test_bonus_track_is_unique(self) -> None:
-        releases = [
-            _release("r1", "Album", [
-                {"title": "Track A", "rec_id": "rec-1"},
-                {"title": "Track B", "rec_id": "rec-2"},
-            ], rg_id="rg-1", rg_title="Album"),
+            ], rg_id="rg-album", rg_title="The Album", primary_type="Album"),
             _release("r2", "Single", [
                 {"title": "Track A", "rec_id": "rec-1"},
-                {"title": "B-side", "rec_id": "rec-3"},
-            ], rg_id="rg-2", rg_title="Single"),
+                {"title": "B-side", "rec_id": "rec-99"},
+            ], rg_id="rg-single", rg_title="The Single", primary_type="Single"),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
+        result = analyse_artist_releases(releases)
+        single_rg = [rg for rg in result if rg.release_group_id == "rg-single"][0]
 
-        # Find the single
-        single = [r for r in result if r.release_id == "r2"][0]
-        self.assertEqual(single.unique_track_count, 1)
-        bside = [t for t in single.tracks if t.title == "B-side"][0]
+        self.assertEqual(single_rg.unique_track_count, 1)
+        self.assertIsNone(single_rg.covered_by)
+        bside = [t for t in single_rg.tracks if t.title == "B-side"][0]
         self.assertTrue(bside.unique)
-        self.assertEqual(bside.also_on, [])
-        track_a = [t for t in single.tracks if t.title == "Track A"][0]
-        self.assertFalse(track_a.unique)
-        self.assertEqual(track_a.also_on, ["Album"])
 
-    def test_album_with_no_unique_tracks(self) -> None:
-        """Album whose every track also appears on a compilation."""
-        releases = [
-            _release("r1", "Album", [
-                {"title": "Track A", "rec_id": "rec-1"},
-            ], rg_id="rg-1", rg_title="Album"),
-            _release("r2", "Compilation", [
-                {"title": "Track A", "rec_id": "rec-1"},
-            ], rg_id="rg-2", rg_title="Compilation"),
-        ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
-
-        album = [r for r in result if r.release_id == "r1"][0]
-        self.assertEqual(album.unique_track_count, 0)
-        self.assertFalse(album.tracks[0].unique)
-
-    def test_all_unique_on_single_release(self) -> None:
-        """Solo release — all tracks are unique by definition."""
+    def test_ep_covers_singles(self) -> None:
+        """An EP that is a superset of singles covers them."""
         releases = [
             _release("r1", "EP", [
-                {"title": "Track A", "rec_id": "rec-1"},
-                {"title": "Track B", "rec_id": "rec-2"},
-            ], rg_id="rg-1", rg_title="EP"),
+                {"title": "Song A", "rec_id": "rec-1"},
+                {"title": "Song B", "rec_id": "rec-2"},
+                {"title": "Song C", "rec_id": "rec-3"},
+            ], rg_id="rg-ep", rg_title="The EP", primary_type="EP"),
+            _release("r2", "Song A", [
+                {"title": "Song A", "rec_id": "rec-1"},
+            ], rg_id="rg-s1", rg_title="Song A", primary_type="Single"),
+            _release("r3", "Song B", [
+                {"title": "Song B", "rec_id": "rec-2"},
+            ], rg_id="rg-s2", rg_title="Song B", primary_type="Single"),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
-        self.assertEqual(result[0].unique_track_count, 2)
-        self.assertTrue(all(t.unique for t in result[0].tracks))
+        result = analyse_artist_releases(releases)
+        ep = [rg for rg in result if rg.release_group_id == "rg-ep"][0]
+        s1 = [rg for rg in result if rg.release_group_id == "rg-s1"][0]
+        s2 = [rg for rg in result if rg.release_group_id == "rg-s2"][0]
 
-    def test_release_info_fields(self) -> None:
+        self.assertEqual(ep.unique_track_count, 3)
+        self.assertIsNone(ep.covered_by)
+        self.assertEqual(s1.covered_by, "The EP")
+        self.assertEqual(s2.covered_by, "The EP")
+
+    def test_pressings_union_recordings(self) -> None:
+        """Multiple pressings of the same RG union their recordings."""
         releases = [
-            _release(
-                "r1", "My Album",
-                [{"title": "Song", "rec_id": "rec-1", "length": 180000}],
-                date="2020-06-15",
-                rg_id="rg-1",
-                rg_title="My Album RG",
-                primary_type="Album",
-            ),
+            _release("r1", "EP (US)", [
+                {"title": "Track A", "rec_id": "rec-1"},
+            ], rg_id="rg-ep", rg_title="EP", primary_type="EP"),
+            _release("r2", "EP (JP)", [
+                {"title": "Track A", "rec_id": "rec-1"},
+                {"title": "Bonus", "rec_id": "rec-2"},
+            ], rg_id="rg-ep", rg_title="EP", primary_type="EP"),
+            _release("r3", "Bonus Single", [
+                {"title": "Bonus", "rec_id": "rec-2"},
+            ], rg_id="rg-single", rg_title="Bonus Single", primary_type="Single"),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
+        result = analyse_artist_releases(releases)
+        # The EP's union includes rec-1 and rec-2, covering the single
+        single = [rg for rg in result if rg.release_group_id == "rg-single"][0]
+        self.assertEqual(single.covered_by, "EP")
 
-        ri = result[0]
-        self.assertEqual(ri.release_id, "r1")
-        self.assertEqual(ri.title, "My Album")
-        self.assertEqual(ri.date, "2020-06-15")
-        self.assertEqual(ri.release_group_id, "rg-1")
-        self.assertEqual(ri.release_group_title, "My Album RG")
-        self.assertEqual(ri.release_group_type, "Album")
-        self.assertEqual(ri.track_count, 1)
-        self.assertIsNone(ri.library_status)
-        self.assertIsNone(ri.pipeline_status)
+    def test_same_tier_larger_covers_smaller(self) -> None:
+        """At same tier, larger RG covers smaller if it's a superset."""
+        releases = [
+            _release("r1", "Big EP", [
+                {"title": "A", "rec_id": "rec-1"},
+                {"title": "B", "rec_id": "rec-2"},
+                {"title": "C", "rec_id": "rec-3"},
+            ], rg_id="rg-big", rg_title="Big EP", primary_type="EP", date="2020"),
+            _release("r2", "Small EP", [
+                {"title": "A", "rec_id": "rec-1"},
+                {"title": "B", "rec_id": "rec-2"},
+            ], rg_id="rg-small", rg_title="Small EP", primary_type="EP", date="2020"),
+        ]
+        result = analyse_artist_releases(releases)
+        small = [rg for rg in result if rg.release_group_id == "rg-small"][0]
+        self.assertEqual(small.covered_by, "Big EP")
+
+    def test_partial_overlap_both_have_unique(self) -> None:
+        """Two EPs with partial overlap — neither covers the other."""
+        releases = [
+            _release("r1", "EP One", [
+                {"title": "A", "rec_id": "rec-1"},
+                {"title": "B", "rec_id": "rec-2"},
+            ], rg_id="rg-1", rg_title="EP One", primary_type="EP"),
+            _release("r2", "EP Two", [
+                {"title": "B", "rec_id": "rec-2"},
+                {"title": "C", "rec_id": "rec-3"},
+            ], rg_id="rg-2", rg_title="EP Two", primary_type="EP"),
+        ]
+        result = analyse_artist_releases(releases)
+        ep1 = [rg for rg in result if rg.release_group_id == "rg-1"][0]
+        ep2 = [rg for rg in result if rg.release_group_id == "rg-2"][0]
+
+        self.assertIsNone(ep1.covered_by)
+        self.assertIsNone(ep2.covered_by)
+        # Neither covers the other, so shared rec-2 is unique to both
+        self.assertEqual(ep1.unique_track_count, 2)
+        self.assertEqual(ep2.unique_track_count, 2)
+
+    def test_track_also_on_shows_covering_rg(self) -> None:
+        """Non-unique tracks show which RGs also contain them."""
+        releases = [
+            _release("r1", "Album", [
+                {"title": "Hit", "rec_id": "rec-1"},
+                {"title": "Deep Cut", "rec_id": "rec-2"},
+            ], rg_id="rg-album", rg_title="The Album", primary_type="Album"),
+            _release("r2", "Hit", [
+                {"title": "Hit", "rec_id": "rec-1"},
+            ], rg_id="rg-single", rg_title="Hit", primary_type="Single"),
+        ]
+        result = analyse_artist_releases(releases)
+        single = [rg for rg in result if rg.release_group_id == "rg-single"][0]
+        hit = single.tracks[0]
+        self.assertFalse(hit.unique)
+        self.assertIn("The Album", hit.also_on)
+
+    def test_album_tracks_not_marked_also_on_single(self) -> None:
+        """Album tracks shouldn't list lower-tier duplicates in also_on."""
+        releases = [
+            _release("r1", "Album", [
+                {"title": "Hit", "rec_id": "rec-1"},
+            ], rg_id="rg-album", rg_title="The Album", primary_type="Album"),
+            _release("r2", "Hit Single", [
+                {"title": "Hit", "rec_id": "rec-1"},
+            ], rg_id="rg-single", rg_title="Hit Single", primary_type="Single"),
+        ]
+        result = analyse_artist_releases(releases)
+        album = [rg for rg in result if rg.release_group_id == "rg-album"][0]
+        # Album track is unique (it's the highest tier) — not "also on" the single
+        self.assertTrue(album.tracks[0].unique)
+        self.assertEqual(album.tracks[0].also_on, [])
+
+    def test_rg_info_fields(self) -> None:
+        releases = [
+            _release("r1", "My Album", [
+                {"title": "Song", "rec_id": "rec-1", "length": 180000},
+            ], date="2020-06-15", rg_id="rg-1", rg_title="My Album", primary_type="Album"),
+        ]
+        result = analyse_artist_releases(releases)
+        rg = result[0]
+        self.assertEqual(rg.release_group_id, "rg-1")
+        self.assertEqual(rg.title, "My Album")
+        self.assertEqual(rg.primary_type, "Album")
+        self.assertEqual(rg.track_count, 1)
+        self.assertIsNone(rg.covered_by)
 
     def test_track_info_fields(self) -> None:
         releases = [
@@ -225,86 +271,58 @@ class TestMarkUniqueTracks(unittest.TestCase):
                 {"title": "Song", "rec_id": "rec-1", "length": 240000},
             ]),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
+        result = analyse_artist_releases(releases)
         track = result[0].tracks[0]
         self.assertEqual(track.recording_id, "rec-1")
         self.assertEqual(track.title, "Song")
-        self.assertEqual(track.position, 1)
-        self.assertEqual(track.disc, 1)
-        self.assertAlmostEqual(track.length_seconds, 240.0)  # type: ignore[arg-type]
         self.assertTrue(track.unique)
-
-    def test_multi_disc_release(self) -> None:
-        """Multi-disc release preserves disc numbers."""
-        release = {
-            "id": "r1",
-            "title": "Double Album",
-            "date": "2020",
-            "status": "Official",
-            "release-group": {
-                "id": "rg-1",
-                "title": "Double Album",
-                "primary-type": "Album",
-                "secondary-types": [],
-            },
-            "media": [
-                {
-                    "position": 1,
-                    "format": "CD",
-                    "track-count": 1,
-                    "tracks": [
-                        {
-                            "position": 1,
-                            "number": "1",
-                            "title": "Disc 1 Track",
-                            "recording": {"id": "rec-1", "title": "Disc 1 Track"},
-                        }
-                    ],
-                },
-                {
-                    "position": 2,
-                    "format": "CD",
-                    "track-count": 1,
-                    "tracks": [
-                        {
-                            "position": 1,
-                            "number": "1",
-                            "title": "Disc 2 Track",
-                            "recording": {"id": "rec-2", "title": "Disc 2 Track"},
-                        }
-                    ],
-                },
-            ],
-        }
-        rec_map = build_recording_map([release])
-        result = mark_unique_tracks([release], rec_map)
-        self.assertEqual(len(result[0].tracks), 2)
-        self.assertEqual(result[0].tracks[0].disc, 1)
-        self.assertEqual(result[0].tracks[1].disc, 2)
+        self.assertEqual(track.also_on, [])
 
     def test_empty_input(self) -> None:
-        self.assertEqual(mark_unique_tracks([], {}), [])
+        self.assertEqual(analyse_artist_releases([]), [])
 
-    def test_format_from_media(self) -> None:
+    def test_release_ids_and_formats(self) -> None:
+        """ReleaseGroupInfo should list all release IDs and formats."""
         releases = [
-            _release("r1", "Album", [
-                {"title": "Song", "rec_id": "rec-1"},
-            ]),
+            _release("r1", "EP (CD)", [
+                {"title": "A", "rec_id": "rec-1"},
+            ], rg_id="rg-1", rg_title="EP", primary_type="EP"),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
-        self.assertEqual(result[0].format, "CD")
+        result = analyse_artist_releases(releases)
+        rg = result[0]
+        self.assertIn("r1", rg.release_ids)
 
-    def test_null_length_handled(self) -> None:
+    def test_christmas_ep_covers_singles(self) -> None:
+        """Real-world: EP bundles tracks from multiple singles — singles are covered."""
         releases = [
-            _release("r1", "Album", [
-                {"title": "Song", "rec_id": "rec-1"},  # no "length" key
-            ]),
+            _release("r1", "So Much Wine", [
+                {"title": "So Much Wine", "rec_id": "rec-1"},
+                {"title": "Day After Tomorrow", "rec_id": "rec-2"},
+                {"title": "If We Make It", "rec_id": "rec-3"},
+                {"title": "Christmas Song", "rec_id": "rec-4"},
+            ], rg_id="rg-ep", rg_title="So Much Wine", primary_type="EP"),
+            _release("r2", "So Much Wine", [
+                {"title": "So Much Wine", "rec_id": "rec-1"},
+            ], rg_id="rg-s1", rg_title="So Much Wine", primary_type="Single"),
+            _release("r3", "Day After Tomorrow", [
+                {"title": "Day After Tomorrow", "rec_id": "rec-2"},
+            ], rg_id="rg-s2", rg_title="Day After Tomorrow", primary_type="Single"),
+            _release("r4", "If We Make It", [
+                {"title": "If We Make It", "rec_id": "rec-3"},
+                {"title": "Day After Tomorrow", "rec_id": "rec-2"},
+            ], rg_id="rg-s3", rg_title="If We Make It", primary_type="Single"),
         ]
-        rec_map = build_recording_map(releases)
-        result = mark_unique_tracks(releases, rec_map)
-        self.assertIsNone(result[0].tracks[0].length_seconds)
+        result = analyse_artist_releases(releases)
+        ep = [rg for rg in result if rg.release_group_id == "rg-ep"][0]
+        s1 = [rg for rg in result if rg.release_group_id == "rg-s1"][0]
+        s2 = [rg for rg in result if rg.release_group_id == "rg-s2"][0]
+        s3 = [rg for rg in result if rg.release_group_id == "rg-s3"][0]
+
+        self.assertIsNone(ep.covered_by)
+        self.assertEqual(ep.unique_track_count, 4)
+        self.assertEqual(s1.covered_by, "So Much Wine")
+        self.assertEqual(s2.covered_by, "So Much Wine")
+        self.assertEqual(s3.covered_by, "So Much Wine")
 
 
 class TestArtistDisambiguation(unittest.TestCase):
@@ -312,11 +330,11 @@ class TestArtistDisambiguation(unittest.TestCase):
         d = ArtistDisambiguation(
             artist_id="a1",
             artist_name="The National",
-            releases=[],
+            release_groups=[],
         )
         self.assertEqual(d.artist_id, "a1")
         self.assertEqual(d.artist_name, "The National")
-        self.assertEqual(d.releases, [])
+        self.assertEqual(d.release_groups, [])
 
 
 if __name__ == "__main__":

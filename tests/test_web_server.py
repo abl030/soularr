@@ -298,18 +298,19 @@ class TestServerEndpoints(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(data["artist_name"], "Test Artist")
-        self.assertEqual(len(data["releases"]), 2)
+        rgs = data["release_groups"]
+        self.assertEqual(len(rgs), 2)
 
-        # Album has 1 unique track (Track B), Single has 1 unique (B-side)
-        album = [r for r in data["releases"] if r["release_id"] == "rel-1"][0]
-        single = [r for r in data["releases"] if r["release_id"] == "rel-2"][0]
-        self.assertEqual(album["unique_track_count"], 1)
-        self.assertEqual(single["unique_track_count"], 1)
+        # Album (tier 1) has 2 unique, Single's Track A is covered by Album
+        album_rg = [rg for rg in rgs if rg["release_group_id"] == "rg-1"][0]
+        single_rg = [rg for rg in rgs if rg["release_group_id"] == "rg-2"][0]
+        self.assertEqual(album_rg["unique_track_count"], 2)
+        self.assertEqual(single_rg["unique_track_count"], 1)
 
-        # Check track-level uniqueness
-        bside = [t for t in single["tracks"] if t["title"] == "B-side"][0]
+        # B-side is unique, Track A on single is covered by album
+        bside = [t for t in single_rg["tracks"] if t["title"] == "B-side"][0]
         self.assertTrue(bside["unique"])
-        track_a = [t for t in single["tracks"] if t["title"] == "Track A"][0]
+        track_a = [t for t in single_rg["tracks"] if t["title"] == "Track A"][0]
         self.assertFalse(track_a["unique"])
 
     def test_disambiguate_filters_live(self):
@@ -352,8 +353,8 @@ class TestServerEndpoints(unittest.TestCase):
             status, data = self._get("/api/artist/664c3e0e-42d8-48c1-b209-1efca19c0325/disambiguate")
 
         self.assertEqual(status, 200)
-        self.assertEqual(len(data["releases"]), 1)
-        self.assertEqual(data["releases"][0]["title"], "Studio")
+        self.assertEqual(len(data["release_groups"]), 1)
+        self.assertEqual(data["release_groups"][0]["title"], "Studio")
 
 
 class TestApplyPipelineBitrateOverride(unittest.TestCase):

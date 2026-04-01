@@ -343,38 +343,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_artist_disambiguate(self, params: dict[str, list[str]], artist_id: str) -> None:
         from lib.artist_releases import (
-            ArtistDisambiguation,
             filter_non_live,
-            build_recording_map,
-            mark_unique_tracks,
+            analyse_artist_releases,
         )
 
         raw_releases = mb_api.get_artist_releases_with_recordings(artist_id)
         filtered = filter_non_live(raw_releases)
-        rec_map = build_recording_map(filtered)
-        release_infos = mark_unique_tracks(filtered, rec_map)
+        rg_infos = analyse_artist_releases(filtered)
 
-        # Cross-reference library and pipeline status
-        mbids = [ri.release_id for ri in release_infos]
-        in_library = check_beets_library(mbids) if mbids else set()
-        in_pipeline = check_pipeline(mbids) if mbids else {}
+        # Cross-reference library and pipeline status using all release IDs
+        all_mbids: list[str] = []
+        for rg in rg_infos:
+            all_mbids.extend(rg.release_ids)
+        in_library = check_beets_library(all_mbids) if all_mbids else set()
+        in_pipeline = check_pipeline(all_mbids) if all_mbids else {}
 
-        releases_json: list[dict] = []
-        for ri in release_infos:
-            lib_status = "in_library" if ri.release_id in in_library else None
-            pip = in_pipeline.get(ri.release_id)
-            pip_status = pip["status"] if pip else None
-            pip_id = pip["id"] if pip else None
-            releases_json.append({
-                "release_id": ri.release_id,
-                "title": ri.title,
-                "date": ri.date,
-                "format": ri.format,
-                "track_count": ri.track_count,
-                "release_group_id": ri.release_group_id,
-                "release_group_title": ri.release_group_title,
-                "release_group_type": ri.release_group_type,
-                "unique_track_count": ri.unique_track_count,
+        rgs_json: list[dict] = []
+        for rg in rg_infos:
+            # A release group is "in library" if ANY pressing is
+            lib_status = "in_library" if any(rid in in_library for rid in rg.release_ids) else None
+            # Pipeline status: find the first pressing that's in the pipeline
+            pip_status: str | None = None
+            pip_id: int | None = None
+            for rid in rg.release_ids:
+                pip = in_pipeline.get(rid)
+                if pip:
+                    pip_status = pip["status"]
+                    pip_id = pip["id"]
+                    break
+
+            rgs_json.append({
+                "release_group_id": rg.release_group_id,
+                "title": rg.title,
+                "primary_type": rg.primary_type,
+                "first_date": rg.first_date,
+                "release_ids": rg.release_ids,
+                "track_count": rg.track_count,
+                "unique_track_count": rg.unique_track_count,
+                "covered_by": rg.covered_by,
                 "library_status": lib_status,
                 "pipeline_status": pip_status,
                 "pipeline_id": pip_id,
@@ -382,27 +388,18 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "recording_id": t.recording_id,
                         "title": t.title,
-                        "position": t.position,
-                        "disc": t.disc,
-                        "length_seconds": t.length_seconds,
                         "unique": t.unique,
                         "also_on": t.also_on,
                     }
-                    for t in ri.tracks
+                    for t in rg.tracks
                 ],
             })
 
         artist_name = mb_api.get_artist_name(artist_id)
-
-        result = ArtistDisambiguation(
-            artist_id=artist_id,
-            artist_name=artist_name,
-            releases=release_infos,
-        )
         self._json({
-            "artist_id": result.artist_id,
-            "artist_name": result.artist_name,
-            "releases": releases_json,
+            "artist_id": artist_id,
+            "artist_name": artist_name,
+            "release_groups": rgs_json,
         })
 
     def _get_release_group(self, params: dict[str, list[str]], rg_id: str) -> None:

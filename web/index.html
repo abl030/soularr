@@ -1624,7 +1624,6 @@ async function loadDisambiguation(artistId, artistName) {
   try {
     const r = await fetch(`${API}/api/artist/${artistId}/disambiguate`);
     disambData = await r.json();
-    disambView = 'flat';
     renderDisambiguate();
   } catch (e) {
     el.innerHTML = '<div style="color:#f66;">Failed to load disambiguation data</div>';
@@ -1635,92 +1634,70 @@ function renderDisambiguate() {
   const el = document.getElementById('disamb-content');
   if (!disambData) return;
   const d = disambData;
+  const rgs = d.release_groups || [];
 
-  const totalReleases = d.releases.length;
-  const withUnique = d.releases.filter(r => r.unique_track_count > 0).length;
-  const totalUnique = d.releases.reduce((s, r) => s + r.unique_track_count, 0);
+  const withUnique = rgs.filter(rg => rg.unique_track_count > 0).length;
+  const covered = rgs.filter(rg => rg.covered_by).length;
 
   let html = `<div style="margin:12px 0;">
-    <strong>${esc(d.artist_name)}</strong> — ${totalReleases} releases (excl. live), ${withUnique} with unique tracks, ${totalUnique} unique recordings
-    <div style="margin-top:8px;">
-      <button class="btn ${disambView === 'flat' ? 'btn-add' : ''}" onclick="disambView='flat';renderDisambiguate()">Flat</button>
-      <button class="btn ${disambView === 'grouped' ? 'btn-add' : ''}" onclick="disambView='grouped';renderDisambiguate()">Grouped</button>
-    </div>
+    <strong>${esc(d.artist_name)}</strong> — ${rgs.length} release groups (excl. live), ${withUnique} with unique tracks, ${covered} fully covered
   </div>`;
 
-  if (disambView === 'flat') {
-    html += renderDisambFlat(d.releases);
-  } else {
-    html += renderDisambGrouped(d.releases);
-  }
+  // Sort: albums first, then EPs, then singles, then by date
+  const tierOrder = {Album: 1, EP: 2, Single: 3, Other: 1};
+  const sorted = [...rgs].sort((a, b) => {
+    const ta = tierOrder[a.primary_type] || 4;
+    const tb = tierOrder[b.primary_type] || 4;
+    if (ta !== tb) return ta - tb;
+    return (a.first_date || '').localeCompare(b.first_date || '');
+  });
+
+  html += sorted.map(rg => renderDisambRG(rg)).join('');
   el.innerHTML = html;
 }
 
-function renderDisambFlat(releases) {
-  const sorted = [...releases].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  return sorted.map(r => renderDisambRelease(r)).join('');
-}
-
-function renderDisambGrouped(releases) {
-  const groups = {};
-  const groupOrder = [];
-  for (const r of releases) {
-    const key = r.release_group_id || r.release_id;
-    if (!groups[key]) {
-      groups[key] = { title: r.release_group_title || r.title, type: r.release_group_type, releases: [] };
-      groupOrder.push(key);
-    }
-    groups[key].releases.push(r);
-  }
-
-  return groupOrder.map(key => {
-    const g = groups[key];
-    const totalUnique = g.releases.reduce((s, r) => s + r.unique_track_count, 0);
-    const badge = totalUnique > 0 ? `<span style="color:#6d6;margin-left:6px;">${totalUnique} unique</span>` : '';
-    return `
-      <div style="margin:8px 0;">
-        <div class="type-header" onclick="this.nextElementSibling.classList.toggle('open')" style="cursor:pointer;padding:6px;background:#1a1a2e;border-radius:4px;">
-          <strong>${esc(g.title)}</strong> <span style="color:#777;">${esc(g.type)} — ${g.releases.length} release${g.releases.length > 1 ? 's' : ''}</span>${badge}
-        </div>
-        <div class="type-body open">
-          ${g.releases.map(r => renderDisambRelease(r)).join('')}
-        </div>
-      </div>
-    `;
-  }).join('');
-}
-
-function renderDisambRelease(r) {
+function renderDisambRG(rg) {
   let badges = '';
-  if (r.library_status) badges += '<span class="badge badge-library">in library</span>';
-  if (r.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
-  if (r.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
-  if (r.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
+  if (rg.library_status) badges += '<span class="badge badge-library">in library</span>';
+  if (rg.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+  if (rg.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
+  if (rg.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
 
-  const canAdd = !r.library_status && !r.pipeline_status;
-  const canRemove = r.pipeline_status === 'wanted' && r.pipeline_id;
-  const uniqueBadge = r.unique_track_count > 0
-    ? `<span style="color:#6d6;font-weight:600;margin-left:6px;">${r.unique_track_count} unique</span>`
-    : '<span style="color:#555;margin-left:6px;">0 unique</span>';
+  const canAdd = !rg.library_status && !rg.pipeline_status && !rg.covered_by;
+  const canRemove = rg.pipeline_status === 'wanted' && rg.pipeline_id;
+
+  let statusBadge;
+  if (rg.covered_by) {
+    statusBadge = `<span style="color:#777;font-size:0.85em;margin-left:6px;">covered by ${esc(rg.covered_by)}</span>`;
+  } else if (rg.unique_track_count > 0) {
+    statusBadge = `<span style="color:#6d6;font-weight:600;margin-left:6px;">${rg.unique_track_count} unique</span>`;
+  } else {
+    statusBadge = '<span style="color:#555;margin-left:6px;">0 unique</span>';
+  }
 
   let btnHtml;
   if (canAdd) {
-    btnHtml = `<button class="btn btn-add" onclick="event.stopPropagation(); addRelease('${r.release_id}', this)">Add</button>`;
+    // Add first release ID (any pressing will do)
+    btnHtml = `<button class="btn btn-add" onclick="event.stopPropagation(); addRelease('${rg.release_ids[0]}', this)">Add</button>`;
   } else if (canRemove) {
-    btnHtml = `<button class="btn" style="background:#5a2a2a;color:#f88;" onclick="event.stopPropagation(); disambRemove(${r.pipeline_id}, this)">Remove</button>`;
+    btnHtml = `<button class="btn" style="background:#5a2a2a;color:#f88;" onclick="event.stopPropagation(); disambRemove(${rg.pipeline_id}, this)">Remove</button>`;
+  } else if (rg.covered_by && !rg.library_status && !rg.pipeline_status) {
+    btnHtml = `<button class="btn btn-add" disabled>Covered</button>`;
   } else {
-    btnHtml = `<button class="btn btn-add" disabled>${r.library_status ? 'Owned' : r.pipeline_status || '?'}</button>`;
+    btnHtml = `<button class="btn btn-add" disabled>${rg.library_status ? 'Owned' : rg.pipeline_status || '?'}</button>`;
   }
 
+  const opacity = rg.covered_by ? '0.5' : '1';
+
   return `
-    <div class="release" onclick="event.stopPropagation(); toggleDisambTracks('${r.release_id}')" style="cursor:pointer;">
+    <div class="release" onclick="event.stopPropagation(); toggleDisambRGTracks('${rg.release_group_id}')" style="cursor:pointer;opacity:${opacity};">
       <div class="release-info">
-        <div class="release-title">${esc(r.title)}${badges}${uniqueBadge}</div>
-        <div class="release-meta" style="color:#777;">${r.date || '?'} — ${r.format} — ${r.track_count}t — ${esc(r.release_group_type || '?')}</div>
+        <div class="release-title">${esc(rg.title)}${badges}${statusBadge}</div>
+        <div class="release-meta" style="color:#777;">${rg.first_date || '?'} — ${esc(rg.primary_type)} — ${rg.track_count}t — ${rg.release_ids.length} pressing${rg.release_ids.length > 1 ? 's' : ''}</div>
       </div>
       ${btnHtml}
     </div>
-    <div id="disamb-tracks-${r.release_id}" style="display:none;padding:4px 0 8px 16px;"></div>
+    <div id="disamb-rg-${rg.release_group_id}" style="display:none;padding:4px 0 8px 16px;"></div>
   `;
 }
 
@@ -1740,10 +1717,9 @@ async function disambRemove(pipelineId, btn) {
       btn.style.background = '#333';
       btn.style.color = '#666';
       toast(`Removed #${pipelineId}`);
-      // Update local data so re-render is correct
       if (disambData) {
-        const rel = disambData.releases.find(r => r.pipeline_id === pipelineId);
-        if (rel) { rel.pipeline_status = null; rel.pipeline_id = null; }
+        const rg = disambData.release_groups.find(rg => rg.pipeline_id === pipelineId);
+        if (rg) { rg.pipeline_status = null; rg.pipeline_id = null; }
       }
     } else {
       btn.textContent = 'Error';
@@ -1755,22 +1731,20 @@ async function disambRemove(pipelineId, btn) {
   }
 }
 
-function toggleDisambTracks(releaseId) {
-  const el = document.getElementById('disamb-tracks-' + releaseId);
+function toggleDisambRGTracks(rgId) {
+  const el = document.getElementById('disamb-rg-' + rgId);
   if (el.style.display !== 'none') { el.style.display = 'none'; return; }
 
-  const r = disambData.releases.find(r => r.release_id === releaseId);
-  if (!r || !r.tracks) { el.style.display = 'none'; return; }
+  const rg = disambData.release_groups.find(rg => rg.release_group_id === rgId);
+  if (!rg || !rg.tracks) { el.style.display = 'none'; return; }
 
-  el.innerHTML = r.tracks.map(t => {
-    const dur = t.length_seconds ? `${Math.floor(t.length_seconds / 60)}:${String(Math.round(t.length_seconds % 60)).padStart(2, '0')}` : '';
+  el.innerHTML = rg.tracks.map(t => {
     const star = t.unique ? '<span style="color:#6d6;font-weight:bold;">★ </span>' : '<span style="color:#555;">  </span>';
-    const discPrefix = t.disc > 1 ? `${t.disc}.` : '';
     const alsoOn = !t.unique && t.also_on && t.also_on.length > 0
       ? `<span style="color:#777;font-size:0.85em;margin-left:8px;">also on: ${t.also_on.map(esc).join(', ')}</span>`
       : '';
     return `<div class="lib-track" style="opacity:${t.unique ? 1 : 0.6};">
-      ${star}<span>${discPrefix}${t.position}. ${esc(t.title)} ${dur ? '<span style="color:#555;">' + dur + '</span>' : ''}${alsoOn}</span>
+      ${star}<span>${esc(t.title)}${alsoOn}</span>
     </div>`;
   }).join('');
   el.style.display = 'block';
