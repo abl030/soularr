@@ -29,6 +29,18 @@ class TrackInfo:
 
 
 @dataclass(frozen=True)
+class PressingInfo:
+    """A single pressing (release) within a release group."""
+
+    release_id: str
+    title: str
+    date: str
+    format: str
+    track_count: int
+    country: str
+
+
+@dataclass(frozen=True)
 class ReleaseGroupInfo:
     """A release group with coverage analysis."""
 
@@ -36,7 +48,8 @@ class ReleaseGroupInfo:
     title: str
     primary_type: str
     first_date: str
-    release_ids: list[str]  # all pressings
+    release_ids: list[str]  # all pressing IDs
+    pressings: list[PressingInfo]
     tracks: list[TrackInfo]
     track_count: int
     unique_track_count: int
@@ -95,12 +108,26 @@ def analyse_artist_releases(releases: list[dict]) -> list[ReleaseGroupInfo]:
                 tier=_get_tier(rg.get("primary-type", "Other")),
                 first_date=r.get("date", ""),
                 release_ids=[],
+                pressings=[],
                 recordings=set(),
                 track_list=[],
             )
 
         data = rg_data[rg_id]
         data.release_ids.append(r["id"])
+
+        # Collect pressing info
+        media = r.get("media", [])
+        track_count = sum(len(m.get("tracks", [])) for m in media)
+        formats = [m.get("format") or "?" for m in media]
+        data.pressings.append(PressingInfo(
+            release_id=r["id"],
+            title=r.get("title", ""),
+            date=r.get("date", ""),
+            format=", ".join(formats) if formats else "?",
+            track_count=track_count,
+            country=r.get("country", ""),
+        ))
         if data.first_date and r.get("date", "") and r["date"] < data.first_date:
             data.first_date = r["date"]
         elif not data.first_date:
@@ -160,6 +187,7 @@ def analyse_artist_releases(releases: list[dict]) -> list[ReleaseGroupInfo]:
             primary_type=data.primary_type,
             first_date=data.first_date,
             release_ids=data.release_ids,
+            pressings=data.pressings,
             tracks=track_infos,
             track_count=len(track_infos),
             unique_track_count=uncovered_count,
@@ -214,5 +242,6 @@ class _RGData:
     tier: int
     first_date: str
     release_ids: list[str]
+    pressings: list[PressingInfo]
     recordings: set[str]
     track_list: list[tuple[str, str]]  # (recording_id, title)

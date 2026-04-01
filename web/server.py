@@ -372,12 +372,29 @@ class Handler(BaseHTTPRequestHandler):
                     pip_id = pip["id"]
                     break
 
+            pressings_json = []
+            for p in rg.pressings:
+                p_lib = p.release_id in in_library
+                p_pip = in_pipeline.get(p.release_id)
+                pressings_json.append({
+                    "release_id": p.release_id,
+                    "title": p.title,
+                    "date": p.date,
+                    "format": p.format,
+                    "track_count": p.track_count,
+                    "country": p.country,
+                    "in_library": p_lib,
+                    "pipeline_status": p_pip["status"] if p_pip else None,
+                    "pipeline_id": p_pip["id"] if p_pip else None,
+                })
+
             rgs_json.append({
                 "release_group_id": rg.release_group_id,
                 "title": rg.title,
                 "primary_type": rg.primary_type,
                 "first_date": rg.first_date,
                 "release_ids": rg.release_ids,
+                "pressings": pressings_json,
                 "track_count": rg.track_count,
                 "unique_track_count": rg.unique_track_count,
                 "covered_by": rg.covered_by,

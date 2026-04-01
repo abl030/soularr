@@ -1663,9 +1663,6 @@ function renderDisambRG(rg) {
   if (rg.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
   if (rg.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
 
-  const canAdd = !rg.library_status && !rg.pipeline_status && !rg.covered_by;
-  const canRemove = rg.pipeline_status === 'wanted' && rg.pipeline_id;
-
   let statusBadge;
   if (rg.covered_by) {
     statusBadge = `<span style="color:#777;font-size:0.85em;margin-left:6px;">covered by ${esc(rg.covered_by)}</span>`;
@@ -1673,18 +1670,6 @@ function renderDisambRG(rg) {
     statusBadge = `<span style="color:#6d6;font-weight:600;margin-left:6px;">${rg.unique_track_count} unique</span>`;
   } else {
     statusBadge = '<span style="color:#555;margin-left:6px;">0 unique</span>';
-  }
-
-  let btnHtml;
-  if (canAdd) {
-    // Add first release ID (any pressing will do)
-    btnHtml = `<button class="btn btn-add" onclick="event.stopPropagation(); addRelease('${rg.release_ids[0]}', this)">Add</button>`;
-  } else if (canRemove) {
-    btnHtml = `<button class="btn" style="background:#5a2a2a;color:#f88;" onclick="event.stopPropagation(); disambRemove(${rg.pipeline_id}, this)">Remove</button>`;
-  } else if (rg.covered_by && !rg.library_status && !rg.pipeline_status) {
-    btnHtml = `<button class="btn btn-add" disabled>Covered</button>`;
-  } else {
-    btnHtml = `<button class="btn btn-add" disabled>${rg.library_status ? 'Owned' : rg.pipeline_status || '?'}</button>`;
   }
 
   const opacity = rg.covered_by ? '0.5' : '1';
@@ -1695,7 +1680,6 @@ function renderDisambRG(rg) {
         <div class="release-title">${esc(rg.title)}${badges}${statusBadge}</div>
         <div class="release-meta" style="color:#777;">${rg.first_date || '?'} — ${esc(rg.primary_type)} — ${rg.track_count}t — ${rg.release_ids.length} pressing${rg.release_ids.length > 1 ? 's' : ''}</div>
       </div>
-      ${btnHtml}
     </div>
     <div id="disamb-rg-${rg.release_group_id}" style="display:none;padding:4px 0 8px 16px;"></div>
   `;
@@ -1736,17 +1720,52 @@ function toggleDisambRGTracks(rgId) {
   if (el.style.display !== 'none') { el.style.display = 'none'; return; }
 
   const rg = disambData.release_groups.find(rg => rg.release_group_id === rgId);
-  if (!rg || !rg.tracks) { el.style.display = 'none'; return; }
+  if (!rg) { el.style.display = 'none'; return; }
 
-  el.innerHTML = rg.tracks.map(t => {
-    const star = t.unique ? '<span style="color:#6d6;font-weight:bold;">★ </span>' : '<span style="color:#555;">  </span>';
-    const alsoOn = !t.unique && t.also_on && t.also_on.length > 0
-      ? `<span style="color:#777;font-size:0.85em;margin-left:8px;">also on: ${t.also_on.map(esc).join(', ')}</span>`
-      : '';
-    return `<div class="lib-track" style="opacity:${t.unique ? 1 : 0.6};">
-      ${star}<span>${esc(t.title)}${alsoOn}</span>
-    </div>`;
-  }).join('');
+  let html = '';
+
+  // Show pressings with individual Add/Remove buttons
+  if (rg.pressings && rg.pressings.length > 0) {
+    html += '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">Pressings:</div>';
+    html += rg.pressings.map(p => {
+      let badges = '';
+      if (p.in_library) badges += '<span class="badge badge-library">in library</span>';
+      if (p.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+      if (p.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
+
+      const canAdd = !p.in_library && !p.pipeline_status;
+      const canRemove = p.pipeline_status === 'wanted' && p.pipeline_id;
+      let btnHtml;
+      if (canAdd) {
+        btnHtml = `<button class="btn btn-add" style="font-size:0.8em;padding:2px 8px;" onclick="event.stopPropagation(); addRelease('${p.release_id}', this)">Add</button>`;
+      } else if (canRemove) {
+        btnHtml = `<button class="btn" style="background:#5a2a2a;color:#f88;font-size:0.8em;padding:2px 8px;" onclick="event.stopPropagation(); disambRemove(${p.pipeline_id}, this)">Remove</button>`;
+      } else {
+        btnHtml = `<button class="btn btn-add" disabled style="font-size:0.8em;padding:2px 8px;">${p.in_library ? 'Owned' : p.pipeline_status || '?'}</button>`;
+      }
+
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">
+        <span>${esc(p.title)}${badges} <span style="color:#777;">${p.country || '?'} ${p.date || '?'} — ${esc(p.format)} — ${p.track_count}t</span></span>
+        ${btnHtml}
+      </div>`;
+    }).join('');
+  }
+
+  // Show unique tracks
+  if (rg.tracks && rg.tracks.length > 0) {
+    html += '<div style="margin:8px 0 4px;color:#888;font-size:0.85em;">Recordings (unioned across pressings):</div>';
+    html += rg.tracks.map(t => {
+      const star = t.unique ? '<span style="color:#6d6;font-weight:bold;">★ </span>' : '<span style="color:#555;">  </span>';
+      const alsoOn = !t.unique && t.also_on && t.also_on.length > 0
+        ? `<span style="color:#777;font-size:0.85em;margin-left:8px;">also on: ${t.also_on.map(esc).join(', ')}</span>`
+        : '';
+      return `<div class="lib-track" style="opacity:${t.unique ? 1 : 0.6};">
+        ${star}<span>${esc(t.title)}${alsoOn}</span>
+      </div>`;
+    }).join('');
+  }
+
+  el.innerHTML = html;
   el.style.display = 'block';
 }
 
