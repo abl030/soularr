@@ -579,7 +579,15 @@ async function addRelease(mbid, btn) {
       btn.textContent = 'Added';
       toast(`Added: ${data.artist} - ${data.album} (${data.tracks} tracks)`);
     } else if (data.status === 'exists') {
-      btn.textContent = data.current_status;
+      if (data.current_status === 'wanted' && data.id) {
+        btn.textContent = 'Remove';
+        btn.disabled = false;
+        btn.style.background = '#5a2a2a';
+        btn.style.color = '#f88';
+        btn.onclick = (e) => { e.stopPropagation(); disambRemove(data.id, btn); };
+      } else {
+        btn.textContent = data.current_status;
+      }
       toast(`Already in pipeline (${data.current_status})`);
     } else {
       btn.textContent = 'Error';
