@@ -93,7 +93,7 @@ def repair_mp3_headers(folder_path: str) -> None:
             continue
         filepath = os.path.join(folder_path, f)
         try:
-            result = sp.run(["mp3val", "-f", filepath],
+            result = sp.run(["mp3val", "-f", "-nb", filepath],
                             capture_output=True, text=True, timeout=60)
             if "FIXED" in result.stdout:
                 logger.info(f"MP3VAL: fixed {f}")

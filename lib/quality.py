@@ -386,7 +386,8 @@ def parse_import_result(stdout_text: str) -> Optional[ImportResult]:
 # Pre-import spectral decision (MP3/CBR path in process_completed_album)
 # ---------------------------------------------------------------------------
 
-def spectral_import_decision(spectral_grade, spectral_bitrate, existing_spectral_bitrate):
+def spectral_import_decision(spectral_grade, spectral_bitrate, existing_spectral_bitrate,
+                             existing_min_bitrate=None):
     """Decide whether to import a download based on spectral analysis.
 
     Called in process_completed_album() for non-FLAC downloads after
@@ -402,12 +403,16 @@ def spectral_import_decision(spectral_grade, spectral_bitrate, existing_spectral
         spectral_grade:             "genuine" | "marginal" | "suspect" | "likely_transcode"
         spectral_bitrate:           estimated bitrate from cliff detection (kbps), or None
         existing_spectral_bitrate:  spectral estimate of what's already in beets (kbps), or 0/None
+        existing_min_bitrate:       container bitrate from beets (kbps), fallback when
+                                    existing files are genuine (no spectral estimate)
     """
     if spectral_grade not in ("suspect", "likely_transcode"):
         return "import"
 
     new_q = spectral_bitrate or 0
-    existing_q = existing_spectral_bitrate or 0
+    # Fall back to container bitrate when existing files have no spectral estimate
+    # (genuine files have no cliff → no estimated bitrate)
+    existing_q = existing_spectral_bitrate or existing_min_bitrate or 0
 
     if new_q and existing_q and new_q <= existing_q:
         return "reject"

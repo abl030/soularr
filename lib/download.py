@@ -310,7 +310,8 @@ def _apply_spectral_decision(album_data: GrabListEntry, bv_result: ValidationRes
     label = f"{album_data.artist} - {album_data.title}"
 
     spectral_decision = spectral_import_decision(
-        spec_ctx.grade, new_quality, existing_quality)
+        spec_ctx.grade, new_quality, existing_quality,
+        existing_min_bitrate=spec_ctx.existing_min_bitrate)
 
     if spectral_decision == "reject":
         logger.warning(

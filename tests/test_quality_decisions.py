@@ -94,6 +94,33 @@ class TestSpectralImportDecision(unittest.TestCase):
         self.assertEqual(
             spectral_import_decision("suspect", None, 128), "import")
 
+    # --- fallback to existing_min_bitrate when spectral is None ---
+
+    def test_suspect_falls_back_to_existing_min_bitrate(self):
+        """Existing files are genuine (no spectral bitrate) but have container bitrate.
+        Should reject 96kbps transcode vs 128kbps genuine existing."""
+        self.assertEqual(
+            spectral_import_decision("likely_transcode", 96, None,
+                                     existing_min_bitrate=128), "reject")
+
+    def test_suspect_upgrade_vs_existing_min_bitrate(self):
+        """Suspect 192kbps vs genuine existing 128kbps container → upgrade."""
+        self.assertEqual(
+            spectral_import_decision("suspect", 192, None,
+                                     existing_min_bitrate=128), "import_upgrade")
+
+    def test_fallback_not_used_when_spectral_exists(self):
+        """When existing spectral bitrate is available, ignore fallback."""
+        self.assertEqual(
+            spectral_import_decision("suspect", 192, 128,
+                                     existing_min_bitrate=64), "import_upgrade")
+
+    def test_suspect_no_existing_at_all(self):
+        """Neither spectral nor container bitrate → truly no existing."""
+        self.assertEqual(
+            spectral_import_decision("likely_transcode", 96, None,
+                                     existing_min_bitrate=None), "import_no_exist")
+
 
 # ============================================================================
 # import_quality_decision
@@ -403,7 +430,8 @@ class TestSpectralContext(unittest.TestCase):
             grade="suspect", bitrate=192,
             existing_spectral_bitrate=128)
         result = spectral_import_decision(
-            ctx.grade, ctx.bitrate, ctx.existing_spectral_bitrate or 0)
+            ctx.grade, ctx.bitrate, ctx.existing_spectral_bitrate or 0,
+            existing_min_bitrate=ctx.existing_min_bitrate)
         self.assertEqual(result, "import_upgrade")
 
     def test_no_check_needed(self):

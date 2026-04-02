@@ -127,6 +127,7 @@ class TestRepairMp3Headers(unittest.TestCase):
                 self.assertEqual(mock_run.call_count, 1)
                 call_args = mock_run.call_args[0][0]
                 self.assertEqual(call_args[0], "mp3val")
+                self.assertIn("-nb", call_args, "must pass -nb to suppress .bak files")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
