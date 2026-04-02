@@ -24,6 +24,22 @@
 - No decision logic inline in soularr.py — call the pure function, branch on result
 - Every pure function must have direct unit tests (not just tested through integration)
 
+## Frontend (JavaScript)
+- ES6 modules in `web/js/` — no inline `<script>` in HTML
+- `// @ts-check` + JSDoc types on all exported functions
+- Pure functions in `web/js/util.js` — testable via Node without DOM
+- Shared state in `web/js/state.js` — no bare globals across modules
+- Cross-module onclick handlers go through `window.*` bindings in `main.js`
+- `node --check web/js/*.js` must pass (runs in pre-commit + CI)
+- JS unit tests in `tests/test_js_util.mjs` — run with `node`, no npm
+- Static JS served at `/js/*.js` by server.py
+
+## Backend (Server Routes)
+- Route handlers in `web/routes/*.py` — server.py is routing/cache/main only
+- Route functions take `(handler, params)` or `(handler, body)`, not `self`
+- All beets queries go through `lib/beets_db.py` `BeetsDB` class — no raw `sqlite3.connect()` in handlers
+- Route modules access server globals via `_server()` deferred import
+
 ## Commits
 - One logical change per commit
 - Run full test suite + pyright before committing
