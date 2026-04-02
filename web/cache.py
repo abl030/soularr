@@ -18,10 +18,11 @@ TTL_MB = 86400       # 24h — MB mirror data, effectively static
 TTL_LIBRARY = 300    # 5min — beets/pipeline data, also invalidated on mutation
 
 # Group → pattern mapping for bulk invalidation
-_GROUP_PATTERNS: dict[str, str] = {
-    "pipeline": "pipeline:*",
-    "library": "library:*",
-    "mb": "mb:*",
+# Keys are stored as "web:<url_path>", so patterns match on URL prefixes
+_GROUP_PATTERNS: dict[str, list[str]] = {
+    "pipeline": ["web:/api/pipeline*"],
+    "library": ["web:/api/beets*", "web:/api/library*"],
+    "mb": ["web:/api/search*", "web:/api/artist*", "web:/api/release*"],
 }
 
 _redis: object | None = None
@@ -93,8 +94,8 @@ def invalidate_pattern(pattern: str) -> None:
 def invalidate_groups(*groups: str) -> None:
     """Invalidate all keys in named groups (e.g. 'pipeline', 'library')."""
     for group in groups:
-        pattern = _GROUP_PATTERNS.get(group)
-        if pattern:
+        patterns = _GROUP_PATTERNS.get(group, [])
+        for pattern in patterns:
             invalidate_pattern(pattern)
 
 
