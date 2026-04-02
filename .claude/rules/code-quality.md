@@ -3,6 +3,8 @@
 ## Type Safety
 - All new dataclasses, functions, and module-level code must pass pyright with 0 errors
 - Use typed dataclasses (not dicts) for structured data crossing module boundaries
+- **No dual-interface types.** Never add `__getitem__`, `.get()`, or `isinstance(x, dict)` dispatch to a dataclass. If a function receives both dicts and dataclasses, that is a type error — fix the callers, not the receiver. Temporary bridges become permanent bugs.
+- If a function parameter is untyped and accepts multiple representations (dict or dataclass), type it and fix all callers to pass the correct type
 - Inner data structures must also be typed — no `list[dict]` when a dataclass exists
 - Verify with: `pyright <files>` on every touched file before committing
 
