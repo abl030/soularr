@@ -398,5 +398,19 @@ class TestValidationResultDictCompat(unittest.TestCase):
         self.assertEqual(vr["valid"], True)
 
 
+class TestValidationResultSetItem(unittest.TestCase):
+    """Bug fix: bv_result["valid"] = False must work (dict-style assignment)."""
+
+    def test_setitem_sets_attribute(self) -> None:
+        vr = ValidationResult(valid=True)
+        vr["valid"] = False
+        self.assertFalse(vr.valid)
+
+    def test_setitem_sets_scenario(self) -> None:
+        vr = ValidationResult()
+        vr["scenario"] = "spectral_reject"
+        self.assertEqual(vr.scenario, "spectral_reject")
+
+
 if __name__ == "__main__":
     unittest.main()

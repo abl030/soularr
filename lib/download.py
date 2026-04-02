@@ -48,9 +48,8 @@ def cancel_and_delete(files: list[Any], ctx: SoularrContext) -> None:
         except Exception:
             logger.warning(f"Failed to cancel download {file.filename} for {file.username}",
                            exc_info=True)
-        delete_dir = file.file_dir.split("\\")[-1]
-        os.chdir(ctx.cfg.slskd_download_dir)
-        if os.path.exists(delete_dir):
+        delete_dir = os.path.join(ctx.cfg.slskd_download_dir, file.file_dir.split("\\")[-1])
+        if os.path.isdir(delete_dir):
             shutil.rmtree(delete_dir)
 
 
@@ -183,7 +182,6 @@ def _gather_spectral_context(album_data: Any, import_folder: str,
 def process_completed_album(album_data: GrabListEntry, failed_grab: list[Any],
                             ctx: SoularrContext) -> None:
     """Process a fully-downloaded album: move files, tag, validate, stage/import."""
-    os.chdir(ctx.cfg.slskd_download_dir)
     import_folder_name = sanitize_folder_name(
         f"{album_data.artist} - {album_data.title} ({album_data.year})")
     import_folder_fullpath = os.path.join(ctx.cfg.slskd_download_dir, import_folder_name)
@@ -454,6 +452,11 @@ def monitor_downloads(grab_list: dict[Any, GrabListEntry],
                 if entry.error_count is None:
                     entry.error_count = 0
                 entry.error_count += 1
+                if entry.error_count >= 60:
+                    logger.error(f"API errors for {entry.artist} - {entry.title} "
+                                 f"({entry.error_count} consecutive), giving up")
+                    delete_album("API errors for")
+                    del grab_list[album_id]
 
         if len(grab_list) < 1:
             break

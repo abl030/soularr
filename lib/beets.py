@@ -58,6 +58,16 @@ def beets_validate(harness_path, album_path, mb_release_id, distance_threshold=0
     assert proc.stderr is not None
 
     got_choose_match = False
+    # Kill harness if it hangs — 120s total timeout
+    import threading
+    timed_out = False
+    def _timeout_kill():
+        nonlocal timed_out
+        timed_out = True
+        logger.error("BEETS_VALIDATE: harness timed out after 120s, killing")
+        proc.kill()
+    timer = threading.Timer(120.0, _timeout_kill)
+    timer.start()
     try:
         for line in proc.stdout:
             line = line.strip()
@@ -131,6 +141,9 @@ def beets_validate(harness_path, album_path, mb_release_id, distance_threshold=0
         result.error = str(e)
         logger.error(f"BEETS_VALIDATE: exception: {e}")
     finally:
+        timer.cancel()
+        if timed_out:
+            result.error = "Harness timed out after 120s"
         stderr_out = ""
         try:
             stderr_out = proc.stderr.read()

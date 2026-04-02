@@ -251,9 +251,8 @@ class TestCancelAndDelete(unittest.TestCase):
         from lib.download import cancel_and_delete
         ctx = _make_ctx()
         f = _make_file(file_dir="someuser\\Album Folder")
-        with patch("os.path.exists", return_value=True), \
-             patch("shutil.rmtree") as mock_rm, \
-             patch("os.chdir"):
+        with patch("os.path.isdir", return_value=True), \
+             patch("shutil.rmtree") as mock_rm:
             cancel_and_delete([f], ctx)
         ctx.slskd.transfers.cancel_download.assert_called_once_with(
             username="user1", id="file-id-1")

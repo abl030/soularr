@@ -68,6 +68,23 @@ class TestMoveFailedImport(unittest.TestCase):
         result = move_failed_import("/nonexistent/path/album")
         self.assertIsNone(result)
 
+    def test_works_when_cwd_differs_from_src_parent(self):
+        """Bug regression: move_failed_import must work regardless of CWD."""
+        from lib.util import move_failed_import
+        # Create source in a subdirectory, NOT in CWD
+        subdir = os.path.join(self.tmpdir, "staging", "incoming")
+        os.makedirs(subdir)
+        src = os.path.join(subdir, "Artist - Album (2020)")
+        os.makedirs(src)
+        open(os.path.join(src, "track.mp3"), "w").close()
+        # CWD is self.tmpdir, NOT subdir — this previously broke
+        result = move_failed_import(src)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn("failed_imports", result)
+        self.assertTrue(os.path.isdir(result))
+        self.assertFalse(os.path.exists(src))
+
 
 class TestStageToAi(unittest.TestCase):
 

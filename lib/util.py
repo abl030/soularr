@@ -28,11 +28,18 @@ def sanitize_folder_name(folder_name: str) -> str:
 
 
 def move_failed_import(src_path: str) -> str | None:
-    """Move a failed import to the failed_imports directory. Returns the absolute destination path."""
-    failed_imports_dir = os.path.join(os.getcwd(), "failed_imports")
+    """Move a failed import to a failed_imports/ sibling directory.
 
-    if not os.path.exists(failed_imports_dir):
-        os.makedirs(failed_imports_dir)
+    Creates failed_imports/ next to src_path's parent. Uses absolute paths
+    throughout — does not depend on os.getcwd().
+    """
+    src_path = os.path.abspath(src_path)
+    if not os.path.exists(src_path):
+        return None
+
+    parent_dir = os.path.dirname(src_path)
+    failed_imports_dir = os.path.join(parent_dir, "failed_imports")
+    os.makedirs(failed_imports_dir, exist_ok=True)
 
     folder_name = os.path.basename(src_path)
     target_path = os.path.join(failed_imports_dir, folder_name)
@@ -42,11 +49,9 @@ def move_failed_import(src_path: str) -> str | None:
         target_path = os.path.join(failed_imports_dir, f"{folder_name}_{counter}")
         counter += 1
 
-    if os.path.exists(folder_name):
-        shutil.move(folder_name, target_path)
-        logger.info(f"Failed import moved to: {target_path}")
-        return target_path
-    return None
+    shutil.move(src_path, target_path)
+    logger.info(f"Failed import moved to: {target_path}")
+    return target_path
 
 
 def stage_to_ai(album_data: Any, source_path: str, staging_dir: str) -> str:

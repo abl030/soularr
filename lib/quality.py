@@ -222,6 +222,10 @@ class ValidationResult:
         """Dict-style ["key"] access for backward compatibility."""
         return getattr(self, key)
 
+    def __setitem__(self, key: str, value: object) -> None:
+        """Dict-style ["key"] = value for backward compatibility."""
+        setattr(self, key, value)
+
 
 @dataclass
 class SpectralContext:
