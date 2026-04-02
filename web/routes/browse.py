@@ -1,0 +1,213 @@
+"""Browse/MusicBrainz GET route handlers extracted from server.py."""
+from __future__ import annotations
+
+import os
+import re
+import sys
+from typing import TYPE_CHECKING
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+
+import mb as mb_api  # noqa: E402
+
+if TYPE_CHECKING:
+    from http.server import BaseHTTPRequestHandler
+
+
+def _server():
+    """Lazy import to avoid circular dependency with server.py.
+
+    Returns the server module. All access to mb_api, _db(), _beets_db(),
+    check_beets_library(), check_pipeline() goes through this so that
+    test mocks on web.server.* are respected.
+    """
+    from web import server
+    return server
+
+
+def get_search(h: BaseHTTPRequestHandler, params: dict[str, list[str]]) -> None:
+    srv = _server()
+    q = params.get("q", [""])[0].strip()
+    if not q:
+        h._error("Missing query parameter 'q'")  # type: ignore[attr-defined]
+        return
+    search_type = params.get("type", ["artist"])[0]
+    if search_type == "release":
+        results = srv.mb_api.search_release_groups(q)
+        h._json({"release_groups": results})  # type: ignore[attr-defined]
+    else:
+        artists = srv.mb_api.search_artists(q)
+        h._json({"artists": artists})  # type: ignore[attr-defined]
+
+
+def get_library_artist(h: BaseHTTPRequestHandler, params: dict[str, list[str]]) -> None:
+    srv = _server()
+    name = params.get("name", [""])[0].strip()
+    mbid = params.get("mbid", [""])[0].strip()
+    if not name:
+        h._error("Missing parameter 'name'")  # type: ignore[attr-defined]
+        return
+    albums = srv.get_library_artist(name, mbid)
+    h._json({"albums": albums})  # type: ignore[attr-defined]
+
+
+def get_artist(h: BaseHTTPRequestHandler, params: dict[str, list[str]], artist_id: str) -> None:
+    srv = _server()
+    rgs = srv.mb_api.get_artist_release_groups(artist_id)
+    official_rg_ids = srv.mb_api.get_official_release_group_ids(artist_id)
+    for rg in rgs:
+        rg["has_official"] = rg["id"] in official_rg_ids
+    h._json({"release_groups": rgs})  # type: ignore[attr-defined]
+
+
+def get_artist_disambiguate(h: BaseHTTPRequestHandler, params: dict[str, list[str]], artist_id: str) -> None:
+    srv = _server()
+    from lib.artist_releases import (
+        filter_non_live,
+        analyse_artist_releases,
+    )
+
+    raw_releases = srv.mb_api.get_artist_releases_with_recordings(artist_id)
+    filtered = filter_non_live(raw_releases)
+    rg_infos = analyse_artist_releases(filtered)
+
+    # Cross-reference library and pipeline status using all release IDs
+    all_mbids: list[str] = []
+    for rg in rg_infos:
+        all_mbids.extend(rg.release_ids)
+    in_library = srv.check_beets_library(all_mbids) if all_mbids else set()
+    in_pipeline = srv.check_pipeline(all_mbids) if all_mbids else {}
+
+    rgs_json: list[dict] = []
+    for rg in rg_infos:
+        # A release group is "in library" if ANY pressing is
+        lib_status = "in_library" if any(rid in in_library for rid in rg.release_ids) else None
+        # Pipeline status: find the first pressing that's in the pipeline
+        pip_status: str | None = None
+        pip_id: int | None = None
+        for rid in rg.release_ids:
+            pip = in_pipeline.get(rid)
+            if pip:
+                pip_status = pip["status"]
+                pip_id = pip["id"]
+                break
+
+        # Look up beets album IDs for in-library pressings
+        lib_mbids = [p.release_id for p in rg.pressings if p.release_id in in_library]
+        beets_ids: dict[str, int] = {}
+        b = srv._beets_db()
+        if lib_mbids and b:
+            ph = ",".join("?" for _ in lib_mbids)
+            for row in b._conn.execute(
+                f"SELECT id, mb_albumid FROM albums WHERE mb_albumid IN ({ph})",
+                lib_mbids,
+            ).fetchall():
+                beets_ids[row[1]] = row[0]
+
+        pressings_json = []
+        for p in rg.pressings:
+            p_lib = p.release_id in in_library
+            p_pip = in_pipeline.get(p.release_id)
+            pressings_json.append({
+                "release_id": p.release_id,
+                "title": p.title,
+                "date": p.date,
+                "format": p.format,
+                "track_count": p.track_count,
+                "country": p.country,
+                "recording_ids": p.recording_ids,
+                "in_library": p_lib,
+                "beets_album_id": beets_ids.get(p.release_id),
+                "pipeline_status": p_pip["status"] if p_pip else None,
+                "pipeline_id": p_pip["id"] if p_pip else None,
+            })
+
+        rgs_json.append({
+            "release_group_id": rg.release_group_id,
+            "title": rg.title,
+            "primary_type": rg.primary_type,
+            "first_date": rg.first_date,
+            "release_ids": rg.release_ids,
+            "pressings": pressings_json,
+            "track_count": rg.track_count,
+            "unique_track_count": rg.unique_track_count,
+            "covered_by": rg.covered_by,
+            "library_status": lib_status,
+            "pipeline_status": pip_status,
+            "pipeline_id": pip_id,
+            "tracks": [
+                {
+                    "recording_id": t.recording_id,
+                    "title": t.title,
+                    "unique": t.unique,
+                    "also_on": t.also_on,
+                }
+                for t in rg.tracks
+            ],
+        })
+
+    artist_name = srv.mb_api.get_artist_name(artist_id)
+    h._json({  # type: ignore[attr-defined]
+        "artist_id": artist_id,
+        "artist_name": artist_name,
+        "release_groups": rgs_json,
+    })
+
+
+def get_release_group(h: BaseHTTPRequestHandler, params: dict[str, list[str]], rg_id: str) -> None:
+    srv = _server()
+    data = srv.mb_api.get_release_group_releases(rg_id)
+    # Check which releases are in pipeline/library
+    mbids = [r["id"] for r in data["releases"]]
+    in_library = srv.check_beets_library(mbids)
+    in_pipeline = srv.check_pipeline(mbids)
+    for r in data["releases"]:
+        r["in_library"] = r["id"] in in_library
+        pi = in_pipeline.get(r["id"])
+        r["pipeline_status"] = pi["status"] if pi else None
+        r["pipeline_id"] = pi["id"] if pi else None
+    h._json(data)  # type: ignore[attr-defined]
+
+
+def get_release(h: BaseHTTPRequestHandler, params: dict[str, list[str]], release_id: str) -> None:
+    srv = _server()
+    data = srv.mb_api.get_release(release_id)
+    data["in_library"] = bool(srv.check_beets_library([release_id]))
+    req = srv._db().get_request_by_mb_release_id(release_id)
+    data["pipeline_status"] = req["status"] if req else None
+    data["pipeline_id"] = req["id"] if req else None
+    # Include beets track info if in library
+    b = srv._beets_db()
+    if data["in_library"] and b:
+        album = b._conn.execute(
+            "SELECT id FROM albums WHERE mb_albumid = ?", (release_id,)
+        ).fetchone()
+        if album:
+            items = b._conn.execute(
+                "SELECT title, track, disc, length, format, bitrate, "
+                "       samplerate, bitdepth "
+                "FROM items WHERE album_id = ? ORDER BY disc, track",
+                (album[0],),
+            ).fetchall()
+            data["beets_tracks"] = [{
+                "title": i[0], "track": i[1], "disc": i[2],
+                "length": i[3], "format": i[4], "bitrate": i[5],
+                "samplerate": i[6], "bitdepth": i[7],
+            } for i in items]
+    h._json(data)  # type: ignore[attr-defined]
+
+
+# ── Route tables ─────────────────────────────────────────────────────
+
+GET_ROUTES: dict[str, object] = {
+    "/api/search": get_search,
+    "/api/library/artist": get_library_artist,
+}
+
+GET_PATTERNS: list[tuple[re.Pattern[str], object]] = [
+    (re.compile(r"^/api/artist/([a-f0-9-]+)$"), get_artist),
+    (re.compile(r"^/api/artist/([a-f0-9-]+)/disambiguate$"), get_artist_disambiguate),
+    (re.compile(r"^/api/release-group/([a-f0-9-]+)$"), get_release_group),
+    (re.compile(r"^/api/release/([a-f0-9-]+)$"), get_release),
+]
