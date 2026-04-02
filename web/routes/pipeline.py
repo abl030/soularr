@@ -87,12 +87,15 @@ def get_pipeline_recent(h, params: dict[str, list[str]]) -> None:
     recent = s._db().get_recent(limit=20)
     mbids = [r["mb_release_id"] for r in recent if r.get("mb_release_id")]
     beets_info = s.check_beets_library_detail(mbids) if mbids else {}
+    # Batch fetch track counts and download history
+    ids = [int(r["id"]) for r in recent]
+    track_counts = s._db().get_track_counts(ids)
+    history_batch = s._db().get_download_history_batch(ids)
     serialized = []
     for r in recent:
         item = s._serialize_row(r)
         mbid = r.get("mb_release_id")
-        pipeline_tracks = len(s._db().get_tracks(r["id"]))
-        item["pipeline_tracks"] = pipeline_tracks
+        item["pipeline_tracks"] = track_counts.get(r["id"], 0)
         if mbid and mbid in beets_info:
             item["in_beets"] = True
             bi = beets_info[mbid]
@@ -110,7 +113,7 @@ def get_pipeline_recent(h, params: dict[str, list[str]]) -> None:
             else:
                 item["in_beets"] = False
                 item["beets_tracks"] = 0
-        history = s._db().get_download_history(r["id"])
+        history = history_batch.get(r["id"], [])
         success = next((dl for dl in history if dl.get("outcome") == "success"), None)
         if success:
             for k in ("soulseek_username", "filetype", "bitrate",
@@ -128,11 +131,18 @@ def get_pipeline_all(h, params: dict[str, list[str]]) -> None:
     s = _server()
     counts = s._db().count_by_status()
     all_data: dict[str, object] = {"counts": counts}
+    # Collect all items across statuses, then batch-fetch history
+    status_items: dict[str, list[dict]] = {}
+    all_ids: list[int] = []
+    for status in ("wanted", "imported", "manual"):
+        rows = [s._serialize_row(r) for r in s._db().get_by_status(status)]
+        status_items[status] = rows
+        all_ids.extend([int(str(r["id"])) for r in rows])
+    history_batch = s._db().get_download_history_batch(all_ids)
     for status in ("wanted", "imported", "manual"):
         items = []
-        for r in s._db().get_by_status(status):
-            item = s._serialize_row(r)
-            history = s._db().get_download_history(r["id"])
+        for item in status_items[status]:
+            history = history_batch.get(item["id"], [])
             if history:
                 last = history[0]
                 entry = LogEntry.from_row(last)

@@ -1,6 +1,6 @@
 """Beets library route handlers — search, album detail, recent, delete."""
 
-import json, os, re, sys, sqlite3, shutil
+import json, os, re, sys, sqlite3
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -117,11 +117,18 @@ def post_beets_delete(h, body: dict) -> None:
     conn.execute("DELETE FROM albums WHERE id = ?", (int(album_id),))
     conn.commit()
     conn.close()
-    # Delete files from disk
+    # Delete individual files from disk (safe — won't destroy shared directories)
     deleted_files = 0
+    for path in file_paths:
+        if os.path.isfile(path):
+            os.remove(path)
+            deleted_files += 1
+    # Remove directory only if now empty (other albums may share it)
     if album_dir and os.path.isdir(album_dir):
-        shutil.rmtree(album_dir)
-        deleted_files = len(file_paths)
+        try:
+            os.rmdir(album_dir)
+        except OSError:
+            pass  # not empty — other albums' files still there
     h._json({
         "status": "ok", "id": album_id,
         "album": album_name, "artist": artist_name,

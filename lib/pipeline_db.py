@@ -480,6 +480,42 @@ class PipelineDB:
         """, (request_id,))
         return [dict(r) for r in cur.fetchall()]
 
+    def get_download_history_batch(self, request_ids: list[int]) -> dict[int, list[dict]]:
+        """Batch fetch download history for multiple request IDs.
+
+        Returns dict of request_id → list of history rows (most recent first).
+        """
+        if not request_ids:
+            return {}
+        ph = ",".join(["%s"] * len(request_ids))
+        cur = self._execute(
+            f"SELECT * FROM download_log WHERE request_id IN ({ph}) ORDER BY id DESC",
+            tuple(request_ids),
+        )
+        result: dict[int, list[dict]] = {}
+        for row in cur.fetchall():
+            r = dict(row)
+            rid = r["request_id"]
+            if rid not in result:
+                result[rid] = []
+            result[rid].append(r)
+        return result
+
+    def get_track_counts(self, request_ids: list[int]) -> dict[int, int]:
+        """Batch fetch track counts for multiple request IDs.
+
+        Returns dict of request_id → track count (only for IDs with tracks).
+        """
+        if not request_ids:
+            return {}
+        ph = ",".join(["%s"] * len(request_ids))
+        cur = self._execute(
+            f"SELECT request_id, COUNT(*) FROM album_tracks "
+            f"WHERE request_id IN ({ph}) GROUP BY request_id",
+            tuple(request_ids),
+        )
+        return {row["request_id"]: row["count"] for row in cur.fetchall()}
+
     # --- Denylist ---
 
     def add_denylist(self, request_id, username, reason=None):

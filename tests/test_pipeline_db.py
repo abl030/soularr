@@ -561,5 +561,80 @@ class TestSpectralColumns(unittest.TestCase):
         self.assertIsNone(req.get("on_disk_spectral_bitrate"))
 
 
+@requires_postgres
+class TestBatchHistory(unittest.TestCase):
+    """Test get_download_history_batch — batch download history lookup."""
+
+    def setUp(self):
+        self.db = make_db()
+        self.req1 = self.db.add_request(
+            mb_release_id="batch-1", artist_name="A", album_title="B", source="request")
+        self.req2 = self.db.add_request(
+            mb_release_id="batch-2", artist_name="C", album_title="D", source="request")
+        self.req3 = self.db.add_request(
+            mb_release_id="batch-3", artist_name="E", album_title="F", source="request")
+        # Add history for req1 and req2, but not req3
+        self.db.log_download(self.req1, soulseek_username="user1", outcome="success")
+        self.db.log_download(self.req1, soulseek_username="user2", outcome="rejected")
+        self.db.log_download(self.req2, soulseek_username="user3", outcome="success")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_returns_grouped_by_request_id(self):
+        result = self.db.get_download_history_batch([self.req1, self.req2, self.req3])
+        self.assertIn(self.req1, result)
+        self.assertIn(self.req2, result)
+        self.assertNotIn(self.req3, result)  # no history
+        self.assertEqual(len(result[self.req1]), 2)
+        self.assertEqual(len(result[self.req2]), 1)
+
+    def test_empty_list(self):
+        result = self.db.get_download_history_batch([])
+        self.assertEqual(result, {})
+
+    def test_order_is_desc_by_id(self):
+        result = self.db.get_download_history_batch([self.req1])
+        history = result[self.req1]
+        # Most recent first (rejected was logged after success)
+        self.assertEqual(history[0]["outcome"], "rejected")
+        self.assertEqual(history[1]["outcome"], "success")
+
+
+@requires_postgres
+class TestTrackCounts(unittest.TestCase):
+    """Test get_track_counts — batch track count lookup."""
+
+    def setUp(self):
+        self.db = make_db()
+        self.req1 = self.db.add_request(
+            mb_release_id="tc-1", artist_name="A", album_title="B", source="request")
+        self.req2 = self.db.add_request(
+            mb_release_id="tc-2", artist_name="C", album_title="D", source="request")
+        self.req3 = self.db.add_request(
+            mb_release_id="tc-3", artist_name="E", album_title="F", source="request")
+        self.db.set_tracks(self.req1, [
+            {"disc_number": 1, "track_number": 1, "title": "T1", "length_seconds": 100},
+            {"disc_number": 1, "track_number": 2, "title": "T2", "length_seconds": 200},
+        ])
+        self.db.set_tracks(self.req2, [
+            {"disc_number": 1, "track_number": 1, "title": "T1", "length_seconds": 100},
+        ])
+        # req3 has no tracks
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_returns_counts(self):
+        result = self.db.get_track_counts([self.req1, self.req2, self.req3])
+        self.assertEqual(result[self.req1], 2)
+        self.assertEqual(result[self.req2], 1)
+        self.assertNotIn(self.req3, result)  # no tracks
+
+    def test_empty_list(self):
+        result = self.db.get_track_counts([])
+        self.assertEqual(result, {})
+
+
 if __name__ == "__main__":
     unittest.main()
