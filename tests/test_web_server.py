@@ -427,17 +427,23 @@ class TestLibraryArtistContract(unittest.TestCase):
                 samplerate INTEGER, bitdepth INTEGER
             );
             INSERT INTO albums (id, album, albumartist, year, mb_albumid,
-                mb_albumartistid, mb_releasegroupid, release_group_title)
+                mb_albumartistid, mb_releasegroupid, release_group_title,
+                added, albumtype, label, country)
             VALUES (1, 'Tallahassee', 'The Mountain Goats', 2002,
                 'aaaa-bbbb-cccc', 'dddd-eeee-ffff',
-                '1111-2222-3333', 'Tallahassee');
+                '1111-2222-3333', 'Tallahassee',
+                1773651901.0, 'album', '4AD', 'US');
             INSERT INTO albums (id, album, albumartist, year, mb_albumid,
-                mb_albumartistid, mb_releasegroupid, release_group_title)
+                mb_albumartistid, mb_releasegroupid, release_group_title,
+                added, albumtype, label, country)
             VALUES (2, 'Tallahassee (Deluxe)', 'The Mountain Goats', 2002,
                 'xxxx-yyyy-zzzz', 'dddd-eeee-ffff',
-                '1111-2222-3333', 'Tallahassee');
-            INSERT INTO items (album_id, bitrate, path) VALUES (1, 245000, X'2F612F622E6D7033');
-            INSERT INTO items (album_id, bitrate, path) VALUES (2, 320000, X'2F612F632E6D7033');
+                '1111-2222-3333', 'Tallahassee',
+                1773651902.0, 'album', '4AD', 'US');
+            INSERT INTO items (album_id, bitrate, path, format)
+                VALUES (1, 245000, X'2F612F622E6D7033', 'MP3');
+            INSERT INTO items (album_id, bitrate, path, format)
+                VALUES (2, 320000, X'2F612F632E6D7033', 'MP3');
         """)
         conn.close()
 
@@ -455,10 +461,12 @@ class TestLibraryArtistContract(unittest.TestCase):
         import shutil
         shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
-    # Fields the frontend (library.js) requires for rendering and grouping
+    # Fields the frontend (library.js) requires for rendering and grouping.
+    # These must match _album_row_to_dict() output — the single source of truth.
     REQUIRED_FIELDS = {
-        "album", "albumartist", "year", "mb_albumid", "track_count",
-        "source", "mb_releasegroupid", "release_group_title",
+        "id", "album", "artist", "year", "mb_albumid", "track_count",
+        "mb_releasegroupid", "release_group_title", "added",
+        "formats", "min_bitrate", "type", "label", "country",
     }
 
     def test_response_has_all_required_fields(self):

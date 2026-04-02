@@ -113,46 +113,7 @@ def get_library_artist(artist_name, mb_artist_id=None):
     b = _beets_db()
     if not b:
         return []
-    # Match by MB artist ID (exact) plus name match for Discogs-only albums
-    # Discogs IDs are numeric; MB UUIDs contain hyphens — use that to detect non-MB entries
-    if mb_artist_id:
-        rows = b._conn.execute(
-            "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count, "
-            "       mb_releasegroupid, release_group_title "
-            "FROM albums WHERE mb_albumartistid = ? OR mb_albumartistids LIKE ? "
-            "  OR (albumartist LIKE ? COLLATE NOCASE "
-            "      AND (mb_albumartistid IS NULL OR mb_albumartistid = '' "
-            "           OR mb_albumartistid NOT LIKE '%-%')) "
-            "ORDER BY year, album",
-            (mb_artist_id, f"%{mb_artist_id}%", f"%{artist_name}%"),
-        ).fetchall()
-    else:
-        rows = b._conn.execute(
-            "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count, "
-            "       mb_releasegroupid, release_group_title "
-            "FROM albums WHERE albumartist LIKE ? COLLATE NOCASE "
-            "ORDER BY year, album",
-            (f"%{artist_name}%",),
-        ).fetchall()
-    results = []
-    for r in rows:
-        mb_id = r[3] or ""
-        has_mb = bool(mb_id) and "-" in mb_id  # MB UUIDs have hyphens, Discogs IDs are numeric
-        has_discogs = bool(r[4]) or (bool(mb_id) and "-" not in mb_id)
-        source = "musicbrainz" if has_mb else ("discogs" if has_discogs else "unknown")
-        results.append({
-            "album": r[0],
-            "albumartist": r[1],
-            "year": r[2],
-            "mb_albumid": r[3],
-            "track_count": r[5],
-            "source": source,
-            "mb_releasegroupid": r[6],
-            "release_group_title": r[7],
-        })
-    return results
+    return b.get_albums_by_artist(artist_name, mb_artist_id or "")
 
 
 def check_pipeline(mbids):

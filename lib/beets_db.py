@@ -231,20 +231,39 @@ class BeetsDB:
             "added": album[9], "tracks": tracks, "path": album_path,
         }
 
+    _ALBUM_SELECT = (
+        "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+        "       a.albumtype, a.label, a.country, "
+        "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+        "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+        "       a.added, a.mb_releasegroupid, a.release_group_title, "
+        "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
+        "FROM albums a "
+    )
+
     def get_albums_by_artist(self, name: str, mbid: str = "") -> list[dict[str, object]]:
-        """Get all albums by an artist. Matches by albumartist LIKE name."""
-        rows = self._conn.execute(
-            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
-            "       a.albumtype, a.label, a.country, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-            "       a.added, a.mb_releasegroupid, a.release_group_title, "
-            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
-            "FROM albums a "
-            "WHERE a.albumartist LIKE ? COLLATE NOCASE "
-            "ORDER BY a.year, a.album",
-            (f"%{name}%",),
-        ).fetchall()
+        """Get all albums by an artist. Matches by MB artist ID (if given) or name.
+
+        When mbid is provided, matches on mb_albumartistid exact or mb_albumartistids LIKE,
+        plus a name fallback for Discogs-only albums (no MB UUID in mb_albumartistid).
+        """
+        if mbid:
+            rows = self._conn.execute(
+                self._ALBUM_SELECT +
+                "WHERE a.mb_albumartistid = ? OR a.mb_albumartistids LIKE ? "
+                "  OR (a.albumartist LIKE ? COLLATE NOCASE "
+                "      AND (a.mb_albumartistid IS NULL OR a.mb_albumartistid = '' "
+                "           OR a.mb_albumartistid NOT LIKE '%-%')) "
+                "ORDER BY a.year, a.album",
+                (mbid, f"%{mbid}%", f"%{name}%"),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                self._ALBUM_SELECT +
+                "WHERE a.albumartist LIKE ? COLLATE NOCASE "
+                "ORDER BY a.year, a.album",
+                (f"%{name}%",),
+            ).fetchall()
         return [self._album_row_to_dict(r) for r in rows]
 
     def find_by_artist_album(self, artist: str, album: str) -> Optional[int]:
