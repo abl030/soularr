@@ -3,6 +3,15 @@
 # Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 set -e
 
+# JS syntax check (always, fast)
+JS_STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- "*.js" "*.mjs" | head -30)
+if [ -n "$JS_STAGED" ]; then
+    echo "pre-commit: node --check on $(echo "$JS_STAGED" | wc -l) staged JS files..."
+    echo "$JS_STAGED" | while read f; do node --check "$f" || exit 1; done
+    echo "pre-commit: JS syntax OK"
+fi
+
+# Python pyright
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- "*.py" | head -30)
 if [ -z "$STAGED" ]; then
     exit 0

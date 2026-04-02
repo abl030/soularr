@@ -272,6 +272,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _static_js(self, path):
+        """Serve a JS file from the web/js/ directory."""
+        js_path = os.path.join(os.path.dirname(__file__), "js", os.path.basename(path))
+        if not os.path.isfile(js_path):
+            self._error("Not found", 404)
+            return
+        with open(js_path, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _error(self, msg, status=400):
         self._json({"error": msg}, status)
 
@@ -330,6 +345,11 @@ class Handler(BaseHTTPRequestHandler):
             self._cache_capture_ttl = ttl
 
         try:
+            # Serve static JS modules
+            if path.startswith("/js/") and path.endswith(".js"):
+                self._static_js(path[4:])  # strip "/js/" prefix
+                return
+
             method_name = self._GET_ROUTES.get(path)
             if method_name:
                 getattr(self, method_name)(params)

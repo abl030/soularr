@@ -4,6 +4,22 @@
 set -euo pipefail
 
 OUT="/tmp/soularr-test-output.txt"
+
+# JS syntax check
+echo "=== JS syntax check ==="
+for f in web/js/*.js; do
+  node --check "$f" || { echo "FAIL: $f"; exit 1; }
+done
+echo "All JS files OK"
+echo ""
+
+# JS unit tests
+echo "=== JS unit tests ==="
+node tests/test_js_util.mjs || exit 1
+echo ""
+
+# Python tests
+echo "=== Python tests ==="
 python3 -m unittest discover tests -v 2>&1 | tee "$OUT"
 
 echo ""
