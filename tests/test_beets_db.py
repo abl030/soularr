@@ -24,28 +24,85 @@ def _create_test_db(path: str) -> None:
             id INTEGER PRIMARY KEY,
             mb_albumid TEXT,
             album TEXT,
-            albumartist TEXT
+            albumartist TEXT,
+            year INTEGER,
+            albumtype TEXT,
+            label TEXT,
+            country TEXT,
+            added REAL,
+            mb_releasegroupid TEXT,
+            release_group_title TEXT,
+            format TEXT,
+            artpath BLOB
         );
         CREATE TABLE items (
             id INTEGER PRIMARY KEY,
             album_id INTEGER,
             bitrate INTEGER,
-            path BLOB
+            path BLOB,
+            title TEXT,
+            artist TEXT,
+            track INTEGER,
+            disc INTEGER,
+            length REAL,
+            format TEXT,
+            samplerate INTEGER,
+            bitdepth INTEGER
         );
     """)
     conn.close()
 
 
 def _insert_album(path: str, album_id: int, mbid: str,
-                   tracks: list[tuple[int, str]]) -> None:
-    """Insert an album with tracks. tracks = [(bitrate_bps, path_str), ...]"""
+                   tracks: list[tuple[int, str]], **kwargs: object) -> None:
+    """Insert an album with tracks. tracks = [(bitrate_bps, path_str), ...]
+    Extra kwargs are set as album columns (e.g. album='Foo', albumartist='Bar').
+    """
     conn = sqlite3.connect(path)
-    conn.execute("INSERT INTO albums (id, mb_albumid) VALUES (?, ?)",
-                 (album_id, mbid))
+    cols = "id, mb_albumid"
+    vals: list[object] = [album_id, mbid]
+    for k, v in kwargs.items():
+        cols += f", {k}"
+        vals.append(v)
+    placeholders = ", ".join(["?"] * len(vals))
+    conn.execute(f"INSERT INTO albums ({cols}) VALUES ({placeholders})", vals)
     for i, (bitrate, track_path) in enumerate(tracks):
         conn.execute(
             "INSERT INTO items (album_id, bitrate, path) VALUES (?, ?, ?)",
             (album_id, bitrate, track_path.encode()))
+    conn.commit()
+    conn.close()
+
+
+def _insert_album_full(path: str, album_id: int, mbid: str,
+                       tracks: list[dict[str, object]],
+                       **kwargs: object) -> None:
+    """Insert an album with full track details.
+    tracks = [{'bitrate': 320000, 'path': '/a/b.mp3', 'title': 'Song', ...}, ...]
+    Extra kwargs are set as album columns.
+    """
+    conn = sqlite3.connect(path)
+    cols = "id, mb_albumid"
+    vals: list[object] = [album_id, mbid]
+    for k, v in kwargs.items():
+        cols += f", {k}"
+        vals.append(v)
+    placeholders = ", ".join(["?"] * len(vals))
+    conn.execute(f"INSERT INTO albums ({cols}) VALUES ({placeholders})", vals)
+    for t in tracks:
+        t_cols = ["album_id"]
+        t_vals: list[object] = [album_id]
+        for k, v in t.items():
+            if k == "path":
+                t_cols.append(k)
+                t_vals.append(str(v).encode())
+            else:
+                t_cols.append(k)
+                t_vals.append(v)
+        t_placeholders = ", ".join(["?"] * len(t_vals))
+        conn.execute(
+            f"INSERT INTO items ({', '.join(t_cols)}) VALUES ({t_placeholders})",
+            t_vals)
     conn.commit()
     conn.close()
 
@@ -229,6 +286,249 @@ class TestGetItemPaths(unittest.TestCase):
                if os.path.splitext(p)[1].lower() not in AUDIO_EXTENSIONS]
         self.assertEqual(len(bad), 1)
         self.assertIn(".bak", bad[0][1])
+
+
+class TestCheckMbids(unittest.TestCase):
+    """Test check_mbids — batch MBID existence check."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111",
+                       [(320000, "/m/a/01.mp3")])
+        _insert_album(self.db_path, 2, "bbb-222",
+                       [(256000, "/m/b/01.mp3")])
+
+    def test_mix_existing_and_missing(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            found = db.check_mbids(["aaa-111", "bbb-222", "zzz-999"])
+        self.assertEqual(found, {"aaa-111", "bbb-222"})
+
+    def test_empty_list(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            found = db.check_mbids([])
+        self.assertEqual(found, set())
+
+    def test_all_found(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            found = db.check_mbids(["aaa-111", "bbb-222"])
+        self.assertEqual(found, {"aaa-111", "bbb-222"})
+
+    def test_none_found(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            found = db.check_mbids(["xxx-000", "yyy-000"])
+        self.assertEqual(found, set())
+
+
+class TestCheckMbidsDetail(unittest.TestCase):
+    """Test check_mbids_detail — batch MBID detail lookup."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album_full(self.db_path, 1, "aaa-111", [
+            {"bitrate": 320000, "path": "/m/a/01.mp3", "format": "MP3",
+             "samplerate": 44100, "bitdepth": 0},
+            {"bitrate": 320000, "path": "/m/a/02.mp3", "format": "MP3",
+             "samplerate": 44100, "bitdepth": 0},
+        ])
+        _insert_album_full(self.db_path, 2, "bbb-222", [
+            {"bitrate": 1411000, "path": "/m/b/01.flac", "format": "FLAC",
+             "samplerate": 44100, "bitdepth": 16},
+        ])
+
+    def test_returns_correct_detail(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            detail = db.check_mbids_detail(["aaa-111", "bbb-222"])
+        self.assertIn("aaa-111", detail)
+        self.assertEqual(detail["aaa-111"]["beets_tracks"], 2)
+        self.assertEqual(detail["aaa-111"]["beets_format"], "MP3")
+        self.assertEqual(detail["aaa-111"]["beets_samplerate"], 44100)
+        self.assertIn("bbb-222", detail)
+        self.assertEqual(detail["bbb-222"]["beets_tracks"], 1)
+        self.assertEqual(detail["bbb-222"]["beets_format"], "FLAC")
+        self.assertEqual(detail["bbb-222"]["beets_bitdepth"], 16)
+
+    def test_missing_mbid_not_in_result(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            detail = db.check_mbids_detail(["zzz-999"])
+        self.assertEqual(detail, {})
+
+
+class TestSearchAlbums(unittest.TestCase):
+    """Test search_albums — LIKE search on artist or album."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111",
+                       [(320000, "/m/a/01.mp3")],
+                       album="OK Computer", albumartist="Radiohead")
+        _insert_album(self.db_path, 2, "bbb-222",
+                       [(256000, "/m/b/01.mp3")],
+                       album="Kid A", albumartist="Radiohead")
+        _insert_album(self.db_path, 3, "ccc-333",
+                       [(256000, "/m/c/01.mp3")],
+                       album="Blue Lines", albumartist="Massive Attack")
+
+    def test_match_by_artist(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.search_albums("Radiohead")
+        self.assertEqual(len(results), 2)
+
+    def test_match_by_album(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.search_albums("Blue Lines")
+        self.assertEqual(len(results), 1)
+
+    def test_no_results(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.search_albums("Nonexistent Band")
+        self.assertEqual(len(results), 0)
+
+
+class TestGetRecent(unittest.TestCase):
+    """Test get_recent — most recently added albums."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111",
+                       [(320000, "/m/a/01.mp3")],
+                       album="Old Album", albumartist="Artist A", added=1000.0)
+        _insert_album(self.db_path, 2, "bbb-222",
+                       [(256000, "/m/b/01.mp3")],
+                       album="New Album", albumartist="Artist B", added=2000.0)
+        _insert_album(self.db_path, 3, "ccc-333",
+                       [(256000, "/m/c/01.mp3")],
+                       album="Newest Album", albumartist="Artist C", added=3000.0)
+
+    def test_returns_most_recent_first(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.get_recent(limit=3)
+        self.assertEqual(len(results), 3)
+        # Most recent first
+        self.assertEqual(results[0]["album"], "Newest Album")
+        self.assertEqual(results[1]["album"], "New Album")
+        self.assertEqual(results[2]["album"], "Old Album")
+
+    def test_limit_parameter(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.get_recent(limit=2)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["album"], "Newest Album")
+
+
+class TestGetAlbumDetail(unittest.TestCase):
+    """Test get_album_detail — full album with tracks."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album_full(self.db_path, 1, "aaa-111", [
+            {"bitrate": 320000, "path": "/m/a/01.mp3", "title": "Track 1",
+             "artist": "Artist A", "track": 1, "disc": 1, "length": 240.5,
+             "format": "MP3", "samplerate": 44100, "bitdepth": 0},
+            {"bitrate": 320000, "path": "/m/a/02.mp3", "title": "Track 2",
+             "artist": "Artist A", "track": 2, "disc": 1, "length": 180.0,
+             "format": "MP3", "samplerate": 44100, "bitdepth": 0},
+        ], album="Test Album", albumartist="Artist A", year=2020, label="Test Label")
+
+    def test_returns_album_with_tracks(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            detail = db.get_album_detail(1)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["album"], "Test Album")
+        self.assertEqual(detail["albumartist"], "Artist A")
+        self.assertIn("tracks", detail)
+        self.assertEqual(len(detail["tracks"]), 2)
+        self.assertEqual(detail["tracks"][0]["title"], "Track 1")
+
+    def test_nonexistent_returns_none(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            detail = db.get_album_detail(999)
+        self.assertIsNone(detail)
+
+
+class TestGetAlbumsByArtist(unittest.TestCase):
+    """Test get_albums_by_artist — albums by artist name."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111",
+                       [(320000, "/m/a/01.mp3")],
+                       album="Album One", albumartist="Radiohead")
+        _insert_album(self.db_path, 2, "bbb-222",
+                       [(256000, "/m/b/01.mp3")],
+                       album="Album Two", albumartist="Radiohead")
+        _insert_album(self.db_path, 3, "ccc-333",
+                       [(256000, "/m/c/01.mp3")],
+                       album="Other Album", albumartist="Other Artist")
+
+    def test_returns_all_albums_for_artist(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.get_albums_by_artist("Radiohead")
+        self.assertEqual(len(results), 2)
+
+    def test_empty_result(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            results = db.get_albums_by_artist("Nonexistent")
+        self.assertEqual(len(results), 0)
+
+
+class TestFindByArtistAlbum(unittest.TestCase):
+    """Test find_by_artist_album — track count for artist+album match."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111", [
+            (320000, "/m/a/01.mp3"),
+            (320000, "/m/a/02.mp3"),
+            (320000, "/m/a/03.mp3"),
+        ], album="OK Computer", albumartist="Radiohead")
+
+    def test_returns_track_count(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            count = db.find_by_artist_album("Radiohead", "OK Computer")
+        self.assertEqual(count, 3)
+
+    def test_returns_none_for_no_match(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            count = db.find_by_artist_album("Nonexistent", "Nonexistent")
+        self.assertIsNone(count)
+
+
+class TestGetAvgBitrateKbps(unittest.TestCase):
+    """Test get_avg_bitrate_kbps — average bitrate in kbps."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        _create_test_db(self.db_path)
+        _insert_album(self.db_path, 1, "aaa-111", [
+            (320000, "/m/a/01.mp3"),
+            (256000, "/m/a/02.mp3"),
+        ])
+
+    def test_correct_average(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            avg = db.get_avg_bitrate_kbps("aaa-111")
+        self.assertEqual(avg, 288)  # (320000 + 256000) / 2 / 1000 = 288
+
+    def test_returns_none_for_missing(self) -> None:
+        with BeetsDB(self.db_path) as db:
+            avg = db.get_avg_bitrate_kbps("zzz-999")
+        self.assertIsNone(avg)
 
 
 if __name__ == "__main__":

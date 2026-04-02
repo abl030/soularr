@@ -132,3 +132,159 @@ class BeetsDB:
         if not row or not row[0]:
             return None
         return os.path.dirname(self._decode_path(row[0]))
+
+    # ── Web UI query methods ────────────────────────────────────────
+
+    def check_mbids(self, mbids: list[str]) -> set[str]:
+        """Return the subset of MBIDs that exist in the beets library."""
+        if not mbids:
+            return set()
+        ph = ",".join("?" for _ in mbids)
+        rows = self._conn.execute(
+            f"SELECT mb_albumid FROM albums WHERE mb_albumid IN ({ph})", mbids
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def check_mbids_detail(self, mbids: list[str]) -> dict[str, dict[str, object]]:
+        """Batch lookup: MBID → {beets_tracks, beets_format, beets_bitrate, beets_samplerate, beets_bitdepth}."""
+        if not mbids:
+            return {}
+        ph = ",".join("?" for _ in mbids)
+        rows = self._conn.execute(
+            f"SELECT a.mb_albumid, "
+            f"  (SELECT COUNT(*) FROM items WHERE album_id = a.id) AS track_count, "
+            f"  (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) AS formats, "
+            f"  (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) AS min_bitrate, "
+            f"  (SELECT MIN(i.samplerate) FROM items i WHERE i.album_id = a.id) AS samplerate, "
+            f"  (SELECT MAX(i.bitdepth) FROM items i WHERE i.album_id = a.id) AS bitdepth "
+            f"FROM albums a WHERE a.mb_albumid IN ({ph})", mbids
+        ).fetchall()
+        result: dict[str, dict[str, object]] = {}
+        for r in rows:
+            if r[0] is None:
+                continue
+            result[r[0]] = {
+                "beets_tracks": r[1],
+                "beets_format": r[2],
+                "beets_bitrate": int(r[3] / 1000) if r[3] else None,
+                "beets_samplerate": r[4],
+                "beets_bitdepth": r[5],
+            }
+        return result
+
+    def search_albums(self, query: str, limit: int = 100) -> list[dict[str, object]]:
+        """Search albums by artist or album name (LIKE, case-insensitive)."""
+        rows = self._conn.execute(
+            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+            "       a.albumtype, a.label, a.country, "
+            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+            "       a.added, a.mb_releasegroupid, a.release_group_title, "
+            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
+            "FROM albums a "
+            "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
+            "ORDER BY a.albumartist, a.year, a.album LIMIT ?",
+            (f"%{query}%", f"%{query}%", limit),
+        ).fetchall()
+        return [self._album_row_to_dict(r) for r in rows]
+
+    def get_recent(self, limit: int = 50) -> list[dict[str, object]]:
+        """Get most recently added albums."""
+        rows = self._conn.execute(
+            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+            "       a.albumtype, a.label, a.country, "
+            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+            "       a.added, a.mb_releasegroupid, a.release_group_title, "
+            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
+            "FROM albums a ORDER BY a.added DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._album_row_to_dict(r) for r in rows]
+
+    def get_album_detail(self, album_id: int) -> Optional[dict[str, object]]:
+        """Get full album metadata + track list. Returns None if not found."""
+        album = self._conn.execute(
+            "SELECT id, album, albumartist, year, mb_albumid, albumtype, "
+            "       label, country, artpath, added "
+            "FROM albums WHERE id = ?", (album_id,)
+        ).fetchone()
+        if not album:
+            return None
+        items = self._conn.execute(
+            "SELECT id, title, artist, track, disc, length, format, "
+            "       bitrate, samplerate, bitdepth, path "
+            "FROM items WHERE album_id = ? ORDER BY disc, track", (album_id,)
+        ).fetchall()
+        tracks = [{
+            "id": i[0], "title": i[1], "artist": i[2], "track": i[3],
+            "disc": i[4], "length": i[5], "format": i[6],
+            "bitrate": i[7], "samplerate": i[8], "bitdepth": i[9],
+            "path": self._decode_path(i[10]) if i[10] else None,
+        } for i in items]
+        album_path = os.path.dirname(tracks[0]["path"]) if tracks and tracks[0]["path"] else None
+        return {
+            "id": album[0], "album": album[1], "albumartist": album[2],  # type: ignore[literal-required]
+            "year": album[3], "mb_albumid": album[4], "type": album[5],
+            "label": album[6], "country": album[7],
+            "artpath": self._decode_path(album[8]) if album[8] else None,
+            "added": album[9], "tracks": tracks, "path": album_path,
+        }
+
+    def get_albums_by_artist(self, name: str, mbid: str = "") -> list[dict[str, object]]:
+        """Get all albums by an artist. Matches by albumartist LIKE name."""
+        rows = self._conn.execute(
+            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
+            "       a.albumtype, a.label, a.country, "
+            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
+            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
+            "       a.added, a.mb_releasegroupid, a.release_group_title, "
+            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
+            "FROM albums a "
+            "WHERE a.albumartist LIKE ? COLLATE NOCASE "
+            "ORDER BY a.year, a.album",
+            (f"%{name}%",),
+        ).fetchall()
+        return [self._album_row_to_dict(r) for r in rows]
+
+    def find_by_artist_album(self, artist: str, album: str) -> Optional[int]:
+        """Find track count by artist+album name. Returns None if not found."""
+        row = self._conn.execute(
+            "SELECT a.id FROM albums a "
+            "WHERE a.albumartist LIKE ? COLLATE NOCASE AND a.album LIKE ? COLLATE NOCASE "
+            "LIMIT 1",
+            (f"%{artist}%", f"%{album}%"),
+        ).fetchone()
+        if not row:
+            return None
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM items WHERE album_id = ?", (row[0],)
+        ).fetchone()
+        return count[0] if count else None
+
+    def get_avg_bitrate_kbps(self, mb_release_id: str) -> Optional[int]:
+        """Get average track bitrate (kbps) for an MBID. Returns None if not found."""
+        album_row = self._conn.execute(
+            "SELECT id FROM albums WHERE mb_albumid = ?", (mb_release_id,)
+        ).fetchone()
+        if not album_row:
+            return None
+        avg_row = self._conn.execute(
+            "SELECT CAST(AVG(bitrate) AS INTEGER) FROM items "
+            "WHERE album_id = ? AND bitrate > 0",
+            (album_row[0],),
+        ).fetchone()
+        if not avg_row or not avg_row[0]:
+            return None
+        return int(avg_row[0] / 1000)
+
+    @staticmethod
+    def _album_row_to_dict(r: tuple[object, ...]) -> dict[str, object]:
+        """Convert a standard album query row to dict."""
+        return {
+            "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
+            "mb_albumid": r[4], "type": r[5], "label": r[6],
+            "country": r[7], "track_count": r[8], "formats": r[9],
+            "added": r[10], "mb_releasegroupid": r[11],
+            "release_group_title": r[12], "min_bitrate": r[13],
+        }
