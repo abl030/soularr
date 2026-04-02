@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import cache
 import mb as mb_api
+from beets_db import BeetsDB
 from pipeline_db import PipelineDB
 
 _db_dsn = None
@@ -55,6 +56,7 @@ def _try_reconnect_db():
 # Globals set in main()
 db: PipelineDB | None = None
 beets_db_path: str | None = None
+_beets: BeetsDB | None = None
 
 
 def _db() -> PipelineDB:
@@ -62,6 +64,11 @@ def _db() -> PipelineDB:
     if db is None:
         raise RuntimeError("Pipeline DB not connected")
     return db
+
+
+def _beets_db() -> BeetsDB | None:
+    """Return the BeetsDB instance, or None if not configured."""
+    return _beets
 
 
 def _serialize_row(row: dict[str, object]) -> dict[str, object]:
@@ -75,66 +82,33 @@ def _serialize_row(row: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def check_beets_library(mbids):
-    """Check which MBIDs are already in the beets library. Returns set of found MBIDs."""
-    if not beets_db_path or not os.path.exists(beets_db_path):
-        return set()
-    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-    placeholders = ",".join("?" for _ in mbids)
-    rows = conn.execute(
-        f"SELECT mb_albumid FROM albums WHERE mb_albumid IN ({placeholders})", mbids
-    ).fetchall()
-    conn.close()
-    return {r[0] for r in rows}
+def check_beets_library(mbids: list[str] | list[object]) -> set[str]:
+    """Check which MBIDs are already in the beets library."""
+    b = _beets_db()
+    return b.check_mbids([str(m) for m in mbids]) if b else set()
 
 
-def check_beets_library_detail(mbids):
-    """Check beets library with track counts and audio quality. Returns dict of mbid → info."""
-    if not beets_db_path or not os.path.exists(beets_db_path):
-        return {}
-    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-    placeholders = ",".join("?" for _ in mbids)
-    rows = conn.execute(
-        f"SELECT a.mb_albumid, "
-        f"       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-        f"       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-        f"       (SELECT CAST(MIN(i.bitrate) AS INTEGER) FROM items i WHERE i.album_id = a.id) as min_bitrate, "
-        f"       (SELECT MAX(i.samplerate) FROM items i WHERE i.album_id = a.id) as max_samplerate, "
-        f"       (SELECT MAX(i.bitdepth) FROM items i WHERE i.album_id = a.id) as max_bitdepth "
-        f"FROM albums a WHERE a.mb_albumid IN ({placeholders})", mbids
-    ).fetchall()
-    conn.close()
-    return {r[0]: {
-        "beets_tracks": r[1], "beets_format": r[2],
-        "beets_bitrate": r[3], "beets_samplerate": r[4],
-        "beets_bitdepth": r[5],
-    } for r in rows}
+def check_beets_library_detail(mbids: list[str] | list[object]) -> dict[str, dict[str, object]]:
+    """Check beets library with track counts and audio quality."""
+    b = _beets_db()
+    return b.check_mbids_detail([str(m) for m in mbids]) if b else {}
 
 
-def check_beets_by_artist_album(artist, album):
+def check_beets_by_artist_album(artist: str, album: str) -> int | None:
     """Fuzzy check: is there an album by this artist in beets? Returns track count or None."""
-    if not beets_db_path or not os.path.exists(beets_db_path):
-        return None
-    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-    rows = conn.execute(
-        "SELECT (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count "
-        "FROM albums a WHERE a.albumartist LIKE ? COLLATE NOCASE "
-        "AND a.album LIKE ? COLLATE NOCASE LIMIT 1",
-        (f"%{artist}%", f"%{album}%"),
-    ).fetchall()
-    conn.close()
-    return rows[0][0] if rows else None
+    b = _beets_db()
+    return b.find_by_artist_album(artist, album) if b else None
 
 
 def get_library_artist(artist_name, mb_artist_id=None):
     """Get albums by an artist from the beets library."""
-    if not beets_db_path or not os.path.exists(beets_db_path):
+    b = _beets_db()
+    if not b:
         return []
-    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
     # Match by MB artist ID (exact) plus name match for Discogs-only albums
     # Discogs IDs are numeric; MB UUIDs contain hyphens — use that to detect non-MB entries
     if mb_artist_id:
-        rows = conn.execute(
+        rows = b._conn.execute(
             "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
             "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
             "FROM albums WHERE mb_albumartistid = ? OR mb_albumartistids LIKE ? "
@@ -145,14 +119,13 @@ def get_library_artist(artist_name, mb_artist_id=None):
             (mb_artist_id, f"%{mb_artist_id}%", f"%{artist_name}%"),
         ).fetchall()
     else:
-        rows = conn.execute(
+        rows = b._conn.execute(
             "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
             "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
             "FROM albums WHERE albumartist LIKE ? COLLATE NOCASE "
             "ORDER BY year, album",
             (f"%{artist_name}%",),
         ).fetchall()
-    conn.close()
     results = []
     for r in rows:
         mb_id = r[3] or ""
@@ -473,15 +446,14 @@ class Handler(BaseHTTPRequestHandler):
             # Look up beets album IDs for in-library pressings
             lib_mbids = [p.release_id for p in rg.pressings if p.release_id in in_library]
             beets_ids: dict[str, int] = {}
-            if lib_mbids and beets_db_path and os.path.exists(beets_db_path):
-                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
+            b = _beets_db()
+            if lib_mbids and b:
                 ph = ",".join("?" for _ in lib_mbids)
-                for row in conn.execute(
+                for row in b._conn.execute(
                     f"SELECT id, mb_albumid FROM albums WHERE mb_albumid IN ({ph})",
                     lib_mbids,
                 ).fetchall():
                     beets_ids[row[1]] = row[0]
-                conn.close()
 
             pressings_json = []
             for p in rg.pressings:
@@ -552,13 +524,13 @@ class Handler(BaseHTTPRequestHandler):
         data["pipeline_status"] = req["status"] if req else None
         data["pipeline_id"] = req["id"] if req else None
         # Include beets track info if in library
-        if data["in_library"] and beets_db_path and os.path.exists(beets_db_path):
-            conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-            album = conn.execute(
+        b = _beets_db()
+        if data["in_library"] and b:
+            album = b._conn.execute(
                 "SELECT id FROM albums WHERE mb_albumid = ?", (release_id,)
             ).fetchone()
             if album:
-                items = conn.execute(
+                items = b._conn.execute(
                     "SELECT title, track, disc, length, format, bitrate, "
                     "       samplerate, bitdepth "
                     "FROM items WHERE album_id = ? ORDER BY disc, track",
@@ -569,7 +541,6 @@ class Handler(BaseHTTPRequestHandler):
                     "length": i[3], "format": i[4], "bitrate": i[5],
                     "samplerate": i[6], "bitdepth": i[7],
                 } for i in items]
-            conn.close()
         self._json(data)
 
     def _get_pipeline_log(self, params: dict[str, list[str]]) -> None:
@@ -767,13 +738,13 @@ class Handler(BaseHTTPRequestHandler):
         }
         # Include beets tracks (with bitrate) if imported
         mbid = req.get("mb_release_id")
-        if mbid and beets_db_path and os.path.exists(beets_db_path):
-            conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-            album = conn.execute(
+        b = _beets_db()
+        if mbid and b:
+            album = b._conn.execute(
                 "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
             ).fetchone()
             if album:
-                items = conn.execute(
+                items = b._conn.execute(
                     "SELECT title, track, disc, length, format, "
                     "       bitrate, samplerate, bitdepth "
                     "FROM items WHERE album_id = ? ORDER BY disc, track",
@@ -784,7 +755,6 @@ class Handler(BaseHTTPRequestHandler):
                     "length": i[3], "format": i[4], "bitrate": i[5],
                     "samplerate": i[6], "bitdepth": i[7],
                 } for i in items]
-            conn.close()
         self._json(result)
 
     def _get_beets_search(self, params: dict[str, list[str]]) -> None:
@@ -792,31 +762,11 @@ class Handler(BaseHTTPRequestHandler):
         if not q or len(q) < 2:
             self._error("Query too short")
             return
-        if not beets_db_path or not os.path.exists(beets_db_path):
+        b = _beets_db()
+        if not b:
             self._error("Beets DB not available")
             return
-        conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-        rows = conn.execute(
-            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
-            "       a.albumtype, a.label, a.country, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-            "       a.added, a.mb_releasegroupid, a.release_group_title, "
-            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
-            "FROM albums a "
-            "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
-            "ORDER BY a.albumartist, a.year, a.album LIMIT 100",
-            (f"%{q}%", f"%{q}%"),
-        ).fetchall()
-        conn.close()
-        albums = [{
-            "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
-            "mb_albumid": r[4], "type": r[5], "label": r[6],
-            "country": r[7], "track_count": r[8],
-            "formats": r[9], "added": r[10],
-            "mb_releasegroupid": r[11], "release_group_title": r[12],
-            "min_bitrate": r[13],
-        } for r in rows]
+        albums = b.search_albums(q)
         # Add pipeline status for upgrade queue awareness
         if db:
             mbids = [a["mb_albumid"] for a in albums if a.get("mb_albumid")]
@@ -829,42 +779,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_beets_album(self, params: dict[str, list[str]], album_id_str: str) -> None:
         album_id = int(album_id_str)
-        if not beets_db_path or not os.path.exists(beets_db_path):
+        b = _beets_db()
+        if not b:
             self._error("Beets DB not available")
             return
-        conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-        album = conn.execute(
-            "SELECT id, album, albumartist, year, mb_albumid, albumtype, "
-            "       label, country, artpath, added "
-            "FROM albums WHERE id = ?", (album_id,)
-        ).fetchone()
-        if not album:
-            conn.close()
+        detail = b.get_album_detail(album_id)
+        if not detail:
             self._error("Not found", 404)
             return
-        items = conn.execute(
-            "SELECT id, title, artist, track, disc, length, format, "
-            "       bitrate, samplerate, bitdepth, path "
-            "FROM items WHERE album_id = ? ORDER BY disc, track", (album_id,)
-        ).fetchall()
-        conn.close()
-        tracks = [{
-            "id": i[0], "title": i[1], "artist": i[2], "track": i[3],
-            "disc": i[4], "length": i[5], "format": i[6],
-            "bitrate": i[7], "samplerate": i[8], "bitdepth": i[9],
-            "path": i[10].decode("utf-8", errors="replace") if isinstance(i[10], bytes) else i[10],
-        } for i in items]
-        # Derive album directory from first track path
-        album_path = os.path.dirname(tracks[0]["path"]) if tracks else None
+        # Remap 'albumartist' to 'artist' for API compatibility
         result: dict[str, object] = {
-            "id": album[0], "album": album[1], "artist": album[2],
-            "year": album[3], "mb_albumid": album[4], "type": album[5],
-            "label": album[6], "country": album[7],
-            "artpath": album[8].decode("utf-8", errors="replace") if isinstance(album[8], bytes) else album[8],
-            "added": album[9], "tracks": tracks, "path": album_path,
+            "id": detail["id"], "album": detail["album"],
+            "artist": detail["albumartist"],
+            "year": detail["year"], "mb_albumid": detail["mb_albumid"],
+            "type": detail["type"], "label": detail["label"],
+            "country": detail["country"], "artpath": detail["artpath"],
+            "added": detail["added"], "tracks": detail["tracks"],
+            "path": detail["path"],
         }
         # Include pipeline download history if available
-        mb_id = album[4]
+        mb_id = detail.get("mb_albumid")
         if mb_id and db:
             req = _db().get_request_by_mb_release_id(mb_id)
             if req:
@@ -889,27 +823,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(result)
 
     def _get_beets_recent(self, params: dict[str, list[str]]) -> None:
-        if not beets_db_path or not os.path.exists(beets_db_path):
+        b = _beets_db()
+        if not b:
             self._error("Beets DB not available")
             return
-        conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-        rows = conn.execute(
-            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
-            "       a.albumtype, a.country, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-            "       a.added, a.mb_releasegroupid, a.release_group_title, "
-            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
-            "FROM albums a ORDER BY a.added DESC LIMIT 50",
-        ).fetchall()
-        conn.close()
-        albums = [{
-            "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
-            "mb_albumid": r[4], "type": r[5], "country": r[6],
-            "track_count": r[7], "formats": r[8], "added": r[9],
-            "mb_releasegroupid": r[10], "release_group_title": r[11],
-            "min_bitrate": r[12],
-        } for r in rows]
+        albums = b.get_recent()
         if db:
             mbids = [a["mb_albumid"] for a in albums if a.get("mb_albumid")]
             pipeline_info = check_pipeline(mbids) if mbids else {}
@@ -986,20 +904,11 @@ class Handler(BaseHTTPRequestHandler):
             mbid = req.get("mb_release_id")
             quality = None
             min_br = None
-            if mbid and beets_db_path and os.path.exists(beets_db_path):
-                conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-                album_row = conn.execute(
-                    "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
-                ).fetchone()
-                if album_row:
+            b = _beets_db()
+            if mbid and b:
+                if b.album_exists(mbid):
                     quality = "flac,mp3 v0,mp3 320"
-                    br_row = conn.execute(
-                        "SELECT CAST(MIN(bitrate) AS INTEGER) FROM items WHERE album_id = ?",
-                        (album_row[0],),
-                    ).fetchone()
-                    if br_row and br_row[0]:
-                        min_br = int(br_row[0] / 1000)
-                conn.close()
+                    min_br = b.get_min_bitrate(mbid)
             _db().reset_to_wanted(int(req_id), quality_override=quality, min_bitrate=min_br)
         else:
             _db().update_status(int(req_id), new_status)
@@ -1016,19 +925,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # Calculate min_bitrate from beets library
         min_bitrate = None
-        if beets_db_path and os.path.exists(beets_db_path):
-            conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-            album_row = conn.execute(
-                "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
-            ).fetchone()
-            if album_row:
-                br_row = conn.execute(
-                    "SELECT MIN(bitrate) FROM items WHERE album_id = ?",
-                    (album_row[0],),
-                ).fetchone()
-                if br_row and br_row[0]:
-                    min_bitrate = int(br_row[0] / 1000)
-            conn.close()
+        b = _beets_db()
+        if b:
+            min_bitrate = b.get_min_bitrate(mbid)
 
         # Find or create pipeline request
         existing = _db().get_request_by_mb_release_id(mbid)
@@ -1099,19 +998,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if new_status == "imported":
                 # Auto-set min_bitrate to average if not explicitly provided
-                if min_bitrate is None and mbid and beets_db_path and os.path.exists(beets_db_path):
-                    conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-                    album_row = conn.execute(
-                        "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
-                    ).fetchone()
-                    if album_row:
-                        avg_row = conn.execute(
-                            "SELECT CAST(AVG(bitrate) AS INTEGER) FROM items WHERE album_id = ?",
-                            (album_row[0],),
-                        ).fetchone()
-                        if avg_row and avg_row[0]:
-                            min_bitrate = int(avg_row[0] / 1000)
-                    conn.close()
+                if min_bitrate is None and mbid:
+                    b = _beets_db()
+                    if b:
+                        min_bitrate = b.get_avg_bitrate_kbps(mbid)
                 # Clear quality_override so it stops looping
                 sets = "status = 'imported', quality_override = NULL, updated_at = NOW()"
                 if min_bitrate is not None:
@@ -1146,13 +1036,10 @@ class Handler(BaseHTTPRequestHandler):
 
         # 2. Remove from beets if present
         beets_removed = False
-        if mb_release_id and beets_db_path and os.path.exists(beets_db_path):
-            conn = sqlite3.connect(f"file:{beets_db_path}?mode=ro", uri=True)
-            album_row = conn.execute(
-                "SELECT id FROM albums WHERE mb_albumid = ?", (mb_release_id,)
-            ).fetchone()
-            conn.close()
-            if album_row:
+        b = _beets_db()
+        if mb_release_id and b:
+            album_in_beets = b.album_exists(mb_release_id)
+            if album_in_beets:
                 # Use beet remove (without -d to keep files? No, remove completely)
                 import subprocess as _sp
                 result = _sp.run(
@@ -1459,7 +1346,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global db, beets_db_path
+    global db, beets_db_path, _beets
 
     parser = argparse.ArgumentParser(description="Soularr Web UI")
     parser.add_argument("--port", type=int, default=8085)
@@ -1480,6 +1367,8 @@ def main():
     _db_dsn = args.dsn
     db = PipelineDB(args.dsn, run_migrations=False)
     beets_db_path = args.beets_db
+    if beets_db_path and os.path.exists(beets_db_path):
+        _beets = BeetsDB(beets_db_path)
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
     print(f"Soularr Web UI listening on http://0.0.0.0:{args.port}")
