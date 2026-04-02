@@ -153,9 +153,8 @@ def _gather_spectral_context(album_data: Any, import_folder: str,
         mb_id = album_data.mb_release_id
         if mb_id:
             try:
-                beets = BeetsDB()
-                existing_info = beets.get_album_info(mb_id)
-                beets.close()
+                with BeetsDB() as beets:
+                    existing_info = beets.get_album_info(mb_id)
                 if existing_info:
                     spec_ctx.existing_min_bitrate = existing_info.min_bitrate_kbps
                     if os.path.isdir(existing_info.album_path):
@@ -334,7 +333,7 @@ def _apply_spectral_decision(album_data: Any, bv_result: Any,
                  "error": None},
                 usernames=usernames, download_info=dl_info_rej)
             logger.info(f"  Denylisted {usernames} for request {request_id}")
-        move_failed_import(import_folder_fullpath)
+        # Don't move here — _handle_rejected_result will do it
         bv_result["valid"] = False
     elif spectral_decision == "import_upgrade":
         logger.info(
@@ -456,7 +455,6 @@ def monitor_downloads(grab_list: dict[Any, GrabListEntry],
                     logger.error(f"API errors for {entry.artist} - {entry.title} "
                                  f"({entry.error_count} consecutive), giving up")
                     delete_album("API errors for")
-                    del grab_list[album_id]
 
         if len(grab_list) < 1:
             break

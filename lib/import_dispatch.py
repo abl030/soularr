@@ -79,7 +79,7 @@ def _build_download_info(album_data: Any) -> DownloadInfo:
     return DownloadInfo(
         username=", ".join(sorted(usernames)) if usernames else None,
         filetype=", ".join(sorted(filetypes)) if filetypes else None,
-        bitrate=max(bitrates) if bitrates else None,
+        bitrate=min(bitrates) if bitrates else None,
         sample_rate=max(sample_rates) if sample_rates else None,
         bit_depth=max(bit_depths) if bit_depths else None,
         is_vbr=any(vbr_flags) if vbr_flags else None,

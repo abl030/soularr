@@ -364,6 +364,8 @@ class TestGatherSpectralContextFunction(unittest.TestCase):
         mock_beets = MagicMock()
         mock_beets.get_album_info.return_value = MagicMock(
             min_bitrate_kbps=256, album_path="/tmp/existing")
+        mock_beets.__enter__ = MagicMock(return_value=mock_beets)
+        mock_beets.__exit__ = MagicMock(return_value=False)
         mock_beets_cls.return_value = mock_beets
 
         files = [_make_file(bitRate=320, isVariableBitRate=False)]
