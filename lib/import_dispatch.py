@@ -96,9 +96,8 @@ def _check_quality_gate(album_data: Any, request_id: int | None,
     if not mb_id or not ctx.cfg.pipeline_db_enabled or ctx.pipeline_db_source is None:
         return
     try:
-        beets = BeetsDB()
-        info = beets.get_album_info(mb_id)
-        beets.close()
+        with BeetsDB() as beets:
+            info = beets.get_album_info(mb_id)
         if not info:
             return
         min_br_kbps = info.min_bitrate_kbps

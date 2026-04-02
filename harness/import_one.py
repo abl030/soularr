@@ -184,12 +184,19 @@ def convert_flac_to_v0(album_path, dry_run=False):
             converted += 1
             continue
 
-        result = subprocess.run([
-            "ffmpeg", "-i", flac_path,
-            "-codec:a", "libmp3lame", "-q:a", "0",
-            "-map_metadata", "0", "-id3v2_version", "3",
-            "-y", mp3_path,
-        ], capture_output=True, text=True)
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-i", flac_path,
+                "-codec:a", "libmp3lame", "-q:a", "0",
+                "-map_metadata", "0", "-id3v2_version", "3",
+                "-y", mp3_path,
+            ], capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(f"  [FAIL] {fname}: ffmpeg timed out after 300s", file=sys.stderr)
+            if os.path.exists(mp3_path):
+                os.remove(mp3_path)
+            failed += 1
+            continue
 
         if result.returncode != 0 or not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
             print(f"  [FAIL] {fname}: {result.stderr[-200:]}", file=sys.stderr)
@@ -401,6 +408,8 @@ def main():
 
     # --- Pre-flight: already imported? ---
     beets = BeetsDB()
+    import atexit
+    atexit.register(beets.close)
     already_in_beets = beets.album_exists(mbid)
     r.already_in_beets = already_in_beets
     if already_in_beets:
@@ -627,11 +636,9 @@ def main():
             # Update beets DB (writable connection for this fix)
             import sqlite3 as _sqlite3
             from beets_db import DEFAULT_BEETS_DB
-            fix_conn = _sqlite3.connect(DEFAULT_BEETS_DB)
-            fix_conn.execute("UPDATE items SET path = ? WHERE id = ?",
-                             (new_path.encode(), item_id))
-            fix_conn.commit()
-            fix_conn.close()
+            with _sqlite3.connect(DEFAULT_BEETS_DB) as fix_conn:
+                fix_conn.execute("UPDATE items SET path = ? WHERE id = ?",
+                                 (new_path.encode(), item_id))
             bad_ext_files.append(os.path.basename(item_path))
     if bad_ext_files:
         r.postflight.bad_extensions = bad_ext_files

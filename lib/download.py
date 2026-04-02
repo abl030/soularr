@@ -87,7 +87,7 @@ def slskd_do_enqueue(username: str, files: list[dict[str, Any]],
                        exc_info=True)
         return None
     for file in files:
-        for directory in download_list["directories"]:
+        for directory in download_list.get("directories", []):
             if directory["directory"] == file_dir:
                 for slskd_file in directory["files"]:
                     if file["filename"] == slskd_file["filename"]:
@@ -108,9 +108,10 @@ def downloads_all_done(downloads: list[Any]) -> tuple[bool, list[Any] | None, in
     remote_queue = 0
     for file in downloads:
         if file.status is not None:
-            if file.status["state"] != "Completed, Succeeded":
+            state = file.status.get("state", "")
+            if state != "Completed, Succeeded":
                 all_done = False
-            if file.status["state"] in (
+            if state in (
                 "Completed, Cancelled",
                 "Completed, TimedOut",
                 "Completed, Errored",

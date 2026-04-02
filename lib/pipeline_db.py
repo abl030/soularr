@@ -541,11 +541,18 @@ class PipelineDB:
         col = f"{attempt_type}_attempts"
         now = datetime.now(timezone.utc)
 
-        # Get current attempt count
-        req = self.get_request(request_id)
-        assert req is not None, f"Request {request_id} not found"
-        current: int = int(req[col] or 0)  # type: ignore[arg-type]
-        new_count = current + 1
+        # Atomic increment + fetch in single statement (avoids TOCTOU race)
+        cur = self._execute(f"""
+            UPDATE album_requests
+            SET {col} = COALESCE({col}, 0) + 1,
+                last_attempt_at = %s,
+                updated_at = %s
+            WHERE id = %s
+            RETURNING {col}
+        """, (now, now, request_id))
+        row = cur.fetchone()
+        assert row is not None, f"Request {request_id} not found"
+        new_count: int = int(row[col])
 
         # Exponential backoff: base * 2^(attempts-1), capped
         backoff_minutes = min(
@@ -554,12 +561,8 @@ class PipelineDB:
         )
         next_retry = now + timedelta(minutes=backoff_minutes)
 
-        self._execute(f"""
+        self._execute("""
             UPDATE album_requests
-            SET {col} = %s,
-                last_attempt_at = %s,
-                next_retry_after = %s,
-                updated_at = %s
+            SET next_retry_after = %s
             WHERE id = %s
-        """, (new_count, now, next_retry, now, request_id))
-        self.conn.commit()
+        """, (next_retry, request_id))
