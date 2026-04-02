@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import soularr
 from lib.beets import beets_validate
 from lib.grab_list import GrabListEntry
+from lib.quality import ValidationResult
 from lib.util import stage_to_ai, log_validation_result, sanitize_folder_name
 
 
@@ -397,7 +398,7 @@ class TestLogValidationResult(unittest.TestCase):
             artist="Test Artist", title="Test Album",
             mb_release_id="abc-123", album_id=42,
         )
-        result = {"valid": True, "distance": 0.05, "mbid_found": True, "error": None}
+        result = ValidationResult(valid=True, distance=0.05, mbid_found=True)
 
         log_validation_result(album_data, result, self.mock_cfg,
                               dest_path="/AI/Test Artist/Test Album")
@@ -414,7 +415,7 @@ class TestLogValidationResult(unittest.TestCase):
     def test_appends_rejected_entry(self):
         """Rejected result writes status=rejected."""
         album_data = _make_album_data(artist="A", title="B", album_id=1)
-        result = {"valid": False, "distance": 0.40, "mbid_found": True, "error": None}
+        result = ValidationResult(valid=False, distance=0.40, mbid_found=True)
 
         log_validation_result(album_data, result, self.mock_cfg)
 
@@ -427,7 +428,7 @@ class TestLogValidationResult(unittest.TestCase):
     def test_appends_multiple_entries(self):
         """Multiple calls append to same file."""
         album_data = _make_album_data(artist="A", title="B", album_id=1)
-        result = {"valid": True, "distance": 0.01, "error": None}
+        result = ValidationResult(valid=True, distance=0.01)
 
         log_validation_result(album_data, result, self.mock_cfg, dest_path="/dest1")
         log_validation_result(album_data, result, self.mock_cfg, dest_path="/dest2")

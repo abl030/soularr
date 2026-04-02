@@ -14,10 +14,24 @@ import shutil
 import subprocess as sp
 import unicodedata
 import difflib
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lib.config import SoularrConfig
+    from lib.grab_list import GrabListEntry
+    from lib.quality import ValidationResult
 
 logger = logging.getLogger("soularr")
+
+
+@dataclass
+class AudioValidationResult:
+    """Result from validate_audio() — audio integrity check."""
+    valid: bool = True
+    error: str | None = None
+    failed_files: list[tuple[str, str]] = field(default_factory=list)
 
 
 # === Filesystem utilities ===
@@ -54,7 +68,7 @@ def move_failed_import(src_path: str) -> str | None:
     return target_path
 
 
-def stage_to_ai(album_data: Any, source_path: str, staging_dir: str) -> str:
+def stage_to_ai(album_data: GrabListEntry, source_path: str, staging_dir: str) -> str:
     """Move validated files from slskd download area to staging/{Artist}/{Album}/."""
     artist_dir = sanitize_folder_name(album_data.artist)
     album_dir = sanitize_folder_name(album_data.title)
@@ -126,14 +140,14 @@ def cleanup_disambiguation_orphans(imported_path: str) -> list[str]:
     return removed
 
 
-def validate_audio(folder_path: str, mode: str = "normal") -> dict[str, Any]:
+def validate_audio(folder_path: str, mode: str = "normal") -> AudioValidationResult:
     """Check audio integrity of downloaded files via ffmpeg full decode.
 
     mode: "strict" = any error rejects, "normal" = reject if >10% fail, "off" = skip.
     Returns: {"valid": bool, "error": str|None, "failed_files": list}
     """
     if mode == "off":
-        return {"valid": True, "error": None, "failed_files": []}
+        return AudioValidationResult()
 
     audio_exts = {"mp3", "flac", "m4a", "ogg", "opus", "wma", "aac", "alac", "wav"}
     files = []
@@ -143,7 +157,7 @@ def validate_audio(folder_path: str, mode: str = "normal") -> dict[str, Any]:
             files.append(os.path.join(folder_path, f))
 
     if not files:
-        return {"valid": True, "error": None, "failed_files": []}
+        return AudioValidationResult()
 
     failed = []
     for filepath in files:
@@ -179,11 +193,11 @@ def validate_audio(folder_path: str, mode: str = "normal") -> dict[str, Any]:
             failed.append((os.path.basename(filepath), "ffmpeg timeout"))
         except FileNotFoundError:
             logger.error("AUDIO_CHECK: ffmpeg not found on PATH — skipping audio validation")
-            return {"valid": True, "error": None, "failed_files": []}
+            return AudioValidationResult()
 
     if not failed:
         logger.info(f"AUDIO_CHECK: all {len(files)} files passed ({mode} mode)")
-        return {"valid": True, "error": None, "failed_files": []}
+        return AudioValidationResult()
 
     fail_pct = len(failed) / len(files)
     detail = "; ".join(f"{name}: {err}" for name, err in failed[:5])
@@ -197,10 +211,10 @@ def validate_audio(folder_path: str, mode: str = "normal") -> dict[str, Any]:
 
     if reject:
         logger.warning(f"AUDIO_CHECK: → REJECT ({mode} mode, {fail_pct:.0%} failed)")
-        return {"valid": False, "error": error_msg, "failed_files": failed}
+        return AudioValidationResult(valid=False, error=error_msg, failed_files=failed)
     else:
         logger.info(f"AUDIO_CHECK: → PASS ({mode} mode, {fail_pct:.0%} failed, below threshold)")
-        return {"valid": True, "error": None, "failed_files": failed}
+        return AudioValidationResult(failed_files=failed)
 
 
 # === Track title matching ===
@@ -311,7 +325,7 @@ def _meelo_scanner_post(url: str, jwt: str, path: str) -> None:
         resp.read()
 
 
-def trigger_meelo_scan(cfg: Any) -> None:
+def trigger_meelo_scan(cfg: SoularrConfig) -> None:
     """Trigger a Meelo library scan after import. Best-effort — failures don't block."""
     if not cfg.meelo_url:
         return
@@ -323,7 +337,7 @@ def trigger_meelo_scan(cfg: Any) -> None:
         logger.warning(f"MEELO: scan trigger failed: {e}")
 
 
-def trigger_meelo_clean(cfg: Any) -> None:
+def trigger_meelo_clean(cfg: SoularrConfig) -> None:
     """Trigger a Meelo library clean to remove orphaned entries. Best-effort."""
     if not cfg.meelo_url:
         return
@@ -338,7 +352,7 @@ def trigger_meelo_clean(cfg: Any) -> None:
 # === Plex integration ===
 
 
-def trigger_plex_scan(cfg: Any, imported_path: str | None = None) -> None:
+def trigger_plex_scan(cfg: SoularrConfig, imported_path: str | None = None) -> None:
     """Trigger a Plex library scan after import. Best-effort — failures don't block.
 
     If imported_path is provided, does a targeted partial scan of just that folder.
@@ -376,7 +390,8 @@ def trigger_plex_scan(cfg: Any, imported_path: str | None = None) -> None:
 
 # === Validation logging ===
 
-def log_validation_result(album_data: Any, result: Any, cfg: Any,
+def log_validation_result(album_data: GrabListEntry, result: ValidationResult,
+                          cfg: SoularrConfig,
                           dest_path: str | None = None) -> None:
     """Append beets validation result to tracking JSONL."""
     entry = {
@@ -385,12 +400,12 @@ def log_validation_result(album_data: Any, result: Any, cfg: Any,
         "album": album_data.title,
         "mb_release_id": album_data.mb_release_id,
         "album_id": album_data.album_id,
-        "status": "staged" if result["valid"] else "rejected",
-        "scenario": result.get("scenario", ""),
-        "distance": result.get("distance"),
-        "detail": result.get("detail", ""),
+        "status": "staged" if result.valid else "rejected",
+        "scenario": result.scenario or "",
+        "distance": result.distance,
+        "detail": result.detail or "",
         "dest_path": dest_path,
-        "error": result.get("error"),
+        "error": result.error,
     }
     try:
         with open(cfg.beets_tracking_file, "a") as f:

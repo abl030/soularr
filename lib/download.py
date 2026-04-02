@@ -24,6 +24,7 @@ from lib.beets_db import BeetsDB
 
 if TYPE_CHECKING:
     from lib.context import SoularrContext
+    from lib.quality import ValidationResult
 
 logger = logging.getLogger("soularr")
 
@@ -126,7 +127,7 @@ def downloads_all_done(downloads: list[Any]) -> tuple[bool, list[Any] | None, in
 
 # === Spectral context gathering ===
 
-def _gather_spectral_context(album_data: Any, import_folder: str,
+def _gather_spectral_context(album_data: GrabListEntry, import_folder: str,
                              ctx: SoularrContext) -> SpectralContext:
     """Gather spectral analysis data for a non-VBR MP3 download.
 
@@ -239,7 +240,7 @@ def process_completed_album(album_data: GrabListEntry, failed_grab: list[Any],
             _process_beets_validation(album_data, import_folder_fullpath, ctx)
 
 
-def _process_beets_validation(album_data: Any, import_folder_fullpath: str,
+def _process_beets_validation(album_data: GrabListEntry, import_folder_fullpath: str,
                               ctx: SoularrContext) -> None:
     """Beets validation sub-path of process_completed_album."""
     from lib.beets import beets_validate as _bv
@@ -253,12 +254,12 @@ def _process_beets_validation(album_data: Any, import_folder_fullpath: str,
     if bv_result.valid:
         repair_mp3_headers(import_folder_fullpath)
         audio_result = validate_audio(import_folder_fullpath, ctx.cfg.audio_check_mode)
-        if not audio_result["valid"]:
+        if not audio_result.valid:
             bv_result.valid = False
             bv_result.scenario = "audio_corrupt"
-            bv_result.detail = audio_result["error"]
+            bv_result.detail = audio_result.error
             bv_result.corrupt_files = [
-                name for name, _err in audio_result.get("failed_files", [])]
+                name for name, _err in audio_result.failed_files]
 
     # Spectral check for non-VBR MP3 downloads
     if bv_result.valid:
@@ -273,7 +274,7 @@ def _process_beets_validation(album_data: Any, import_folder_fullpath: str,
         _handle_rejected_result(album_data, bv_result, import_folder_fullpath, ctx)
 
 
-def _apply_spectral_decision(album_data: Any, bv_result: Any,
+def _apply_spectral_decision(album_data: GrabListEntry, bv_result: ValidationResult,
                              spec_ctx: SpectralContext,
                              import_folder_fullpath: str,
                              ctx: SoularrContext) -> None:
@@ -340,7 +341,7 @@ def _apply_spectral_decision(album_data: Any, bv_result: Any,
             f"suspect at {new_quality}kbps but no existing album, importing")
 
 
-def _handle_valid_result(album_data: Any, bv_result: Any,
+def _handle_valid_result(album_data: GrabListEntry, bv_result: ValidationResult,
                          import_folder_fullpath: str,
                          ctx: SoularrContext) -> None:
     """Handle a valid beets validation result: stage and optionally auto-import."""
@@ -369,7 +370,7 @@ def _handle_valid_result(album_data: Any, bv_result: Any,
                                          download_info=dl_info)
 
 
-def _handle_rejected_result(album_data: Any, bv_result: Any,
+def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResult,
                             import_folder_fullpath: str,
                             ctx: SoularrContext) -> None:
     """Handle a rejected beets validation result."""

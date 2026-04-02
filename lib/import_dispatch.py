@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess as sp
 import sys
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from lib.quality import (parse_import_result, DownloadInfo, ImportResult,
                          ValidationResult,
@@ -65,7 +65,7 @@ def _cleanup_staged_dir(dest: str) -> None:
             logger.info(f"  Cleaned up empty artist dir: {parent}")
 
 
-def _build_download_info(album_data: Any) -> DownloadInfo:
+def _build_download_info(album_data: GrabListEntry) -> DownloadInfo:
     """Extract audio quality metadata from album files for download logging."""
     files = album_data.files
     if not files:
@@ -87,7 +87,7 @@ def _build_download_info(album_data: Any) -> DownloadInfo:
     )
 
 
-def _check_quality_gate(album_data: Any, request_id: int | None,
+def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
                         ctx: "SoularrContext") -> None:
     """Post-import quality gate: if min track bitrate is below V0, queue for upgrade."""
     from lib.quality import quality_gate_decision
@@ -182,7 +182,7 @@ def trigger_plex_scan(ctx: "SoularrContext", imported_path: str | None = None) -
     _trigger(ctx.cfg, imported_path)
 
 
-def dispatch_import(album_data: Any, bv_result: Any, dest: str,
+def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest: str,
                     dl_info: DownloadInfo, request_id: int | None,
                     ctx: "SoularrContext") -> None:
     """Auto-import decision tree: run import_one.py and dispatch on result.
