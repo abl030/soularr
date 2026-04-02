@@ -400,5 +400,104 @@ class TestApplyPipelineBitrateOverride(unittest.TestCase):
         self.assertNotIn("upgrade_queued", album)
 
 
+class TestLibraryArtistContract(unittest.TestCase):
+    """Contract tests: get_library_artist() returns all fields the frontend needs."""
+
+    @classmethod
+    def setUpClass(cls):
+        import sqlite3
+        import tempfile
+        cls._tmpdir = tempfile.mkdtemp()
+        cls._db_path = os.path.join(cls._tmpdir, "beets.db")
+        conn = sqlite3.connect(cls._db_path)
+        conn.executescript("""
+            CREATE TABLE albums (
+                id INTEGER PRIMARY KEY,
+                album TEXT, albumartist TEXT, year INTEGER,
+                mb_albumid TEXT, discogs_albumid TEXT,
+                mb_albumartistid TEXT, mb_albumartistids TEXT,
+                mb_releasegroupid TEXT, release_group_title TEXT,
+                added REAL, albumtype TEXT, label TEXT, country TEXT,
+                format TEXT, artpath BLOB
+            );
+            CREATE TABLE items (
+                id INTEGER PRIMARY KEY, album_id INTEGER,
+                bitrate INTEGER, path BLOB, title TEXT, artist TEXT,
+                track INTEGER, disc INTEGER, length REAL, format TEXT,
+                samplerate INTEGER, bitdepth INTEGER
+            );
+            INSERT INTO albums (id, album, albumartist, year, mb_albumid,
+                mb_albumartistid, mb_releasegroupid, release_group_title)
+            VALUES (1, 'Tallahassee', 'The Mountain Goats', 2002,
+                'aaaa-bbbb-cccc', 'dddd-eeee-ffff',
+                '1111-2222-3333', 'Tallahassee');
+            INSERT INTO albums (id, album, albumartist, year, mb_albumid,
+                mb_albumartistid, mb_releasegroupid, release_group_title)
+            VALUES (2, 'Tallahassee (Deluxe)', 'The Mountain Goats', 2002,
+                'xxxx-yyyy-zzzz', 'dddd-eeee-ffff',
+                '1111-2222-3333', 'Tallahassee');
+            INSERT INTO items (album_id, bitrate, path) VALUES (1, 245000, X'2F612F622E6D7033');
+            INSERT INTO items (album_id, bitrate, path) VALUES (2, 320000, X'2F612F632E6D7033');
+        """)
+        conn.close()
+
+        # Patch the beets DB into server module
+        import web.server as srv
+        from lib.beets_db import BeetsDB
+        cls._beets = BeetsDB(cls._db_path)
+        cls._orig_beets = srv._beets
+        srv._beets = cls._beets
+
+    @classmethod
+    def tearDownClass(cls):
+        import web.server as srv
+        srv._beets = cls._orig_beets
+        import shutil
+        shutil.rmtree(cls._tmpdir, ignore_errors=True)
+
+    # Fields the frontend (library.js) requires for rendering and grouping
+    REQUIRED_FIELDS = {
+        "album", "albumartist", "year", "mb_albumid", "track_count",
+        "source", "mb_releasegroupid", "release_group_title",
+    }
+
+    def test_response_has_all_required_fields(self):
+        """Every album dict must include all fields the frontend JS uses."""
+        import web.server as srv
+        albums = srv.get_library_artist("Mountain Goats", "dddd-eeee-ffff")
+        self.assertEqual(len(albums), 2)
+        for album in albums:
+            missing = self.REQUIRED_FIELDS - set(album.keys())
+            self.assertFalse(missing,
+                f"Album '{album.get('album')}' missing fields: {missing}")
+
+    def test_release_group_fields_populated(self):
+        """mb_releasegroupid and release_group_title must have actual values."""
+        import web.server as srv
+        albums = srv.get_library_artist("Mountain Goats", "dddd-eeee-ffff")
+        for album in albums:
+            self.assertIsNotNone(album["mb_releasegroupid"])
+            self.assertNotEqual(album["mb_releasegroupid"], "")
+            self.assertIsNotNone(album["release_group_title"])
+
+    def test_releases_group_by_release_group_id(self):
+        """Two pressings of same release group should share the same rgid."""
+        import web.server as srv
+        albums = srv.get_library_artist("Mountain Goats", "dddd-eeee-ffff")
+        rg_ids = {a["mb_releasegroupid"] for a in albums}
+        self.assertEqual(len(rg_ids), 1, "Both pressings should share one release group")
+        self.assertEqual(rg_ids.pop(), "1111-2222-3333")
+
+    def test_name_only_lookup(self):
+        """Lookup by name only (no mbid) also returns all required fields."""
+        import web.server as srv
+        albums = srv.get_library_artist("Mountain Goats")
+        self.assertGreater(len(albums), 0)
+        for album in albums:
+            missing = self.REQUIRED_FIELDS - set(album.keys())
+            self.assertFalse(missing,
+                f"Album '{album.get('album')}' missing fields: {missing}")
+
+
 if __name__ == "__main__":
     unittest.main()

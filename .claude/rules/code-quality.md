@@ -13,6 +13,14 @@
 - Read `/tmp/soularr-test-output.txt` instead of re-running the 2-minute suite
 - For single modules during dev: `nix-shell --run "python3 -m unittest tests.<module> -v"`
 
+## API Contract Tests
+- Every API endpoint consumed by the frontend must have a contract test in `test_web_server.py`
+- Contract tests use a real in-memory SQLite beets DB (not mocks) to verify actual query results
+- Define a `REQUIRED_FIELDS` set per endpoint — the fields the frontend JS relies on
+- Assert every returned dict includes all required fields with non-empty values
+- When adding a field the frontend needs, add it to `REQUIRED_FIELDS` first (RED), then fix the backend (GREEN)
+- See `TestLibraryArtistContract` as the reference pattern
+
 ## Logging & Auditability
 - Every download outcome (success, rejection, timeout, crash) MUST create a download_log row
 - Use typed JSON dataclasses (`ImportResult`, `ValidationResult`) — never raw dicts

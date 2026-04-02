@@ -118,7 +118,8 @@ def get_library_artist(artist_name, mb_artist_id=None):
     if mb_artist_id:
         rows = b._conn.execute(
             "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
+            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count, "
+            "       mb_releasegroupid, release_group_title "
             "FROM albums WHERE mb_albumartistid = ? OR mb_albumartistids LIKE ? "
             "  OR (albumartist LIKE ? COLLATE NOCASE "
             "      AND (mb_albumartistid IS NULL OR mb_albumartistid = '' "
@@ -129,7 +130,8 @@ def get_library_artist(artist_name, mb_artist_id=None):
     else:
         rows = b._conn.execute(
             "SELECT album, albumartist, year, mb_albumid, discogs_albumid, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count "
+            "       (SELECT COUNT(*) FROM items WHERE items.album_id = albums.id) as track_count, "
+            "       mb_releasegroupid, release_group_title "
             "FROM albums WHERE albumartist LIKE ? COLLATE NOCASE "
             "ORDER BY year, album",
             (f"%{artist_name}%",),
@@ -147,6 +149,8 @@ def get_library_artist(artist_name, mb_artist_id=None):
             "mb_albumid": r[3],
             "track_count": r[5],
             "source": source,
+            "mb_releasegroupid": r[6],
+            "release_group_title": r[7],
         })
     return results
 
