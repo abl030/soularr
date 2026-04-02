@@ -63,12 +63,7 @@ def _make_ctx():
     ctx.cfg.beets_distance_threshold = 0.15
     ctx.pipeline_db_source = MagicMock()
     db_mock = MagicMock()
-    req_mock = MagicMock()
-    req_mock.min_bitrate = None
-    req_mock.on_disk_spectral_bitrate = None
-    req_mock.spectral_bitrate = None
-    req_mock.verified_lossless = False
-    db_mock.get_request.return_value = req_mock
+    db_mock.get_request.return_value = {"min_bitrate": None, "on_disk_spectral_bitrate": None, "spectral_bitrate": None, "verified_lossless": False}
     ctx.pipeline_db_source._get_db.return_value = db_mock
     return ctx
 
@@ -281,12 +276,7 @@ class TestOverrideMinBitrate(unittest.TestCase):
         album_data = _make_album_data()
         ctx = _make_ctx()
         db_mock = ctx.pipeline_db_source._get_db.return_value
-        mock_req = MagicMock()
-        mock_req.min_bitrate = db_fields.get("min_bitrate")
-        mock_req.on_disk_spectral_bitrate = db_fields.get("on_disk_spectral_bitrate")
-        mock_req.spectral_bitrate = db_fields.get("spectral_bitrate")
-        mock_req.verified_lossless = db_fields.get("verified_lossless", False)
-        db_mock.get_request.return_value = mock_req
+        db_mock.get_request.return_value = db_fields
         bv_result = _make_bv_result()
         dl_info = DownloadInfo(filetype="mp3")
         ir = _make_import_result(decision="import")

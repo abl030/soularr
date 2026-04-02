@@ -13,11 +13,10 @@ Must be **0 errors**. Do not proceed if there are new errors (psycopg2/slskd_api
 
 2. Dict access grep gate — catch missed dict→attribute conversions on typed objects:
 ```bash
-grep -rn 'req\["\|req\['"'"'\|existing\["\|existing\['"'"'' --include='*.py' lib/ soularr.py album_source.py scripts/pipeline_cli.py web/routes/
 grep -rn 'album\["\|album\['"'"'' --include='*.py' soularr.py lib/download.py album_source.py
 ```
 
-Must return **0 matches**. `req`/`existing` are PipelineRequest, `album` in soularr.py/download.py is AlbumRecord. If you find matches, check whether they're on a typed variable or an unrelated dict. Note: `release["field"]` in web/routes/ and pipeline_cli.py is fine — those are raw MusicBrainz API dicts, not ReleaseRecord.
+Must return **0 matches**. `album` in soularr.py/download.py is a typed `AlbumRecord` dataclass. Note: `req["field"]` is fine — `get_request()` returns `dict[str, Any]`. `release["field"]` in web routes is fine — those are raw MusicBrainz API dicts.
 
 3. Run full test suite:
 ```bash

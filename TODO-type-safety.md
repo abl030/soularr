@@ -18,9 +18,9 @@ This applies to every remaining untyped boundary below.
 
 Replaced with typed `AlbumRecord`, `ReleaseRecord`, `MediaRecord` dataclasses. All ~50 access sites in soularr.py and lib/download.py updated. `_get_request_id()` deleted. Tests fixed to use real constructors.
 
-### 2. ~~`PipelineDB.get_request()` returns `dict[str, Any]`~~ ✅ DONE
+### 2. `PipelineDB.get_request()` returns `dict[str, Any]` — INTENTIONALLY LEFT AS DICT
 
-Replaced with typed `PipelineRequest` dataclass in `lib/pipeline_db.py`. All ~100 access sites across 15 files updated from `req["field"]` to `req.field`. Tests fixed to use `PipelineRequest` or `MagicMock` with typed attributes.
+Attempted typed `PipelineRequest` dataclass but reverted: 30-field boilerplate mirroring the DB schema, maintenance tax on every migration, and `RealDictCursor` already handles it. Not worth the complexity. See audit discussion in git history.
 
 ### 3. ~~`verify_filetype()` takes `file: Any`~~ ✅ DONE
 

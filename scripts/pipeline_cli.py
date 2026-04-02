@@ -102,7 +102,7 @@ def cmd_add(db, args):
     # Check if already exists
     existing = db.get_request_by_mb_release_id(mbid)
     if existing:
-        print(f"  Already in DB: id={existing.id} status={existing.status}")
+        print(f"  Already in DB: id={existing['id']} status={existing['status']}")
         return
 
     # Fetch from MB API
@@ -159,7 +159,7 @@ def cmd_retry(db, args):
         print(f"  Request {args.id} not found.")
         return
     db.reset_to_wanted(args.id)
-    print(f"  Reset to wanted: [{args.id}] {req.artist_name} - {req.album_title}")
+    print(f"  Reset to wanted: [{args.id}] {req['artist_name']} - {req['album_title']}")
 
 
 def cmd_cancel(db, args):
@@ -168,7 +168,7 @@ def cmd_cancel(db, args):
         print(f"  Request {args.id} not found.")
         return
     db.update_status(args.id, "manual")
-    print(f"  Marked for manual download: [{args.id}] {req.artist_name} - {req.album_title}")
+    print(f"  Marked for manual download: [{args.id}] {req['artist_name']} - {req['album_title']}")
 
 
 VALID_STATUSES = ["wanted", "imported", "manual"]
@@ -179,12 +179,12 @@ def cmd_set(db, args):
     if not req:
         print(f"  Request {args.id} not found.")
         return
-    old_status = req.status
+    old_status = req["status"]
     if old_status == args.status:
         print(f"  [{args.id}] already has status '{args.status}'.")
         return
     db.update_status(args.id, args.status)
-    print(f"  [{args.id}] {req.artist_name} - {req.album_title}: {old_status} → {args.status}")
+    print(f"  [{args.id}] {req['artist_name']} - {req['album_title']}: {old_status} → {args.status}")
 
 
 def cmd_show(db, args):
@@ -193,42 +193,42 @@ def cmd_show(db, args):
         print(f"  Request {args.id} not found.")
         return
 
-    print(f"  ID:           {req.id}")
-    print(f"  Artist:       {req.artist_name}")
-    print(f"  Album:        {req.album_title}")
-    print(f"  Status:       {req.status}")
-    print(f"  Source:       {req.source}")
-    print(f"  MB Release:   {req.mb_release_id}")
-    print(f"  MB RG:        {req.mb_release_group_id}")
-    print(f"  MB Artist:    {req.mb_artist_id}")
-    print(f"  Discogs:      {req.discogs_release_id}")
-    print(f"  Year:         {req.year}")
-    print(f"  Country:      {req.country}")
-    print(f"  Format:       {req.format}")
-    print(f"  Source Path:  {req.source_path}")
-    if req.reasoning:
-        print(f"  Reasoning:    {req.reasoning[:120]}...")
-    print(f"  Distance:     {req.beets_distance}")
-    print(f"  Imported:     {req.imported_path}")
-    print(f"  Attempts:     search={req.search_attempts} dl={req.download_attempts} val={req.validation_attempts}")
-    print(f"  Created:      {req.created_at}")
-    print(f"  Updated:      {req.updated_at}")
+    print(f"  ID:           {req['id']}")
+    print(f"  Artist:       {req['artist_name']}")
+    print(f"  Album:        {req['album_title']}")
+    print(f"  Status:       {req['status']}")
+    print(f"  Source:       {req['source']}")
+    print(f"  MB Release:   {req['mb_release_id']}")
+    print(f"  MB RG:        {req['mb_release_group_id']}")
+    print(f"  MB Artist:    {req['mb_artist_id']}")
+    print(f"  Discogs:      {req['discogs_release_id']}")
+    print(f"  Year:         {req['year']}")
+    print(f"  Country:      {req['country']}")
+    print(f"  Format:       {req['format']}")
+    print(f"  Source Path:  {req['source_path']}")
+    if req.get("reasoning"):
+        print(f"  Reasoning:    {req['reasoning'][:120]}...")
+    print(f"  Distance:     {req['beets_distance']}")
+    print(f"  Imported:     {req['imported_path']}")
+    print(f"  Attempts:     search={req['search_attempts']} dl={req['download_attempts']} val={req['validation_attempts']}")
+    print(f"  Created:      {req['created_at']}")
+    print(f"  Updated:      {req['updated_at']}")
 
-    tracks = db.get_tracks(req.id)
+    tracks = db.get_tracks(req['id'])
     if tracks:
         print(f"\n  Tracks ({len(tracks)}):")
         for t in tracks:
             dur = f"{t['length_seconds']:.0f}s" if t['length_seconds'] else "?"
             print(f"    {t['disc_number']}.{t['track_number']:02d} {t['title']} ({dur})")
 
-    history = db.get_download_history(req.id)
+    history = db.get_download_history(req['id'])
     if history:
         print(f"\n  Download History ({len(history)}):")
         for h in history:
             print(f"    [{h['created_at']}] {h['outcome']} from {h['soulseek_username']} "
                   f"(dist={h['beets_distance']})")
 
-    denied = db.get_denylisted_users(req.id)
+    denied = db.get_denylisted_users(req['id'])
     if denied:
         print(f"\n  Denylisted Users ({len(denied)}):")
         for d in denied:
@@ -288,7 +288,7 @@ def cmd_force_import(db, args):
         print(f"  Album request {request_id} not found.")
         return
 
-    mbid = req.mb_release_id
+    mbid = req["mb_release_id"]
     if not mbid:
         print(f"  Album request {request_id} has no mb_release_id (Discogs-only?).")
         return
@@ -302,7 +302,7 @@ def cmd_force_import(db, args):
         return
     failed_path = resolved_path
 
-    print(f"  Force-importing: {req.artist_name} - {req.album_title}")
+    print(f"  Force-importing: {req['artist_name']} - {req['album_title']}")
     print(f"  Path: {failed_path}")
     print(f"  MBID: {mbid}")
 
@@ -314,8 +314,8 @@ def cmd_force_import(db, args):
         "--force",
     ]
     # Pass override-min-bitrate if album has one
-    if req.min_bitrate:
-        cmd.extend(["--override-min-bitrate", str(req.min_bitrate)])
+    if req["min_bitrate"]:
+        cmd.extend(["--override-min-bitrate", str(req["min_bitrate"])])
 
     print(f"  Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
@@ -362,12 +362,12 @@ def cmd_manual_import(db, args):
         print(f"  Request {request_id} not found.")
         return
 
-    mbid = req.mb_release_id
+    mbid = req["mb_release_id"]
     if not mbid:
         print(f"  Request {request_id} has no MusicBrainz release ID.")
         return
 
-    print(f"  Manual import: {req.artist_name} - {req.album_title}")
+    print(f"  Manual import: {req['artist_name']} - {req['album_title']}")
     print(f"  Path: {path}")
     print(f"  MBID: {mbid}")
 
@@ -377,7 +377,7 @@ def cmd_manual_import(db, args):
         mb_release_id=mbid,
         path=path,
         import_one_path=IMPORT_ONE,
-        override_min_bitrate=req.min_bitrate,
+        override_min_bitrate=req["min_bitrate"],
     )
 
     # 3. Log to download_log

@@ -1,6 +1,5 @@
 """Pipeline API route handlers, extracted from server.py."""
 
-import dataclasses
 import json
 import os
 import re
@@ -223,11 +222,11 @@ def get_pipeline_detail(h, params: dict[str, list[str]], req_id_str: str) -> Non
         hi["downloaded_label"] = classified.downloaded_label
         history_items.append(hi)
     result: dict[str, object] = {
-        "request": s._serialize_row(dataclasses.asdict(req)),
+        "request": s._serialize_row(req),
         "tracks": tracks,
         "history": history_items,
     }
-    mbid = req.mb_release_id
+    mbid = req.get("mb_release_id")
     b = s._beets_db()
     if mbid and b:
         tracks = b.get_tracks_by_mb_release_id(mbid)
@@ -253,8 +252,8 @@ def post_pipeline_add(h, body: dict) -> None:
     if existing:
         h._json({
             "status": "exists",
-            "id": existing.id,
-            "current_status": existing.status,
+            "id": existing["id"],
+            "current_status": existing["status"],
         })
         return
 
@@ -300,8 +299,8 @@ def post_pipeline_update(h, body: dict) -> None:
         h._error("Not found", 404)
         return
 
-    if new_status == "wanted" and req.status != "wanted":
-        mbid = req.mb_release_id
+    if new_status == "wanted" and req["status"] != "wanted":
+        mbid = req.get("mb_release_id")
         quality = None
         min_br = None
         b = s._beets_db()
@@ -333,7 +332,7 @@ def post_pipeline_upgrade(h, body: dict) -> None:
 
     existing = s._db().get_request_by_mb_release_id(mbid)
     if existing:
-        req_id = existing.id
+        req_id = existing["id"]
         s._db().reset_to_wanted(req_id,
                                 quality_override=quality,
                                 min_bitrate=min_bitrate)
@@ -383,7 +382,7 @@ def post_pipeline_set_quality(h, body: dict) -> None:
         h._error("Not found in pipeline", 404)
         return
 
-    req_id = existing.id
+    req_id = existing["id"]
 
     if min_bitrate is not None:
         min_bitrate = int(min_bitrate)
@@ -408,7 +407,7 @@ def post_pipeline_set_quality(h, body: dict) -> None:
                 f"UPDATE album_requests SET {sets} WHERE id = %s",
                 (req_id,),
             )
-        elif new_status == "wanted" and existing.status != "wanted":
+        elif new_status == "wanted" and existing["status"] != "wanted":
             s._db().reset_to_wanted(req_id)
         else:
             s._db().update_status(req_id, new_status)
@@ -416,7 +415,7 @@ def post_pipeline_set_quality(h, body: dict) -> None:
     h._json({
         "status": "ok",
         "id": req_id,
-        "new_status": new_status or existing.status,
+        "new_status": new_status or existing["status"],
         "min_bitrate": min_bitrate,
     })
 
@@ -448,8 +447,8 @@ def post_pipeline_ban_source(h, body: dict) -> None:
 
     req = s._db().get_request(int(req_id))
     if req:
-        quality = req.quality_override or "flac,mp3 v0,mp3 320"
-        min_br = req.min_bitrate
+        quality = req.get("quality_override") or "flac,mp3 v0,mp3 320"
+        min_br = req.get("min_bitrate")
         s._db().reset_to_wanted(int(req_id), quality_override=quality, min_bitrate=min_br)
 
     h._json({
@@ -488,7 +487,7 @@ def post_pipeline_force_import(h, body: dict) -> None:
     if not req:
         h._error(f"Album request {request_id} not found", 404)
         return
-    mbid = req.mb_release_id
+    mbid = req.get("mb_release_id")
     if not mbid:
         h._error("Album has no MusicBrainz release ID")
         return
@@ -511,8 +510,8 @@ def post_pipeline_force_import(h, body: dict) -> None:
         "--request-id", str(request_id),
         "--force",
     ]
-    if req.min_bitrate:
-        cmd.extend(["--override-min-bitrate", str(req.min_bitrate)])
+    if req.get("min_bitrate"):
+        cmd.extend(["--override-min-bitrate", str(req["min_bitrate"])])
 
     import subprocess as _sp
     result = _sp.run(cmd, capture_output=True, text=True, timeout=1800)
@@ -545,8 +544,8 @@ def post_pipeline_force_import(h, body: dict) -> None:
         "status": "ok" if result.returncode == 0 else "error",
         "exit_code": result.returncode,
         "request_id": request_id,
-        "artist": req.artist_name,
-        "album": req.album_title,
+        "artist": req["artist_name"],
+        "album": req["album_title"],
         "stderr": result.stderr[-500:] if result.stderr else "",
     })
 

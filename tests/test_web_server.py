@@ -19,25 +19,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-from datetime import datetime, timezone
-from pipeline_db import PipelineRequest
-
-
-def _mock_pipeline_request() -> PipelineRequest:
-    """Build a PipelineRequest with test defaults."""
-    return PipelineRequest(
-        id=100, album_title="Test Album", artist_name="Test Artist",
-        mb_release_id="abc-123", mb_release_group_id=None, mb_artist_id=None,
-        discogs_release_id=None, year=None, country=None, format=None,
-        source="request", source_path=None, reasoning=None, status="imported",
-        search_attempts=0, download_attempts=0, validation_attempts=0,
-        last_attempt_at=None, next_retry_after=None, beets_distance=None,
-        beets_scenario=None, imported_path="/mnt/virtio/Music/Beets/Test",
-        quality_override=None, min_bitrate=320, prev_min_bitrate=None,
-        lidarr_album_id=None, lidarr_artist_id=None,
-        created_at=datetime(2026, 3, 30, 12, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 3, 30, 12, tzinfo=timezone.utc),
-    )
+_MOCK_PIPELINE_REQUEST = {
+    "id": 100, "album_title": "Test Album", "artist_name": "Test Artist",
+    "mb_release_id": "abc-123", "status": "imported",
+    "imported_path": "/mnt/virtio/Music/Beets/Test",
+    "reasoning": None, "min_bitrate": 320, "spectral_grade": None,
+    "spectral_bitrate": None, "on_disk_spectral_grade": None,
+    "on_disk_spectral_bitrate": None, "verified_lossless": False,
+    "created_at": "2026-03-30T12:00:00+00:00",
+    "updated_at": "2026-03-30T12:00:00+00:00",
+}
 
 
 def _make_server():
@@ -72,7 +63,7 @@ def _make_server():
         fetchone=MagicMock(return_value={"total": 1, "imported": 1}))
     mock_db.count_by_status.return_value = {"wanted": 0, "imported": 1, "manual": 0}
     mock_db.get_by_status.return_value = []
-    mock_db.get_request.return_value = _mock_pipeline_request()
+    mock_db.get_request.return_value = _MOCK_PIPELINE_REQUEST
     mock_db.get_tracks.return_value = []
     mock_db.get_download_history.return_value = [
         {
@@ -208,7 +199,7 @@ class TestServerEndpoints(unittest.TestCase):
         status, data = self._get("/api/pipeline/999")
         self.assertEqual(status, 404)
         # Restore
-        self.mock_db.get_request.return_value = _mock_pipeline_request()
+        self.mock_db.get_request.return_value = _MOCK_PIPELINE_REQUEST
 
     def test_unknown_get_returns_404(self):
         status, data = self._get("/api/nonexistent")
