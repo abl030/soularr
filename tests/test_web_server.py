@@ -461,12 +461,12 @@ class TestLibraryArtistContract(unittest.TestCase):
         import shutil
         shutil.rmtree(cls._tmpdir, ignore_errors=True)
 
-    # Fields the frontend (library.js) requires for rendering and grouping.
+    # Fields the frontend (library.js, discography.js) requires for rendering.
     # These must match _album_row_to_dict() output — the single source of truth.
     REQUIRED_FIELDS = {
         "id", "album", "artist", "year", "mb_albumid", "track_count",
         "mb_releasegroupid", "release_group_title", "added",
-        "formats", "min_bitrate", "type", "label", "country",
+        "formats", "min_bitrate", "type", "label", "country", "source",
     }
 
     def test_response_has_all_required_fields(self):

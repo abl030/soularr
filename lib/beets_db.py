@@ -175,13 +175,7 @@ class BeetsDB:
     def search_albums(self, query: str, limit: int = 100) -> list[dict[str, object]]:
         """Search albums by artist or album name (LIKE, case-insensitive)."""
         rows = self._conn.execute(
-            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
-            "       a.albumtype, a.label, a.country, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-            "       a.added, a.mb_releasegroupid, a.release_group_title, "
-            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
-            "FROM albums a "
+            self._ALBUM_SELECT +
             "WHERE a.albumartist LIKE ? COLLATE NOCASE OR a.album LIKE ? COLLATE NOCASE "
             "ORDER BY a.albumartist, a.year, a.album LIMIT ?",
             (f"%{query}%", f"%{query}%", limit),
@@ -191,13 +185,7 @@ class BeetsDB:
     def get_recent(self, limit: int = 50) -> list[dict[str, object]]:
         """Get most recently added albums."""
         rows = self._conn.execute(
-            "SELECT a.id, a.album, a.albumartist, a.year, a.mb_albumid, "
-            "       a.albumtype, a.label, a.country, "
-            "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
-            "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
-            "       a.added, a.mb_releasegroupid, a.release_group_title, "
-            "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
-            "FROM albums a ORDER BY a.added DESC LIMIT ?",
+            self._ALBUM_SELECT + "ORDER BY a.added DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [self._album_row_to_dict(r) for r in rows]
@@ -224,7 +212,7 @@ class BeetsDB:
         } for i in items]
         album_path = os.path.dirname(tracks[0]["path"]) if tracks and tracks[0]["path"] else None
         return {
-            "id": album[0], "album": album[1], "albumartist": album[2],  # type: ignore[literal-required]
+            "id": album[0], "album": album[1], "artist": album[2],
             "year": album[3], "mb_albumid": album[4], "type": album[5],
             "label": album[6], "country": album[7],
             "artpath": self._decode_path(album[8]) if album[8] else None,
@@ -237,7 +225,8 @@ class BeetsDB:
         "       (SELECT COUNT(*) FROM items WHERE items.album_id = a.id) as track_count, "
         "       (SELECT GROUP_CONCAT(DISTINCT i.format) FROM items i WHERE i.album_id = a.id) as formats, "
         "       a.added, a.mb_releasegroupid, a.release_group_title, "
-        "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate "
+        "       (SELECT MIN(i.bitrate) FROM items i WHERE i.album_id = a.id) as min_bitrate, "
+        "       a.discogs_albumid "
         "FROM albums a "
     )
 
@@ -265,6 +254,64 @@ class BeetsDB:
                 (f"%{name}%",),
             ).fetchall()
         return [self._album_row_to_dict(r) for r in rows]
+
+    def get_tracks_by_mb_release_id(self, mbid: str) -> Optional[list[dict[str, object]]]:
+        """Get all tracks for an album by MBID. Returns None if not found."""
+        album = self._conn.execute(
+            "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
+        ).fetchone()
+        if not album:
+            return None
+        items = self._conn.execute(
+            "SELECT title, track, disc, length, format, bitrate, "
+            "       samplerate, bitdepth "
+            "FROM items WHERE album_id = ? ORDER BY disc, track",
+            (album[0],),
+        ).fetchall()
+        return [{
+            "title": i[0], "track": i[1], "disc": i[2],
+            "length": i[3], "format": i[4], "bitrate": i[5],
+            "samplerate": i[6], "bitdepth": i[7],
+        } for i in items]
+
+    def get_album_ids_by_mbids(self, mbids: list[str]) -> dict[str, int]:
+        """Map MBIDs to beets album IDs. Returns {mbid: album_id}."""
+        if not mbids:
+            return {}
+        ph = ",".join("?" for _ in mbids)
+        rows = self._conn.execute(
+            f"SELECT mb_albumid, id FROM albums WHERE mb_albumid IN ({ph})",
+            mbids,
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    @staticmethod
+    def delete_album(db_path: str, album_id: int) -> tuple[str, str, list[str]]:
+        """Delete an album from beets DB (read-write). Returns (album, artist, file_paths).
+
+        Opens a separate writable connection — does not use the read-only instance conn.
+        Raises ValueError if album not found.
+        """
+        conn = sqlite3.connect(db_path)
+        try:
+            album_row = conn.execute(
+                "SELECT album, albumartist FROM albums WHERE id = ?", (album_id,)
+            ).fetchone()
+            if not album_row:
+                raise ValueError(f"Album {album_id} not found")
+            items = conn.execute(
+                "SELECT path FROM items WHERE album_id = ?", (album_id,)
+            ).fetchall()
+            file_paths = [
+                r[0].decode("utf-8", errors="replace") if isinstance(r[0], bytes) else r[0]
+                for r in items
+            ]
+            conn.execute("DELETE FROM items WHERE album_id = ?", (album_id,))
+            conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+            conn.commit()
+            return album_row[0], album_row[1], file_paths
+        finally:
+            conn.close()
 
     def find_by_artist_album(self, artist: str, album: str) -> Optional[int]:
         """Find track count by artist+album name. Returns None if not found."""
@@ -299,11 +346,20 @@ class BeetsDB:
 
     @staticmethod
     def _album_row_to_dict(r: tuple[object, ...]) -> dict[str, object]:
-        """Convert a standard album query row to dict."""
+        """Convert a standard album query row to dict.
+
+        Column order must match _ALBUM_SELECT (indices 0-14).
+        Field names here are the API contract — the frontend depends on them.
+        """
+        mb_id = r[4] or ""
+        has_mb = bool(mb_id) and "-" in str(mb_id)
+        has_discogs = bool(r[14]) or (bool(mb_id) and "-" not in str(mb_id))
+        source = "musicbrainz" if has_mb else ("discogs" if has_discogs else "unknown")
         return {
             "id": r[0], "album": r[1], "artist": r[2], "year": r[3],
             "mb_albumid": r[4], "type": r[5], "label": r[6],
             "country": r[7], "track_count": r[8], "formats": r[9],
             "added": r[10], "mb_releasegroupid": r[11],
             "release_group_title": r[12], "min_bitrate": r[13],
+            "source": source,
         }

@@ -95,15 +95,8 @@ def get_artist_disambiguate(h: BaseHTTPRequestHandler, params: dict[str, list[st
 
         # Look up beets album IDs for in-library pressings
         lib_mbids = [p.release_id for p in rg.pressings if p.release_id in in_library]
-        beets_ids: dict[str, int] = {}
         b = srv._beets_db()
-        if lib_mbids and b:
-            ph = ",".join("?" for _ in lib_mbids)
-            for row in b._conn.execute(
-                f"SELECT id, mb_albumid FROM albums WHERE mb_albumid IN ({ph})",
-                lib_mbids,
-            ).fetchall():
-                beets_ids[row[1]] = row[0]
+        beets_ids = b.get_album_ids_by_mbids(lib_mbids) if lib_mbids and b else {}
 
         pressings_json = []
         for p in rg.pressings:
@@ -180,21 +173,9 @@ def get_release(h: BaseHTTPRequestHandler, params: dict[str, list[str]], release
     # Include beets track info if in library
     b = srv._beets_db()
     if data["in_library"] and b:
-        album = b._conn.execute(
-            "SELECT id FROM albums WHERE mb_albumid = ?", (release_id,)
-        ).fetchone()
-        if album:
-            items = b._conn.execute(
-                "SELECT title, track, disc, length, format, bitrate, "
-                "       samplerate, bitdepth "
-                "FROM items WHERE album_id = ? ORDER BY disc, track",
-                (album[0],),
-            ).fetchall()
-            data["beets_tracks"] = [{
-                "title": i[0], "track": i[1], "disc": i[2],
-                "length": i[3], "format": i[4], "bitrate": i[5],
-                "samplerate": i[6], "bitdepth": i[7],
-            } for i in items]
+        tracks = b.get_tracks_by_mb_release_id(release_id)
+        if tracks is not None:
+            data["beets_tracks"] = tracks
     h._json(data)  # type: ignore[attr-defined]
 
 

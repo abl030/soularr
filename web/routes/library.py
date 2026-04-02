@@ -1,6 +1,6 @@
 """Beets library route handlers — search, album detail, recent, delete."""
 
-import json, os, re, sys, sqlite3
+import os, re, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -35,16 +35,7 @@ def get_beets_album(h, params: dict[str, list[str]], album_id_str: str) -> None:
     if not detail:
         h._error("Not found", 404)
         return
-    # Remap 'albumartist' to 'artist' for API compatibility
-    result: dict[str, object] = {
-        "id": detail["id"], "album": detail["album"],
-        "artist": detail["albumartist"],
-        "year": detail["year"], "mb_albumid": detail["mb_albumid"],
-        "type": detail["type"], "label": detail["label"],
-        "country": detail["country"], "artpath": detail["artpath"],
-        "added": detail["added"], "tracks": detail["tracks"],
-        "path": detail["path"],
-    }
+    result: dict[str, object] = dict(detail)
     # Include pipeline download history if available
     mb_id = detail.get("mb_albumid")
     srv = _server()
@@ -95,28 +86,13 @@ def post_beets_delete(h, body: dict) -> None:
     if not srv.beets_db_path or not os.path.exists(srv.beets_db_path):
         h._error("Beets DB not available")
         return
-    conn = sqlite3.connect(srv.beets_db_path)
-    # Get album path from items before deleting
-    items = conn.execute(
-        "SELECT path FROM items WHERE album_id = ?", (int(album_id),)
-    ).fetchall()
-    album_row = conn.execute(
-        "SELECT album, albumartist FROM albums WHERE id = ?", (int(album_id),)
-    ).fetchone()
-    if not album_row:
-        conn.close()
+    from lib.beets_db import BeetsDB
+    try:
+        album_name, artist_name, file_paths = BeetsDB.delete_album(srv.beets_db_path, int(album_id))
+    except ValueError:
         h._error("Album not found", 404)
         return
-    album_name = album_row[0]
-    artist_name = album_row[1]
-    # Get album directory from first track
-    file_paths = [r[0].decode("utf-8", errors="replace") if isinstance(r[0], bytes) else r[0] for r in items]
     album_dir = os.path.dirname(file_paths[0]) if file_paths else None
-    # Delete from beets DB
-    conn.execute("DELETE FROM items WHERE album_id = ?", (int(album_id),))
-    conn.execute("DELETE FROM albums WHERE id = ?", (int(album_id),))
-    conn.commit()
-    conn.close()
     # Delete individual files from disk (safe — won't destroy shared directories)
     deleted_files = 0
     for path in file_paths:

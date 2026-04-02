@@ -229,21 +229,9 @@ def get_pipeline_detail(h, params: dict[str, list[str]], req_id_str: str) -> Non
     mbid = req.get("mb_release_id")
     b = s._beets_db()
     if mbid and b:
-        album = b._conn.execute(
-            "SELECT id FROM albums WHERE mb_albumid = ?", (mbid,)
-        ).fetchone()
-        if album:
-            items = b._conn.execute(
-                "SELECT title, track, disc, length, format, "
-                "       bitrate, samplerate, bitdepth "
-                "FROM items WHERE album_id = ? ORDER BY disc, track",
-                (album[0],),
-            ).fetchall()
-            result["beets_tracks"] = [{
-                "title": i[0], "track": i[1], "disc": i[2],
-                "length": i[3], "format": i[4], "bitrate": i[5],
-                "samplerate": i[6], "bitdepth": i[7],
-            } for i in items]
+        tracks = b.get_tracks_by_mb_release_id(mbid)
+        if tracks is not None:
+            result["beets_tracks"] = tracks
     h._json(result)
 
 
