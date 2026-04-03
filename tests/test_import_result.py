@@ -552,21 +552,25 @@ class TestActiveDownloadState(unittest.TestCase):
         state = ActiveDownloadState(
             filetype="flac",
             enqueued_at="2026-04-03T12:00:00+00:00",
+            processing_started_at="2026-04-03T12:05:00+00:00",
             files=[
                 ActiveDownloadFileState(
                     username="user1",
                     filename="user1\\Music\\01.flac",
                     file_dir="user1\\Music",
                     size=30000000,
+                    retry_count=2,
                 ),
             ],
         )
         j = json.loads(state.to_json())
         self.assertEqual(j["filetype"], "flac")
         self.assertEqual(j["enqueued_at"], "2026-04-03T12:00:00+00:00")
+        self.assertEqual(j["processing_started_at"], "2026-04-03T12:05:00+00:00")
         self.assertEqual(len(j["files"]), 1)
         self.assertEqual(j["files"][0]["username"], "user1")
         self.assertEqual(j["files"][0]["size"], 30000000)
+        self.assertEqual(j["files"][0]["retry_count"], 2)
 
     def test_active_download_state_from_json(self):
         """Deserialize, verify all fields."""
@@ -574,21 +578,25 @@ class TestActiveDownloadState(unittest.TestCase):
         raw = json.dumps({
             "filetype": "mp3 v0",
             "enqueued_at": "2026-04-03T14:30:00+00:00",
+            "processing_started_at": "2026-04-03T14:35:00+00:00",
             "files": [
                 {"username": "bob", "filename": "bob\\Tunes\\01.mp3",
-                 "file_dir": "bob\\Tunes", "size": 5000000},
+                 "file_dir": "bob\\Tunes", "size": 5000000, "retry_count": 1},
                 {"username": "bob", "filename": "bob\\Tunes\\02.mp3",
                  "file_dir": "bob\\Tunes", "size": 6000000,
-                 "disk_no": 1, "disk_count": 2},
+                 "disk_no": 1, "disk_count": 2, "retry_count": 4},
             ],
         })
         state = ActiveDownloadState.from_json(raw)
         self.assertEqual(state.filetype, "mp3 v0")
         self.assertEqual(state.enqueued_at, "2026-04-03T14:30:00+00:00")
+        self.assertEqual(state.processing_started_at, "2026-04-03T14:35:00+00:00")
         self.assertEqual(len(state.files), 2)
         self.assertEqual(state.files[0].username, "bob")
+        self.assertEqual(state.files[0].retry_count, 1)
         self.assertEqual(state.files[1].disk_no, 1)
         self.assertEqual(state.files[1].disk_count, 2)
+        self.assertEqual(state.files[1].retry_count, 4)
         self.assertIsNone(state.files[0].disk_no)
 
     def test_active_download_state_roundtrip(self):
@@ -597,21 +605,24 @@ class TestActiveDownloadState(unittest.TestCase):
         original = ActiveDownloadState(
             filetype="flac",
             enqueued_at="2026-04-03T12:00:00+00:00",
+            processing_started_at="2026-04-03T12:02:00+00:00",
             files=[
                 ActiveDownloadFileState(
                     username="user1", filename="user1\\Music\\01.flac",
                     file_dir="user1\\Music", size=30000000,
-                    disk_no=2, disk_count=3,
+                    disk_no=2, disk_count=3, retry_count=5,
                 ),
             ],
         )
         restored = ActiveDownloadState.from_json(original.to_json())
         self.assertEqual(restored.filetype, original.filetype)
         self.assertEqual(restored.enqueued_at, original.enqueued_at)
+        self.assertEqual(restored.processing_started_at, original.processing_started_at)
         self.assertEqual(len(restored.files), 1)
         self.assertEqual(restored.files[0].username, "user1")
         self.assertEqual(restored.files[0].disk_no, 2)
         self.assertEqual(restored.files[0].disk_count, 3)
+        self.assertEqual(restored.files[0].retry_count, 5)
 
     def test_active_download_file_state_fields(self):
         """Verify per-file fields present."""
@@ -626,6 +637,7 @@ class TestActiveDownloadState(unittest.TestCase):
         self.assertEqual(f.size, 25000000)
         self.assertIsNone(f.disk_no)
         self.assertIsNone(f.disk_count)
+        self.assertEqual(f.retry_count, 0)
 
     def test_active_download_state_enqueued_at_iso(self):
         """Verify ISO8601 datetime format."""

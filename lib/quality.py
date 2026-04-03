@@ -244,6 +244,7 @@ class ActiveDownloadFileState:
     size: int               # File size in bytes
     disk_no: int | None = None
     disk_count: int | None = None
+    retry_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -251,6 +252,7 @@ class ActiveDownloadFileState:
             "filename": self.filename,
             "file_dir": self.file_dir,
             "size": self.size,
+            "retry_count": self.retry_count,
         }
         if self.disk_no is not None:
             d["disk_no"] = self.disk_no
@@ -267,6 +269,7 @@ class ActiveDownloadFileState:
             size=int(d["size"]),  # type: ignore[arg-type]
             disk_no=int(d["disk_no"]) if d.get("disk_no") is not None else None,  # type: ignore[arg-type]
             disk_count=int(d["disk_count"]) if d.get("disk_count") is not None else None,  # type: ignore[arg-type]
+            retry_count=int(d.get("retry_count", 0)),  # type: ignore[arg-type]
         )
 
 
@@ -276,13 +279,17 @@ class ActiveDownloadState:
     filetype: str                         # "flac", "mp3 v0", etc.
     enqueued_at: str                      # ISO8601 UTC timestamp
     files: list[ActiveDownloadFileState]
+    processing_started_at: str | None = None
 
     def to_json(self) -> str:
-        return json.dumps({
+        data: dict[str, object] = {
             "filetype": self.filetype,
             "enqueued_at": self.enqueued_at,
             "files": [f.to_dict() for f in self.files],
-        })
+        }
+        if self.processing_started_at is not None:
+            data["processing_started_at"] = self.processing_started_at
+        return json.dumps(data)
 
     @staticmethod
     def from_dict(d: dict[str, object]) -> "ActiveDownloadState":
@@ -292,6 +299,11 @@ class ActiveDownloadState:
             filetype=str(d["filetype"]),
             enqueued_at=str(d["enqueued_at"]),
             files=[ActiveDownloadFileState.from_dict(f) for f in files_raw],
+            processing_started_at=(
+                str(d["processing_started_at"])
+                if d.get("processing_started_at") is not None
+                else None
+            ),
         )
 
     @staticmethod

@@ -344,11 +344,21 @@ class PipelineDB:
             UPDATE album_requests
             SET status = 'downloading',
                 active_download_state = %s::jsonb,
-                download_attempts = COALESCE(download_attempts, 0) + 1,
                 last_attempt_at = %s,
                 updated_at = %s
             WHERE id = %s
         """, (state_json, now, now, request_id))
+        self.conn.commit()
+
+    def update_download_state(self, request_id: int, state_json: str) -> None:
+        """Rewrite active_download_state without changing status or attempt counters."""
+        now = datetime.now(timezone.utc)
+        self._execute("""
+            UPDATE album_requests
+            SET active_download_state = %s::jsonb,
+                updated_at = %s
+            WHERE id = %s
+        """, (state_json, now, request_id))
         self.conn.commit()
 
     def get_downloading(self) -> list[dict[str, Any]]:

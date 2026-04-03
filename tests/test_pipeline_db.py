@@ -725,8 +725,36 @@ class TestDownloadingStatus(unittest.TestCase):
         self.assertIsNotNone(req["active_download_state"])
         ads = req["active_download_state"]
         self.assertEqual(ads["filetype"], "mp3 v0")
-        # Verify download_attempts was incremented
-        self.assertEqual(req["download_attempts"], 1)
+        # Starting a download should not consume a backoff attempt.
+        self.assertEqual(req["download_attempts"], 0)
+
+    def test_update_download_state(self):
+        """update_download_state() rewrites JSONB without changing status."""
+        req_id = self.db.add_request(
+            mb_release_id="uds-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        self.db.set_downloading(
+            req_id,
+            json.dumps({"filetype": "flac", "enqueued_at": "2026-04-03T12:00:00+00:00", "files": []}),
+        )
+        self.db.update_download_state(
+            req_id,
+            json.dumps({
+                "filetype": "flac",
+                "enqueued_at": "2026-04-03T12:00:00+00:00",
+                "processing_started_at": "2026-04-03T12:05:00+00:00",
+                "files": [],
+            }),
+        )
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["status"], "downloading")
+        ads = req["active_download_state"]
+        assert ads is not None
+        self.assertEqual(ads["processing_started_at"], "2026-04-03T12:05:00+00:00")
 
     def test_clear_download_state(self):
         """clear_download_state() nulls the JSONB column."""

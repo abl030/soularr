@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from lib.quality import ValidationResult
 
 logger = logging.getLogger("soularr")
+MAX_FILE_RETRIES = 5
 
 
 # Lazy import for spectral analysis — avoids hard dep on sox at import time
@@ -205,6 +206,9 @@ def process_completed_album(album_data: GrabListEntry, failed_grab: list[Any],
             filename = f"Disk {file.disk_no} - {filename}"
         dst_file = os.path.join(import_folder_fullpath, filename)
         file.import_path = dst_file
+        if os.path.exists(dst_file) and not os.path.exists(src_file):
+            # Resume safely after a crash that already moved this file.
+            continue
         try:
             shutil.move(src_file, dst_file)
             moved_files_history.append((src_file, dst_file))
@@ -404,9 +408,18 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
 
 # === ActiveDownloadState building ===
 
-def build_active_download_state(entry: GrabListEntry) -> ActiveDownloadState:
-    """Build an ActiveDownloadState from a GrabListEntry just after enqueue."""
-    now = datetime.now(timezone.utc).isoformat()
+def build_active_download_state(
+    entry: GrabListEntry,
+    *,
+    enqueued_at: str | None = None,
+    processing_started_at: str | None = None,
+) -> ActiveDownloadState:
+    """Build an ActiveDownloadState from a GrabListEntry.
+
+    Callers can pass the original enqueued_at/processing_started_at when
+    persisting updated retry state across polling cycles.
+    """
+    enqueued_at_value = enqueued_at or datetime.now(timezone.utc).isoformat()
     files = [
         ActiveDownloadFileState(
             username=f.username,
@@ -415,13 +428,15 @@ def build_active_download_state(entry: GrabListEntry) -> ActiveDownloadState:
             size=f.size,
             disk_no=f.disk_no,
             disk_count=f.disk_count,
+            retry_count=f.retry or 0,
         )
         for f in entry.files
     ]
     return ActiveDownloadState(
         filetype=entry.filetype,
-        enqueued_at=now,
+        enqueued_at=enqueued_at_value,
         files=files,
+        processing_started_at=processing_started_at,
     )
 
 
@@ -446,13 +461,14 @@ def match_transfer_id(
 def rederive_transfer_ids(
     entry: GrabListEntry,
     slskd_client: Any,
-) -> None:
+) -> bool:
     """Re-derive slskd transfer IDs for all files in a GrabListEntry.
 
     Queries the slskd API for each unique username and matches by filename.
     Updates file.id in-place. Files whose transfers have vanished keep id="".
     """
     by_user: dict[str, list[DownloadFile]] = {}
+    all_queries_ok = True
     for f in entry.files:
         by_user.setdefault(f.username, []).append(f)
 
@@ -460,7 +476,8 @@ def rederive_transfer_ids(
         try:
             downloads = slskd_client.transfers.get_downloads(username=username)
         except Exception:
-            logger.warning(f"Failed to get downloads for {username} — transfers may have vanished")
+            logger.warning(f"Failed to get downloads for {username}", exc_info=True)
+            all_queries_ok = False
             continue
         for f in files:
             tid = match_transfer_id(downloads, f.filename)
@@ -468,6 +485,7 @@ def rederive_transfer_ids(
                 f.id = tid
             else:
                 logger.debug(f"Transfer not found for {f.filename} from {username}")
+    return all_queries_ok
 
 
 # === GrabListEntry reconstruction from DB ===
@@ -491,6 +509,7 @@ def reconstruct_grab_list_entry(
             size=f.size,
             disk_no=f.disk_no,
             disk_count=f.disk_count,
+            retry=f.retry_count,
         ))
     year = request.get("year")
     return GrabListEntry(
@@ -555,6 +574,54 @@ def _timeout_album(
     _reset_to_wanted(db, request_id)
 
 
+def _persist_updated_download_state(
+    db: Any,
+    request_id: int,
+    entry: GrabListEntry,
+    state: ActiveDownloadState,
+) -> None:
+    """Persist retry counters or processing markers back to JSONB."""
+    db.update_download_state(
+        request_id,
+        build_active_download_state(
+            entry,
+            enqueued_at=state.enqueued_at,
+            processing_started_at=state.processing_started_at,
+        ).to_json(),
+    )
+
+
+def _run_completed_processing(
+    entry: GrabListEntry,
+    request_id: int,
+    state: ActiveDownloadState,
+    db: Any,
+    ctx: SoularrContext,
+) -> None:
+    """Run or resume local post-download processing for a completed album."""
+    if state.processing_started_at is None:
+        state.processing_started_at = datetime.now(timezone.utc).isoformat()
+        _persist_updated_download_state(db, request_id, entry, state)
+
+    try:
+        success = process_completed_album(entry, [], ctx)
+    except Exception:
+        logger.exception(f"Error processing completed download {entry.artist} - {entry.title} "
+                         f"— will retry local processing next cycle")
+        return
+
+    refreshed = db.get_request(request_id)
+    if refreshed and refreshed["status"] == "downloading":
+        if success:
+            logger.info(f"  process_completed_album succeeded without "
+                        f"setting status — setting imported")
+            db.update_status(request_id, "imported")
+        else:
+            logger.warning(f"  process_completed_album failed without "
+                           f"setting status — resetting to wanted")
+            _reset_to_wanted(db, request_id)
+
+
 def poll_active_downloads(ctx: SoularrContext) -> None:
     """Poll slskd for status of all downloading albums.
 
@@ -565,7 +632,7 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
     4. Poll file status for remaining files
     5. If all complete → process_completed_album()
     6. If timeout exceeded → cancel, log, reset to wanted
-    7. If errors → retry individual files (in-memory, max 5 per file)
+    7. If errors → retry individual files (persisted, max 5 retries per file)
     """
     db = ctx.pipeline_db_source._get_db()
     downloading = db.get_downloading()
@@ -593,8 +660,15 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             state = ActiveDownloadState.from_json(raw_state)
         entry = reconstruct_grab_list_entry(row, state)
 
+        if state.processing_started_at is not None:
+            _run_completed_processing(entry, request_id, state, db, ctx)
+            continue
+
         # Re-derive transfer IDs from slskd
-        rederive_transfer_ids(entry, ctx.slskd)
+        if not rederive_transfer_ids(entry, ctx.slskd):
+            logger.warning(f"API error re-deriving transfers for {entry.artist} - {entry.title} "
+                           f"— will retry next cycle")
+            continue
 
         # Check if all transfers have vanished (slskd restart, user offline)
         all_vanished = all(f.id == "" for f in entry.files)
@@ -636,23 +710,7 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
 
         if album_done and problems is None:
             logger.info(f"Download complete: {entry.artist} - {entry.title}")
-            # Clear active_download_state but keep status='downloading'.
-            # process_completed_album will set final status via mark_done/mark_failed.
-            db.clear_download_state(request_id)
-            success = process_completed_album(entry, [], ctx)
-            # Safety net: if process_completed_album returned without setting
-            # a final status (happens when beets_validation_enabled=False or
-            # mb_release_id is empty), the album is still 'downloading'.
-            refreshed = db.get_request(request_id)
-            if refreshed and refreshed["status"] == "downloading":
-                if success:
-                    logger.info(f"  process_completed_album succeeded without "
-                               f"setting status — setting imported")
-                    db.update_status(request_id, "imported")
-                else:
-                    logger.warning(f"  process_completed_album failed without "
-                                  f"setting status — resetting to wanted")
-                    _reset_to_wanted(db, request_id)
+            _run_completed_processing(entry, request_id, state, db, ctx)
             continue
 
         if problems is not None:
@@ -663,6 +721,8 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
                 continue
 
             # Partial errors: attempt re-enqueue for errored files
+            state_changed = False
+            album_timed_out = False
             for file in problems:
                 state_str = file.status.get("state", "") if file.status else ""
                 if state_str in ("Completed, Cancelled", "Completed, TimedOut",
@@ -670,21 +730,43 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
                                  "Completed, Rejected"):
                     for df in entry.files:
                         if df.filename == file.filename:
-                            if df.retry is None:
-                                df.retry = 0
-                            df.retry += 1
-                            if df.retry < 5:
-                                logger.info(f"Re-enqueue failed file (attempt {df.retry}): "
-                                           f"{file.filename}")
-                                requeue = slskd_do_enqueue(
-                                    file.username,
-                                    [{"filename": file.filename, "size": file.size}],
-                                    file.file_dir, ctx)
-                                if requeue:
-                                    df.id = requeue[0].id
+                            retries_used = df.retry or 0
+                            if retries_used >= MAX_FILE_RETRIES:
+                                _timeout_album(
+                                    entry,
+                                    request_id,
+                                    f"file exceeded retry limit after "
+                                    f"{MAX_FILE_RETRIES} retries: {file.filename}",
+                                    ctx,
+                                )
+                                album_timed_out = True
+                                break
+
+                            retries_used += 1
+                            df.retry = retries_used
+                            logger.info(f"Re-enqueue failed file "
+                                        f"({retries_used}/{MAX_FILE_RETRIES} retries): "
+                                        f"{file.filename}")
+                            requeue = slskd_do_enqueue(
+                                file.username,
+                                [{"filename": file.filename, "size": file.size}],
+                                file.file_dir, ctx)
+                            state_changed = True
+                            if requeue:
+                                df.id = requeue[0].id
                             else:
-                                logger.warning(f"File exceeded retry limit: {file.filename}")
+                                logger.warning(f"Failed to re-enqueue file: {file.filename}")
                             break
+                    if album_timed_out:
+                        break
+            if album_timed_out:
+                continue
+
+            refreshed = db.get_request(request_id)
+            if refreshed and refreshed["status"] != "downloading":
+                continue
+            if state_changed:
+                _persist_updated_download_state(db, request_id, entry, state)
 
         # Still in progress — log and continue to next album
         files_done = sum(1 for f in entry.files

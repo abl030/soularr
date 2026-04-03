@@ -9,8 +9,14 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 import os
 import time
+from datetime import datetime, timezone, timedelta
+from typing import Any, cast
 
 from lib.quality import DownloadInfo, SpectralContext
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _make_file(filename="01 - Track.mp3", username="user1",
@@ -429,7 +435,7 @@ class TestGrabMostWanted(unittest.TestCase):
         )
         ctx = _make_ctx()
         mock_db = MagicMock()
-        ctx.pipeline_db_source._get_db.return_value = mock_db
+        cast(Any, ctx.pipeline_db_source._get_db).return_value = mock_db
         search_fn = MagicMock(return_value=({1: entry}, [], []))
         grab_most_wanted([], search_fn, ctx)
         mock_db.set_downloading.assert_called_once()
@@ -451,7 +457,7 @@ class TestGrabMostWanted(unittest.TestCase):
         )
         ctx = _make_ctx()
         mock_db = MagicMock()
-        ctx.pipeline_db_source._get_db.return_value = mock_db
+        cast(Any, ctx.pipeline_db_source._get_db).return_value = mock_db
         search_fn = MagicMock(return_value=({1: entry}, [], []))
         grab_most_wanted([], search_fn, ctx)
         state_json = mock_db.set_downloading.call_args[0][1]
@@ -474,7 +480,7 @@ class TestGrabMostWanted(unittest.TestCase):
         )
         ctx = _make_ctx()
         mock_db = MagicMock()
-        ctx.pipeline_db_source._get_db.return_value = mock_db
+        cast(Any, ctx.pipeline_db_source._get_db).return_value = mock_db
         search_fn = MagicMock(return_value=({1: entry}, [], []))
         start = _time.time()
         grab_most_wanted([], search_fn, ctx)
@@ -587,8 +593,9 @@ class TestProcessCompletedAlbumReturnsBool(unittest.TestCase):
                                 file_dir="source_dir")]
             album = _make_album_data(files=files, mb_release_id=None)
             ctx = _make_ctx()
-            ctx.cfg.slskd_download_dir = tmpdir
-            ctx.cfg.beets_validation_enabled = False
+            cfg = cast(Any, ctx.cfg)
+            cfg.slskd_download_dir = tmpdir
+            cfg.beets_validation_enabled = False
             mock_mt.load_file.return_value = MagicMock()
             result = process_completed_album(album, [], ctx)
             self.assertTrue(result)
@@ -603,8 +610,9 @@ class TestProcessCompletedAlbumReturnsBool(unittest.TestCase):
                                 file_dir="nonexistent_dir")]
             album = _make_album_data(files=files, mb_release_id=None)
             ctx = _make_ctx()
-            ctx.cfg.slskd_download_dir = tmpdir
-            ctx.cfg.beets_validation_enabled = False
+            cfg = cast(Any, ctx.cfg)
+            cfg.slskd_download_dir = tmpdir
+            cfg.beets_validation_enabled = False
             result = process_completed_album(album, [], ctx)
             self.assertFalse(result)
 
@@ -617,7 +625,7 @@ class TestPollActiveDownloads(unittest.TestCase):
         if state_dict is None:
             state_dict = {
                 "filetype": "flac",
-                "enqueued_at": "2026-04-03T12:00:00+00:00",
+                "enqueued_at": _utc_now_iso(),
                 "files": [
                     {"username": "user1", "filename": "user1\\Music\\01.flac",
                      "file_dir": "user1\\Music", "size": 30000000},
@@ -641,7 +649,7 @@ class TestPollActiveDownloads(unittest.TestCase):
         mock_db = MagicMock()
         mock_db.get_downloading.return_value = downloading_rows or []
         mock_db.get_request.return_value = None  # default: album not found after processing
-        ctx.pipeline_db_source._get_db.return_value = mock_db
+        cast(Any, ctx.pipeline_db_source._get_db).return_value = mock_db
 
         if slskd_downloads is not None:
             ctx.slskd.transfers.get_downloads.return_value = slskd_downloads
@@ -679,7 +687,7 @@ class TestPollActiveDownloads(unittest.TestCase):
             mock_db.get_request.return_value = {"id": 1, "status": "imported"}
             poll_active_downloads(ctx)
 
-        mock_db.clear_download_state.assert_called_once_with(1)
+        mock_db.update_download_state.assert_called_once()
         mock_process.assert_called_once()
 
     @patch("lib.download.process_completed_album")
@@ -699,6 +707,7 @@ class TestPollActiveDownloads(unittest.TestCase):
             mock_db.get_request.return_value = {"id": 1, "status": "downloading"}
             poll_active_downloads(ctx)
 
+        mock_db.update_download_state.assert_called_once()
         mock_db.update_status.assert_called_once_with(1, "imported")
 
     def test_poll_active_timeout(self):
@@ -758,7 +767,7 @@ class TestPollActiveDownloads(unittest.TestCase):
             poll_active_downloads(ctx)
 
         # Should NOT process or timeout
-        mock_db.clear_download_state.assert_not_called()
+        mock_db.update_download_state.assert_not_called()
         mock_db.log_download.assert_not_called()
 
     @patch("lib.download.process_completed_album")
@@ -768,7 +777,7 @@ class TestPollActiveDownloads(unittest.TestCase):
         row1 = self._make_downloading_row(request_id=1)
         state2 = {
             "filetype": "mp3 v0",
-            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "enqueued_at": _utc_now_iso(),
             "files": [
                 {"username": "user2", "filename": "user2\\Music\\01.mp3",
                  "file_dir": "user2\\Music", "size": 5000000},
@@ -808,7 +817,7 @@ class TestPollActiveDownloads(unittest.TestCase):
             poll_active_downloads(ctx)
 
         # Album 1 completed, album 2 still in progress
-        mock_db.clear_download_state.assert_called_once_with(1)
+        mock_db.update_download_state.assert_called_once()
         mock_process.assert_called_once()
 
     def test_poll_crash_recovery_no_state(self):
@@ -859,8 +868,9 @@ class TestPollActiveDownloads(unittest.TestCase):
         }
         row = self._make_downloading_row(state_dict=state_dict)
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
-        ctx.cfg.remote_queue_timeout = 120  # 2 minutes
-        ctx.cfg.stalled_timeout = 600  # 10 minutes (not exceeded)
+        cfg = cast(Any, ctx.cfg)
+        cfg.remote_queue_timeout = 120  # 2 minutes
+        cfg.stalled_timeout = 600  # 10 minutes (not exceeded)
 
         def mock_status(downloads, ctx_arg):
             for f in downloads:
@@ -886,7 +896,7 @@ class TestPollActiveDownloads(unittest.TestCase):
                           "file_dir": "user1\\Music", "size": 30000000})
         state_dict = {
             "filetype": "flac",
-            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "enqueued_at": _utc_now_iso(),
             "files": files,
         }
         row = self._make_downloading_row(state_dict=state_dict)
@@ -905,7 +915,8 @@ class TestPollActiveDownloads(unittest.TestCase):
                     f.status = {"state": "InProgress"}
             return True
         with patch("lib.download.slskd_download_status", side_effect=mock_status):
-            poll_active_downloads(ctx)
+            with patch("lib.download.slskd_do_enqueue", return_value=None):
+                poll_active_downloads(ctx)
 
         # Should NOT process — 7 files vanished (errored), album not complete
         mock_process.assert_not_called()
@@ -919,7 +930,7 @@ class TestPollActiveDownloads(unittest.TestCase):
         # 3 files: 2 complete, 1 errored
         state_dict = {
             "filetype": "flac",
-            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "enqueued_at": _utc_now_iso(),
             "files": [
                 {"username": "user1", "filename": "user1\\Music\\01.flac",
                  "file_dir": "user1\\Music", "size": 30000000},
@@ -963,6 +974,47 @@ class TestPollActiveDownloads(unittest.TestCase):
         call_args = mock_enqueue.call_args
         self.assertEqual(call_args[0][0], "user1")  # username
         self.assertEqual(call_args[0][1][0]["filename"], "user1\\Music\\03.flac")
+        persisted_json = mock_db.update_download_state.call_args[0][1]
+        self.assertIn('"retry_count": 1', persisted_json)
+
+    def test_poll_active_get_downloads_api_error_waits_for_next_cycle(self):
+        """Transient get_downloads() failures must not be treated as vanished transfers."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+        ctx.slskd.transfers.get_downloads.side_effect = RuntimeError("temporary slskd failure")
+
+        with patch("lib.download.cancel_and_delete") as mock_cancel:
+            poll_active_downloads(ctx)
+
+        mock_cancel.assert_not_called()
+        mock_db.log_download.assert_not_called()
+        mock_db.update_download_state.assert_not_called()
+        reset_calls = [c for c in mock_db._execute.call_args_list
+                       if "wanted" in str(c)]
+        self.assertEqual(reset_calls, [])
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_completion_exception_persists_processing_state(self, mock_process):
+        """Exceptions after completion should leave persisted state for the next cycle to resume."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Completed, Succeeded"}
+            return True
+
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            mock_process.side_effect = RuntimeError("boom")
+            poll_active_downloads(ctx)
+
+        mock_db.log_download.assert_not_called()
+        mock_db.update_status.assert_not_called()
+        mock_db.update_download_state.assert_called_once()
+        persisted_json = mock_db.update_download_state.call_args[0][1]
+        self.assertIn('"processing_started_at"', persisted_json)
 
     @patch("lib.download.process_completed_album")
     def test_poll_no_redownload_window(self, mock_process):
@@ -991,10 +1043,9 @@ class TestPollActiveDownloads(unittest.TestCase):
             mock_process.return_value = True
             poll_active_downloads(ctx)
 
-        # clear_download_state was called (state cleared while still 'downloading')
-        mock_db.clear_download_state.assert_called_once_with(1)
         # process_completed_album ran
         mock_process.assert_called_once()
+        mock_db.update_download_state.assert_called_once()
         # The album was NEVER set to 'wanted' before processing
         for args in status_updates:
             if len(args) >= 2:
@@ -1028,6 +1079,7 @@ class TestBuildActiveDownloadState(unittest.TestCase):
         self.assertEqual(state.files[0].username, "user1")
         self.assertEqual(state.files[0].filename, "u\\M\\01.flac")
         self.assertEqual(state.files[0].size, 30000000)
+        self.assertEqual(state.files[0].retry_count, 0)
 
     def test_multi_disc(self):
         from lib.download import build_active_download_state
@@ -1044,6 +1096,21 @@ class TestBuildActiveDownloadState(unittest.TestCase):
         state = build_active_download_state(entry)
         self.assertEqual(state.files[0].disk_no, 1)
         self.assertEqual(state.files[0].disk_count, 2)
+
+    def test_persists_retry_count(self):
+        from lib.download import build_active_download_state
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+            files=[
+                DownloadFile(filename="u\\M\\01.flac", id="tid-1",
+                             file_dir="u\\M", username="user1", size=30000000,
+                             retry=4),
+            ],
+        )
+        state = build_active_download_state(entry)
+        self.assertEqual(state.files[0].retry_count, 4)
 
     def test_enqueued_at_is_utc_iso(self):
         from lib.download import build_active_download_state
@@ -1098,6 +1165,7 @@ class TestReconstructGrabListEntry(unittest.TestCase):
         self.assertEqual(len(entry.files), 1)
         self.assertEqual(entry.files[0].filename, "user1\\Music\\01.flac")
         self.assertEqual(entry.files[0].id, "")  # Must be re-derived
+        self.assertEqual(entry.files[0].retry, 0)
 
     def test_reconstruct_multi_disc(self):
         from lib.download import reconstruct_grab_list_entry
@@ -1135,6 +1203,25 @@ class TestReconstructGrabListEntry(unittest.TestCase):
                    "quality_override": "flac"}
         entry = reconstruct_grab_list_entry(request, state)
         self.assertEqual(entry.db_quality_override, "flac")
+
+    def test_reconstruct_retry_count(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="now",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1", filename="user1\\Music\\01.flac",
+                    file_dir="user1\\Music", size=30000000, retry_count=5,
+                ),
+            ],
+        )
+        request = {"id": 10, "album_title": "B", "artist_name": "A",
+                   "year": 2020, "mb_release_id": "mbid", "source": "request",
+                   "quality_override": None}
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.files[0].retry, 5)
 
     def test_reconstruct_missing_year(self):
         from lib.download import reconstruct_grab_list_entry
