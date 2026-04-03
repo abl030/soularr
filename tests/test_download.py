@@ -1,7 +1,7 @@
 """Tests for lib/download.py — download processing functions.
 
 Tests _build_download_info, _gather_spectral_context, cancel_and_delete,
-slskd_download_status, downloads_all_done, monitor_downloads, grab_most_wanted
+slskd_download_status, downloads_all_done, poll_active_downloads, grab_most_wanted
 (extracted from soularr.py).
 """
 
@@ -460,9 +460,10 @@ class TestGrabMostWanted(unittest.TestCase):
         self.assertEqual(len(state["files"]), 1)
 
     def test_no_blocking_monitor(self):
-        """verify monitor_downloads is NOT called."""
+        """grab_most_wanted returns immediately without blocking."""
         from lib.download import grab_most_wanted
         from lib.grab_list import GrabListEntry, DownloadFile
+        import time as _time
         entry = GrabListEntry(
             album_id=1, filetype="flac", title="T", artist="A", year="2020",
             mb_release_id="mbid", db_request_id=42, db_source="request",
@@ -475,9 +476,10 @@ class TestGrabMostWanted(unittest.TestCase):
         mock_db = MagicMock()
         ctx.pipeline_db_source._get_db.return_value = mock_db
         search_fn = MagicMock(return_value=({1: entry}, [], []))
-        with patch("lib.download.monitor_downloads") as mock_monitor:
-            grab_most_wanted([], search_fn, ctx)
-            mock_monitor.assert_not_called()
+        start = _time.time()
+        grab_most_wanted([], search_fn, ctx)
+        elapsed = _time.time() - start
+        self.assertLess(elapsed, 2.0)  # Must return fast (no blocking loop)
 
 
 class TestMatchTransferId(unittest.TestCase):
