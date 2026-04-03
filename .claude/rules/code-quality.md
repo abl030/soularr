@@ -50,6 +50,16 @@
 - All beets queries go through `lib/beets_db.py` `BeetsDB` class — no raw `sqlite3.connect()` in handlers
 - Route modules access server globals via `_server()` deferred import
 
+## Finish What You Start
+- Don't build infrastructure without wiring it up. Every new function, dataclass, or mode must be called from production code. If it's only reachable via manual config nobody sets, it's dead code.
+- Before marking any feature complete, trace the full path from trigger to effect. Ask: "Does this actually run in production without manual intervention?" If not, it's not done.
+- A new dataclass that nothing constructs, a config option nobody sets, a fallback that never triggers — these are all incomplete work, not shipped features.
+
+## Pre-Commit Review Gate
+- For non-trivial changes (new dataclasses, refactored function signatures, new pipeline paths), spawn an Opus agent to review the diff before committing.
+- The agent should check: correctness bugs, test gaps, callers you missed, type errors, unfinished wiring.
+- Fix everything it finds before committing. This is not optional.
+
 ## Commits
 - One logical change per commit
 - Run full test suite + pyright before committing
