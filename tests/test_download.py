@@ -419,5 +419,91 @@ class TestGrabMostWanted(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class TestReconstructGrabListEntry(unittest.TestCase):
+    """Test reconstruct_grab_list_entry() — rebuild GrabListEntry from DB row + state."""
+
+    def test_reconstruct_basic(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1", filename="user1\\Music\\01.flac",
+                    file_dir="user1\\Music", size=30000000,
+                ),
+            ],
+        )
+        request = {
+            "id": 42,
+            "album_title": "Test Album",
+            "artist_name": "Test Artist",
+            "year": 2020,
+            "mb_release_id": "test-mbid",
+            "source": "request",
+            "quality_override": None,
+        }
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.album_id, 42)
+        self.assertEqual(entry.title, "Test Album")
+        self.assertEqual(entry.artist, "Test Artist")
+        self.assertEqual(entry.year, "2020")
+        self.assertEqual(entry.filetype, "flac")
+        self.assertEqual(entry.mb_release_id, "test-mbid")
+        self.assertEqual(entry.db_request_id, 42)
+        self.assertEqual(entry.db_source, "request")
+        self.assertEqual(len(entry.files), 1)
+        self.assertEqual(entry.files[0].filename, "user1\\Music\\01.flac")
+        self.assertEqual(entry.files[0].id, "")  # Must be re-derived
+
+    def test_reconstruct_multi_disc(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1", filename="user1\\Music\\D1-01.flac",
+                    file_dir="user1\\Music", size=30000000,
+                    disk_no=1, disk_count=2,
+                ),
+                ActiveDownloadFileState(
+                    username="user1", filename="user1\\Music\\D2-01.flac",
+                    file_dir="user1\\Music", size=25000000,
+                    disk_no=2, disk_count=2,
+                ),
+            ],
+        )
+        request = {"id": 10, "album_title": "B", "artist_name": "A",
+                   "year": 2020, "mb_release_id": "mbid", "source": "request",
+                   "quality_override": None}
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.files[0].disk_no, 1)
+        self.assertEqual(entry.files[0].disk_count, 2)
+        self.assertEqual(entry.files[1].disk_no, 2)
+
+    def test_reconstruct_quality_override(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState
+        state = ActiveDownloadState(filetype="flac", enqueued_at="now", files=[])
+        request = {"id": 10, "album_title": "B", "artist_name": "A",
+                   "year": 2020, "mb_release_id": "mbid", "source": "request",
+                   "quality_override": "flac"}
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.db_quality_override, "flac")
+
+    def test_reconstruct_missing_year(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState
+        state = ActiveDownloadState(filetype="flac", enqueued_at="now", files=[])
+        request = {"id": 10, "album_title": "B", "artist_name": "A",
+                   "year": None, "mb_release_id": "mbid", "source": "request",
+                   "quality_override": None}
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.year, "")
+
+
 if __name__ == "__main__":
     unittest.main()

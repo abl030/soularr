@@ -16,7 +16,8 @@ from typing import Any, Callable, TYPE_CHECKING
 import music_tag
 
 from lib.grab_list import GrabListEntry, DownloadFile
-from lib.quality import (spectral_import_decision, SpectralContext)
+from lib.quality import (spectral_import_decision, SpectralContext,
+                         ActiveDownloadState, ActiveDownloadFileState)
 from lib.import_dispatch import (_build_download_info, dispatch_import)
 from lib.util import (sanitize_folder_name, move_failed_import, stage_to_ai,
                       repair_mp3_headers, validate_audio, log_validation_result)
@@ -395,6 +396,43 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
                    f"distance={bv_result.distance}, "
                    f"detail={bv_result.detail}) "
                    f"| denylisted users: {', '.join(usernames)}")
+
+
+# === GrabListEntry reconstruction from DB ===
+
+def reconstruct_grab_list_entry(
+    request: dict[str, Any],
+    state: ActiveDownloadState,
+) -> GrabListEntry:
+    """Rebuild GrabListEntry from a DB row + persisted download state.
+
+    Does NOT set slskd transfer IDs — those are ephemeral and must be
+    re-derived from the live slskd API by the caller.
+    """
+    files = []
+    for f in state.files:
+        files.append(DownloadFile(
+            filename=f.filename,
+            id="",                  # Must be re-derived from slskd API
+            file_dir=f.file_dir,
+            username=f.username,
+            size=f.size,
+            disk_no=f.disk_no,
+            disk_count=f.disk_count,
+        ))
+    year = request.get("year")
+    return GrabListEntry(
+        album_id=request["id"],
+        files=files,
+        filetype=state.filetype,
+        title=request["album_title"],
+        artist=request["artist_name"],
+        year=str(year) if year else "",
+        mb_release_id=request.get("mb_release_id") or "",
+        db_request_id=request["id"],
+        db_source=request.get("source"),
+        db_quality_override=request.get("quality_override"),
+    )
 
 
 # === Download monitoring ===
