@@ -164,17 +164,31 @@ def _get_folder_min_bitrate(folder_path):
 # Lossless → MP3 VBR V0 conversion
 # ---------------------------------------------------------------------------
 
-# Extensions that are lossless and should be converted to V0
-_LOSSLESS_EXTS = {".flac", ".m4a", ".wav"}
+# Extensions that are always lossless
+_ALWAYS_LOSSLESS_EXTS = {".flac", ".wav"}
 
 
-def _is_lossless_file(fname: str) -> bool:
-    """Check if a file has a lossless extension.
+def _is_m4a_alac(fpath: str) -> bool:
+    """Check if an .m4a file contains ALAC (lossless) via ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", fpath],
+            capture_output=True, text=True, timeout=10)
+        return result.stdout.strip().lower() == "alac"
+    except Exception:
+        return False
 
-    For .m4a, we assume lossless (ALAC) since the pipeline only downloads
-    .m4a files when they matched the 'alac' config (high bitrate heuristic).
-    """
-    return os.path.splitext(fname)[1].lower() in _LOSSLESS_EXTS
+
+def _is_lossless_file(fname: str, folder: str = "") -> bool:
+    """Check if a file is lossless. For .m4a, probes the codec with ffprobe."""
+    ext = os.path.splitext(fname)[1].lower()
+    if ext in _ALWAYS_LOSSLESS_EXTS:
+        return True
+    if ext == ".m4a":
+        fpath = os.path.join(folder, fname) if folder else fname
+        return _is_m4a_alac(fpath)
+    return False
 
 
 def convert_lossless_to_v0(album_path, dry_run=False):
@@ -183,7 +197,7 @@ def convert_lossless_to_v0(album_path, dry_run=False):
     Returns (converted, failed, original_filetype) where original_filetype
     is the extension of the source files (e.g. "flac", "m4a", "wav").
     """
-    lossless_files = sorted(f for f in os.listdir(album_path) if _is_lossless_file(f))
+    lossless_files = sorted(f for f in os.listdir(album_path) if _is_lossless_file(f, album_path))
     if not lossless_files:
         return 0, 0, None
 
@@ -228,12 +242,6 @@ def convert_lossless_to_v0(album_path, dry_run=False):
             converted += 1
 
     return converted, failed, original_ext
-
-
-def convert_flac_to_v0(album_path, dry_run=False):
-    """Legacy wrapper — delegates to convert_lossless_to_v0."""
-    converted, failed, _ext = convert_lossless_to_v0(album_path, dry_run)
-    return converted, failed
 
 
 # ---------------------------------------------------------------------------

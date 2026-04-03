@@ -546,6 +546,8 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
     cache_entries: dict[str, dict[str, list[str]]] = {}
     upload_speeds: dict[str, int] = {}
 
+    from lib.quality import file_identity, filetype_matches
+    par_filter_specs = list(zip(search_cfg.allowed_filetypes, search_cfg.allowed_specs))
     for result in search_results:
         username = result["username"]
         if username not in cache_entries:
@@ -553,8 +555,6 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
         speed = result.get("uploadSpeed", 0)
         if speed and (username not in upload_speeds or speed > upload_speeds[username]):
             upload_speeds[username] = speed
-        from lib.quality import file_identity, filetype_matches
-        par_filter_specs = list(zip(search_cfg.allowed_filetypes, search_cfg.allowed_specs))
         for file in result["files"]:
             file_dir = file["filename"].rsplit("\\", 1)[0]
             identity = file_identity(file)
