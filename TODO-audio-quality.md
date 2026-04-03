@@ -38,21 +38,12 @@ Created 2026-04-03. Tracks the AudioFileSpec refactoring and planned extensions.
 - 3 new tests in `tests/test_quality_decisions.py` (ALAC/WAV verified lossless)
 - 878 total tests passing
 
-## Known issues to clean up
+## Done: Known issues cleanup (2026-04-03, commits 9ef4fc6, cf8d6a1)
 
-### 1. Catch-all loop duplication in find_download
-The catch-all fallback copy-pastes ~50 lines of the normal filetype enqueue loop.
-Extract into a helper: `_try_filetype(album, results, filetype, grab_list) -> bool`.
-
-### 2. verify_filetype bridge overhead
-Creates two `AudioFileSpec` objects per call. Called in a tight loop during search
-result caching (all files x all filetypes). Options:
-- Pre-parse `cfg.allowed_filetypes` into specs once, pass to the caching loop
-- Or make `verify_filetype` use the pre-parsed specs directly
-
-### 3. allowed_specs is an uncached property
-`SoularrConfig` is frozen, so `@property` re-parses on every access. Since config
-is immutable, compute once at init time using `__post_init__` or a module-level cache.
+All three issues resolved:
+1. `_try_filetype` helper extracted — no more catch-all loop duplication
+2. `verify_filetype` uses pre-parsed specs via `cfg.allowed_specs`
+3. `allowed_specs` cached via `_allowed_specs` tuple in `__post_init__`
 
 ## Done: AudioQualityMeasurement (2026-04-03)
 
@@ -77,11 +68,21 @@ class AudioQualityMeasurement:
 - Decision tree metadata updated for web UI
 - 879 tests passing, pyright 0 errors
 
-### Still possible future work
-- `ImportResult` sub-objects (`QualityInfo`, `SpectralInfo`, `ConversionInfo`) could collapse into AQM
-- download_log JSONB could serialize AQM directly — queryable, self-documenting
+## Done: Measurements on ImportResult (2026-04-03)
 
-### Third type: AudioQualityState
+QualityInfo deleted, SpectralInfo → SpectralDetail (per-track only). ImportResult now
+carries `new_measurement` and `existing_measurement` (AudioQualityMeasurement objects).
+The same type flows through decision functions AND the audit trail.
+
+### What changed
+- QualityInfo fields moved: bitrates → measurements, process data → ConversionInfo
+- SpectralInfo slimmed: grade/bitrate → measurements, per_track stays on SpectralDetail
+- `from_dict` migrates v1 JSONB on read (old rows still deserialize)
+- `_extract_import_fields` (web) and `pipeline_cli.py` handle both v1/v2 formats
+- 881 tests passing, pyright 0 errors
+
+### Next: AudioQualityState
 The accumulated quality posture on `album_requests`. Would replace the scattered columns
 (min_bitrate, prev_min_bitrate, verified_lossless, spectral_grade, spectral_bitrate,
-on_disk_spectral_*). Not needed until the measurement type is proven in production.
+on_disk_spectral_*). The measurement type is now proven in production — this is the
+natural next step when needed.
