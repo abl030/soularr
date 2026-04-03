@@ -187,6 +187,79 @@ def cmd_set(db, args):
     print(f"  [{args.id}] {req['artist_name']} - {req['album_title']}: {old_status} → {args.status}")
 
 
+def _fmt_br(kbps):
+    """Format a bitrate value for display."""
+    if kbps is None:
+        return "-"
+    return f"{kbps}kbps"
+
+
+def _fmt_measurement(m, label=""):
+    """Format an AudioQualityMeasurement dict for display."""
+    if not m:
+        return f"{label}(none)"
+    parts = [_fmt_br(m.get("min_bitrate_kbps"))]
+    if m.get("spectral_grade"):
+        sg = m["spectral_grade"]
+        if m.get("spectral_bitrate_kbps"):
+            sg += f" ~{m['spectral_bitrate_kbps']}kbps"
+        parts.append(f"spectral={sg}")
+    if m.get("verified_lossless"):
+        parts.append("verified_lossless")
+    if m.get("was_converted_from"):
+        parts.append(f"from {m['was_converted_from']}")
+    if m.get("is_cbr"):
+        parts.append("CBR")
+    return f"{label}{', '.join(parts)}"
+
+
+def _render_import_result(ir_raw):
+    """Render an ImportResult JSONB blob as human-readable lines."""
+    if not ir_raw:
+        return []
+    try:
+        ir = ir_raw if isinstance(ir_raw, dict) else json.loads(ir_raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    lines = []
+    decision = ir.get("decision", "?")
+    lines.append(f"      decision:  {decision}")
+
+    # v2: measurements
+    new_m = ir.get("new_measurement")
+    if new_m:
+        lines.append(f"      new:       {_fmt_measurement(new_m)}")
+        existing_m = ir.get("existing_measurement")
+        if existing_m:
+            lines.append(f"      existing:  {_fmt_measurement(existing_m)}")
+
+        conv = ir.get("conversion") or {}
+        if conv.get("was_converted"):
+            src = conv.get("original_filetype", "?")
+            tgt = conv.get("target_filetype", "?")
+            n = conv.get("converted", 0)
+            extra = ""
+            if conv.get("is_transcode"):
+                extra = " (TRANSCODE)"
+            lines.append(f"      converted: {src} -> {tgt} ({n} files){extra}")
+    else:
+        # v1 fallback
+        quality = ir.get("quality") or {}
+        spectral = ir.get("spectral") or {}
+        if quality.get("new_min_bitrate") is not None:
+            lines.append(f"      new:       {_fmt_br(quality['new_min_bitrate'])}")
+        if quality.get("prev_min_bitrate") is not None:
+            lines.append(f"      existing:  {_fmt_br(quality['prev_min_bitrate'])}")
+        if spectral.get("grade"):
+            lines.append(f"      spectral:  {spectral['grade']}")
+
+    if ir.get("error"):
+        lines.append(f"      error:     {ir['error']}")
+
+    return lines
+
+
 def cmd_show(db, args):
     req = db.get_request(args.id)
     if not req:
@@ -214,6 +287,35 @@ def cmd_show(db, args):
     print(f"  Created:      {req['created_at']}")
     print(f"  Updated:      {req['updated_at']}")
 
+    # --- Quality state ---
+    min_br = req.get("min_bitrate")
+    prev_br = req.get("prev_min_bitrate")
+    verified = req.get("verified_lossless")
+    s_grade = req.get("spectral_grade")
+    s_br = req.get("spectral_bitrate")
+    od_grade = req.get("on_disk_spectral_grade")
+    od_br = req.get("on_disk_spectral_bitrate")
+    q_override = req.get("quality_override")
+    has_quality = any(v is not None for v in [min_br, prev_br, verified, s_grade, s_br, od_grade, od_br, q_override])
+    if has_quality:
+        print(f"\n  Quality:")
+        print(f"    min_bitrate:        {_fmt_br(min_br)}")
+        if prev_br is not None:
+            print(f"    prev_min_bitrate:   {_fmt_br(prev_br)}")
+        print(f"    verified_lossless:  {verified or False}")
+        if s_grade:
+            sg = s_grade
+            if s_br:
+                sg += f" ~{s_br}kbps"
+            print(f"    spectral:          {sg}")
+        if od_grade:
+            od = od_grade
+            if od_br:
+                od += f" ~{od_br}kbps"
+            print(f"    on_disk_spectral:  {od}")
+        if q_override:
+            print(f"    quality_override:  {q_override}")
+
     tracks = db.get_tracks(req['id'])
     if tracks:
         print(f"\n  Tracks ({len(tracks)}):")
@@ -227,6 +329,8 @@ def cmd_show(db, args):
         for h in history:
             print(f"    [{h['created_at']}] {h['outcome']} from {h['soulseek_username']} "
                   f"(dist={h['beets_distance']})")
+            for line in _render_import_result(h.get("import_result")):
+                print(line)
 
     denied = db.get_denylisted_users(req['id'])
     if denied:
