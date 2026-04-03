@@ -543,5 +543,104 @@ class TestPopulateDlInfoFromImportResult(unittest.TestCase):
         self.assertEqual(dl.bitrate, 320000)
 
 
+class TestActiveDownloadState(unittest.TestCase):
+    """Test ActiveDownloadState and ActiveDownloadFileState dataclasses."""
+
+    def test_active_download_state_to_json(self):
+        """Serialize, verify JSON structure."""
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1",
+                    filename="user1\\Music\\01.flac",
+                    file_dir="user1\\Music",
+                    size=30000000,
+                ),
+            ],
+        )
+        j = json.loads(state.to_json())
+        self.assertEqual(j["filetype"], "flac")
+        self.assertEqual(j["enqueued_at"], "2026-04-03T12:00:00+00:00")
+        self.assertEqual(len(j["files"]), 1)
+        self.assertEqual(j["files"][0]["username"], "user1")
+        self.assertEqual(j["files"][0]["size"], 30000000)
+
+    def test_active_download_state_from_json(self):
+        """Deserialize, verify all fields."""
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        raw = json.dumps({
+            "filetype": "mp3 v0",
+            "enqueued_at": "2026-04-03T14:30:00+00:00",
+            "files": [
+                {"username": "bob", "filename": "bob\\Tunes\\01.mp3",
+                 "file_dir": "bob\\Tunes", "size": 5000000},
+                {"username": "bob", "filename": "bob\\Tunes\\02.mp3",
+                 "file_dir": "bob\\Tunes", "size": 6000000,
+                 "disk_no": 1, "disk_count": 2},
+            ],
+        })
+        state = ActiveDownloadState.from_json(raw)
+        self.assertEqual(state.filetype, "mp3 v0")
+        self.assertEqual(state.enqueued_at, "2026-04-03T14:30:00+00:00")
+        self.assertEqual(len(state.files), 2)
+        self.assertEqual(state.files[0].username, "bob")
+        self.assertEqual(state.files[1].disk_no, 1)
+        self.assertEqual(state.files[1].disk_count, 2)
+        self.assertIsNone(state.files[0].disk_no)
+
+    def test_active_download_state_roundtrip(self):
+        """to_json → from_json identity."""
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        original = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1", filename="user1\\Music\\01.flac",
+                    file_dir="user1\\Music", size=30000000,
+                    disk_no=2, disk_count=3,
+                ),
+            ],
+        )
+        restored = ActiveDownloadState.from_json(original.to_json())
+        self.assertEqual(restored.filetype, original.filetype)
+        self.assertEqual(restored.enqueued_at, original.enqueued_at)
+        self.assertEqual(len(restored.files), 1)
+        self.assertEqual(restored.files[0].username, "user1")
+        self.assertEqual(restored.files[0].disk_no, 2)
+        self.assertEqual(restored.files[0].disk_count, 3)
+
+    def test_active_download_file_state_fields(self):
+        """Verify per-file fields present."""
+        from lib.quality import ActiveDownloadFileState
+        f = ActiveDownloadFileState(
+            username="alice", filename="alice\\Music\\track.flac",
+            file_dir="alice\\Music", size=25000000,
+        )
+        self.assertEqual(f.username, "alice")
+        self.assertEqual(f.filename, "alice\\Music\\track.flac")
+        self.assertEqual(f.file_dir, "alice\\Music")
+        self.assertEqual(f.size, 25000000)
+        self.assertIsNone(f.disk_no)
+        self.assertIsNone(f.disk_count)
+
+    def test_active_download_state_enqueued_at_iso(self):
+        """Verify ISO8601 datetime format."""
+        from lib.quality import ActiveDownloadState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            files=[],
+        )
+        j = json.loads(state.to_json())
+        # Should be valid ISO8601 — parse it
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(j["enqueued_at"])
+        self.assertEqual(dt.tzinfo, timezone.utc)
+
+
 if __name__ == "__main__":
     unittest.main()
