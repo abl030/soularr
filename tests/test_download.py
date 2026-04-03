@@ -310,6 +310,7 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         assert result is not None
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].id, "new-id")
+        ctx.slskd.transfers.get_all_downloads.assert_called_once_with(includeRemoved=True)
 
     def test_enqueue_failure_returns_none(self):
         from lib.download import slskd_do_enqueue
@@ -552,6 +553,56 @@ class TestMatchTransferId(unittest.TestCase):
         )
         self.assertEqual(result, "right-id")
 
+    def test_bulk_downloads_prefers_active_over_old_completed(self):
+        from lib.download import match_transfer
+        downloads = [
+            {
+                "username": "user1",
+                "directories": [{"directory": "d", "files": [
+                    {
+                        "filename": "shared\\01.flac",
+                        "id": "completed-id",
+                        "state": "Completed, Succeeded",
+                        "endedAt": "2026-04-03T21:00:00+00:00",
+                    },
+                    {
+                        "filename": "shared\\01.flac",
+                        "id": "active-id",
+                        "state": "InProgress",
+                        "startedAt": "2026-04-03T22:00:00+00:00",
+                    },
+                ]}],
+            },
+        ]
+        result = match_transfer(downloads, "shared\\01.flac", username="user1")
+        assert result is not None
+        self.assertEqual(result["id"], "active-id")
+
+    def test_bulk_downloads_prefers_latest_successful_attempt(self):
+        from lib.download import match_transfer
+        downloads = [
+            {
+                "username": "user1",
+                "directories": [{"directory": "d", "files": [
+                    {
+                        "filename": "shared\\01.flac",
+                        "id": "old-cancelled",
+                        "state": "Completed, Cancelled",
+                        "endedAt": "2026-04-03T20:00:00+00:00",
+                    },
+                    {
+                        "filename": "shared\\01.flac",
+                        "id": "new-succeeded",
+                        "state": "Completed, Succeeded",
+                        "endedAt": "2026-04-03T21:00:00+00:00",
+                    },
+                ]}],
+            },
+        ]
+        result = match_transfer(downloads, "shared\\01.flac", username="user1")
+        assert result is not None
+        self.assertEqual(result["id"], "new-succeeded")
+
 
 class TestRederiveTransferIds(unittest.TestCase):
     """Test rederive_transfer_ids() — re-derive IDs from slskd API."""
@@ -580,6 +631,7 @@ class TestRederiveTransferIds(unittest.TestCase):
         rederive_transfer_ids(entry, mock_slskd)
         self.assertEqual(entry.files[0].id, "new-id-1")
         self.assertEqual(entry.files[1].id, "new-id-2")
+        mock_slskd.transfers.get_all_downloads.assert_called_once_with(includeRemoved=True)
 
     def test_missing_transfer_keeps_empty_id(self):
         from lib.download import rederive_transfer_ids
@@ -648,6 +700,47 @@ class TestRederiveTransferIds(unittest.TestCase):
         self.assertEqual(entry.files[0].id, "starr-id")
         self.assertEqual(entry.files[1].id, "odd-id")
         mock_slskd.transfers.get_downloads.assert_not_called()
+
+    def test_terminal_snapshot_sets_file_status(self):
+        from lib.download import rederive_transfer_ids
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1,
+            files=[
+                DownloadFile(
+                    filename="user1\\Album\\01.flac",
+                    id="",
+                    file_dir="user1\\Album",
+                    username="user1",
+                    size=1000,
+                ),
+            ],
+            filetype="flac",
+            title="T",
+            artist="A",
+            year="2020",
+            mb_release_id="mbid",
+        )
+        mock_slskd = MagicMock()
+        mock_slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
+            "directories": [{"directory": "user1\\Album", "files": [
+                {
+                    "filename": "user1\\Album\\01.flac",
+                    "id": "done-id",
+                    "state": "Completed, Succeeded",
+                    "bytesTransferred": 1000,
+                },
+            ]}],
+        }]
+
+        rederive_transfer_ids(entry, mock_slskd)
+
+        self.assertEqual(entry.files[0].id, "done-id")
+        status = entry.files[0].status
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["state"], "Completed, Succeeded")
 
 
 class TestProcessCompletedAlbumReturnsBool(unittest.TestCase):
@@ -871,6 +964,37 @@ class TestPollActiveDownloads(unittest.TestCase):
         kwargs = mock_db.log_download.call_args.kwargs
         self.assertEqual(kwargs["outcome"], "timeout")
 
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_completed_removed_transfer_uses_snapshot_status(self, mock_process):
+        """Completed transfers from includeRemoved=true should import, not timeout."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(
+            downloading_rows=[row],
+            slskd_downloads=[{
+                "username": "user1",
+                "directories": [{"directory": "user1\\Music", "files": [
+                    {
+                        "filename": "user1\\Music\\01.flac",
+                        "id": "done-id",
+                        "state": "Completed, Succeeded",
+                        "bytesTransferred": 30000000,
+                        "endedAt": "2026-04-03T21:00:00+00:00",
+                    },
+                ]}],
+            }],
+        )
+
+        mock_process.return_value = True
+        mock_db.get_request.return_value = {"id": 1, "status": "imported"}
+
+        with patch("lib.download.slskd_download_status") as mock_status:
+            poll_active_downloads(ctx)
+
+        mock_status.assert_not_called()
+        mock_process.assert_called_once()
+        mock_db.log_download.assert_not_called()
+
     def test_poll_active_in_progress(self):
         """Files still downloading with fresh state transition → persist progress snapshot."""
         from lib.download import poll_active_downloads
@@ -908,7 +1032,7 @@ class TestPollActiveDownloads(unittest.TestCase):
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row1, row2])
 
         # slskd returns transfers for both users
-        def get_downloads_side_effect(username=None):
+        def get_downloads_side_effect(includeRemoved=None):
             return [{
                 "username": "user1",
                 "directories": [{"directory": "user1\\Music", "files": [
@@ -922,7 +1046,6 @@ class TestPollActiveDownloads(unittest.TestCase):
             ]
         ctx.slskd.transfers.get_all_downloads.side_effect = get_downloads_side_effect
 
-        call_count = [0]
         def mock_status(downloads, ctx_arg):
             for f in downloads:
                 if f.username == "user1":
@@ -933,11 +1056,17 @@ class TestPollActiveDownloads(unittest.TestCase):
 
         with patch("lib.download.slskd_download_status", side_effect=mock_status):
             mock_process.return_value = True
-            mock_db.get_request.return_value = {"id": 1, "status": "imported"}
+            mock_db.get_request.side_effect = lambda request_id: {
+                "id": request_id,
+                "status": "imported" if request_id == 1 else "downloading",
+            }
             poll_active_downloads(ctx)
 
-        # Album 1 completed, album 2 still in progress
-        mock_db.update_download_state.assert_called_once()
+        # Album 1 persists processing_started_at, album 2 persists progress.
+        self.assertEqual(mock_db.update_download_state.call_count, 2)
+        update_request_ids = [call.args[0] for call in mock_db.update_download_state.call_args_list]
+        self.assertEqual(update_request_ids, [1, 2])
+        self.assertIn('"processing_started_at"', mock_db.update_download_state.call_args_list[0].args[1])
         mock_process.assert_called_once()
 
     def test_poll_crash_recovery_no_state(self):

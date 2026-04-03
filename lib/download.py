@@ -460,15 +460,66 @@ def match_transfer_id(
     narrows the search to one peer.
     Returns the transfer ID string, or None if not found.
     """
+    transfer = match_transfer(downloads, target_filename, username=username)
+    if transfer is None:
+        return None
+    return transfer.get("id", "")
+
+
+def _parse_transfer_timestamp(value: Any) -> datetime:
+    """Parse slskd transfer timestamps for ordering duplicate snapshots."""
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _transfer_priority(transfer: dict[str, Any]) -> tuple[int, int, datetime]:
+    """Rank duplicate transfer snapshots for the same username+filename.
+
+    Prefer active transfers over terminal ones. Among terminal snapshots,
+    prefer successful completions over cancelled/errored attempts, and then
+    pick the newest lifecycle timestamp.
+    """
+    state = str(transfer.get("state", ""))
+    is_terminal = state.startswith("Completed,")
+    is_success = state == "Completed, Succeeded"
+    latest_ts = max(
+        _parse_transfer_timestamp(transfer.get("endedAt")),
+        _parse_transfer_timestamp(transfer.get("startedAt")),
+        _parse_transfer_timestamp(transfer.get("enqueuedAt")),
+        _parse_transfer_timestamp(transfer.get("requestedAt")),
+    )
+    return (0 if is_terminal else 1, 1 if is_success else 0, latest_ts)
+
+
+def match_transfer(
+    downloads: dict[str, Any] | list[dict[str, Any]],
+    target_filename: str,
+    username: str | None = None,
+) -> dict[str, Any] | None:
+    """Find the best slskd transfer snapshot for a username+filename pair."""
     groups = downloads if isinstance(downloads, list) else [downloads]
+    candidates: list[dict[str, Any]] = []
     for group in groups:
         if username is not None and group.get("username") not in (None, "", username):
             continue
         for directory in group.get("directories", []):
             for slskd_file in directory.get("files", []):
                 if slskd_file.get("filename") == target_filename:
-                    return slskd_file.get("id", "")
-    return None
+                    candidates.append(slskd_file)
+
+    if not candidates:
+        return None
+    return max(candidates, key=_transfer_priority)
 
 
 def _get_all_downloads_snapshot(
@@ -483,7 +534,7 @@ def _get_all_downloads_snapshot(
     matches locally instead.
     """
     try:
-        downloads = slskd_client.transfers.get_all_downloads()
+        downloads = slskd_client.transfers.get_all_downloads(includeRemoved=True)
     except Exception:
         logger.warning(f"Failed to get all downloads for {purpose}", exc_info=True)
         return None
@@ -513,9 +564,14 @@ def rederive_transfer_ids(
         return False
 
     for f in entry.files:
-        tid = match_transfer_id(downloads, f.filename, username=f.username)
-        if tid is not None:
-            f.id = tid
+        transfer = match_transfer(downloads, f.filename, username=f.username)
+        if transfer is not None:
+            f.id = transfer.get("id", "")
+            state = str(transfer.get("state", ""))
+            if state.startswith("Completed,"):
+                f.status = dict(transfer)
+            else:
+                f.status = None
         else:
             logger.debug(f"Transfer not found for {f.filename} from {f.username}")
     return True
@@ -766,15 +822,19 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
         now = datetime.now(timezone.utc)
         elapsed_seconds = (now - enqueued_at).total_seconds()
 
-        # Poll status for files that have transfer IDs
-        files_with_ids = [f for f in entry.files if f.id]
-        if not slskd_download_status(files_with_ids, ctx):
+        # Poll live status only for transfers that are still active in slskd.
+        files_requiring_status = [
+            f for f in entry.files
+            if f.id and not (f.status and str(f.status.get("state", "")).startswith("Completed,"))
+        ]
+        if files_requiring_status and not slskd_download_status(files_requiring_status, ctx):
             logger.warning(f"API error polling {entry.artist} - {entry.title} — "
                           f"will retry next cycle")
             continue
 
         album_done, problems, queued = downloads_all_done(entry.files)
-        state_changed = _capture_download_progress(files_with_ids, state, now)
+        statusful_files = [f for f in entry.files if f.status is not None]
+        state_changed = _capture_download_progress(statusful_files, state, now)
 
         # Remote queue timeout: all files stuck in remote queue
         if queued == len(entry.files) and elapsed_seconds >= ctx.cfg.remote_queue_timeout:
