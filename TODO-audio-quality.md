@@ -54,35 +54,34 @@ result caching (all files x all filetypes). Options:
 `SoularrConfig` is frozen, so `@property` re-parses on every access. Since config
 is immutable, compute once at init time using `__post_init__` or a module-level cache.
 
-## Next: AudioQualityMeasurement
+## Done: AudioQualityMeasurement (2026-04-03)
 
-The second natural dataclass from the analysis. Represents "what we actually measured
-about a set of audio files" — ground truth from ffprobe + spectral.
+Frozen dataclass in `lib/quality.py` representing ground truth about a set of audio files.
 
 ```python
 @dataclass(frozen=True)
 class AudioQualityMeasurement:
-    min_bitrate_kbps: int
-    is_cbr: bool
-    spectral_grade: str | None
-    spectral_bitrate_kbps: int | None
-    verified_lossless: bool
-    was_converted_from: str | None  # "flac", "m4a", None
+    min_bitrate_kbps: int | None = None
+    is_cbr: bool = False
+    spectral_grade: str | None = None
+    spectral_bitrate_kbps: int | None = None
+    verified_lossless: bool = False
+    was_converted_from: str | None = None
 ```
 
-### Why
-- Quality decision functions currently take 4-5 loose scalar parameters
-- Debugging means pulling values from JSONB and mentally mapping to function args
-- Every decision is comparing two measurements (new vs existing)
-- The measurement IS the audit trail — log it and you have complete state
+### What changed
+- `import_quality_decision(new: AQM, existing: AQM | None, is_transcode)` — was 5 scalar params
+- `quality_gate_decision(current: AQM)` — was 4 scalar params
+- `override_min_bitrate` concept moved to callers — they construct `existing` with resolved bitrate
+- All callers updated: `quality_decision_stage()`, `_check_quality_gate()`, `full_pipeline_decision()`
+- Decision tree metadata updated for web UI
+- 879 tests passing, pyright 0 errors
 
-### Where it simplifies
-- `import_quality_decision(new: Measurement, existing: Measurement | None)` — replaces 5 params
-- `quality_gate_decision(current: Measurement)` — replaces 4 params
-- `ImportResult` sub-objects (`QualityInfo`, `SpectralInfo`, `ConversionInfo`) collapse into one
-- download_log JSONB becomes a serialized measurement — queryable, self-documenting
+### Still possible future work
+- `ImportResult` sub-objects (`QualityInfo`, `SpectralInfo`, `ConversionInfo`) could collapse into AQM
+- download_log JSONB could serialize AQM directly — queryable, self-documenting
 
 ### Third type: AudioQualityState
-The accumulated quality posture on `album_requests`. Not needed until the measurement
-type is in place. Would replace the scattered columns (min_bitrate, prev_min_bitrate,
-verified_lossless, spectral_grade, spectral_bitrate, on_disk_spectral_*).
+The accumulated quality posture on `album_requests`. Would replace the scattered columns
+(min_bitrate, prev_min_bitrate, verified_lossless, spectral_grade, spectral_bitrate,
+on_disk_spectral_*). Not needed until the measurement type is proven in production.
