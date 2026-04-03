@@ -562,7 +562,7 @@ def cmd_force_import(db, args):
 
 def cmd_manual_import(db, args):
     """Import a local folder as a pipeline request."""
-    from manual_import import run_manual_import
+    from manual_import import run_manual_import, import_result_log_fields
 
     request_id = args.id
     path = args.path
@@ -592,11 +592,14 @@ def cmd_manual_import(db, args):
     )
 
     # 3. Log to download_log
+    log_fields = import_result_log_fields(result.import_result_json)
     db.log_download(
         request_id=request_id,
         outcome="manual_import" if result.success else "failed",
         import_result=result.import_result_json,
         staged_path=path,
+        error_message=None if result.success else result.message,
+        **log_fields,
     )
 
     # 4. Update status

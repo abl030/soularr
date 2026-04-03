@@ -500,6 +500,38 @@ class TestExceptionVerdicts(unittest.TestCase):
             error_message=None))
         self.assertIn("error", result.verdict.lower())
 
+    def test_failed_falls_back_to_import_result_downgrade(self):
+        """Manual-import failures with only import_result still get a verdict."""
+        result = classify_log_entry(_entry(
+            outcome="failed",
+            beets_scenario=None,
+            error_message=None,
+            import_result={
+                "version": 2,
+                "exit_code": 5,
+                "decision": "downgrade",
+                "new_measurement": {"min_bitrate_kbps": 239},
+                "existing_measurement": {"min_bitrate_kbps": 320},
+            },
+        ))
+        self.assertIn("239", result.verdict)
+        self.assertIn("320", result.verdict)
+
+    def test_failed_falls_back_to_import_result_error(self):
+        """ImportResult error text is surfaced when error_message is blank."""
+        result = classify_log_entry(_entry(
+            outcome="failed",
+            beets_scenario=None,
+            error_message=None,
+            import_result={
+                "version": 2,
+                "exit_code": 2,
+                "decision": "import_failed",
+                "error": "Harness returned rc=2",
+            },
+        ))
+        self.assertIn("Harness returned rc=2", result.verdict)
+
     def test_timeout_ignores_error_message(self):
         """Timeout verdict is fixed, doesn't use error_message."""
         result = classify_log_entry(_entry(

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Audio file extensions we expect in a download folder
 from lib.quality import AUDIO_EXTENSIONS_DOTTED as _AUDIO_EXTS
+from lib.quality import ImportResult
 
 # Patterns for stripping noise from folder names
 _YEAR_PAREN_RE = re.compile(r"\s*[\(\[]\s*\d{4}\s*[\)\]]")  # (2022) or [2012]
@@ -74,6 +75,84 @@ class ManualImportResult:
     exit_code: int
     message: str
     import_result_json: str | None = None
+
+
+def import_result_log_fields(import_result_json: str | None) -> dict[str, object]:
+    """Extract best-effort download_log fields from ImportResult JSON."""
+    if not import_result_json:
+        return {}
+    try:
+        ir = ImportResult.from_json(import_result_json)
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return {}
+
+    fields: dict[str, object] = {}
+    conv = ir.conversion
+    new_m = ir.new_measurement
+    existing_m = ir.existing_measurement
+
+    if conv.was_converted:
+        fields["was_converted"] = True
+        fields["original_filetype"] = conv.original_filetype
+        fields["filetype"] = conv.target_filetype
+        fields["is_vbr"] = True
+        fields["slskd_filetype"] = conv.original_filetype
+        fields["actual_filetype"] = conv.target_filetype
+
+    if new_m is not None:
+        if new_m.min_bitrate_kbps is not None:
+            fields["bitrate"] = new_m.min_bitrate_kbps * 1000
+            fields["actual_min_bitrate"] = new_m.min_bitrate_kbps
+        if new_m.spectral_grade is not None:
+            fields["spectral_grade"] = new_m.spectral_grade
+        if new_m.spectral_bitrate_kbps is not None:
+            fields["spectral_bitrate"] = new_m.spectral_bitrate_kbps
+
+    if existing_m is not None:
+        if existing_m.min_bitrate_kbps is not None:
+            fields["existing_min_bitrate"] = existing_m.min_bitrate_kbps
+        if existing_m.spectral_bitrate_kbps is not None:
+            fields["existing_spectral_bitrate"] = existing_m.spectral_bitrate_kbps
+
+    return fields
+
+
+def import_result_failure_message(import_result_json: str | None, returncode: int) -> str:
+    """Build a readable failure message from ImportResult JSON."""
+    generic = f"import_one.py exited with code {returncode}"
+    if not import_result_json:
+        return generic
+    try:
+        ir = ImportResult.from_json(import_result_json)
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return generic
+
+    new_m = ir.new_measurement
+    existing_m = ir.existing_measurement
+    new_kbps = new_m.min_bitrate_kbps if new_m is not None else None
+    old_kbps = None
+    if existing_m is not None:
+        old_kbps = (existing_m.min_bitrate_kbps
+                    if existing_m.min_bitrate_kbps is not None
+                    else existing_m.spectral_bitrate_kbps)
+
+    if ir.decision == "downgrade":
+        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
+        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
+        return f"{new_s} is not better than existing {old_s}"
+
+    if ir.decision == "transcode_downgrade":
+        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
+        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
+        return f"Transcode at {new_s} - not better than existing {old_s}"
+
+    if ir.error:
+        return ir.error
+
+    if ir.decision:
+        return ir.decision.replace("_", " ")
+
+    return generic
 
 
 def parse_folder_name(name: str) -> FolderInfo:
@@ -290,6 +369,6 @@ def run_manual_import(
     else:
         return ManualImportResult(
             success=False, exit_code=result.returncode,
-            message=f"import_one.py exited with code {result.returncode}",
+            message=import_result_failure_message(import_result_json, result.returncode),
             import_result_json=import_result_json,
         )

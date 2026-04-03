@@ -147,6 +147,41 @@ class TestTracksFromMbRelease(unittest.TestCase):
         self.assertAlmostEqual(tracks[0]["length_seconds"], 200.0)
 
 
+class TestCmdManualImport(unittest.TestCase):
+    @patch("builtins.print")
+    def test_failed_manual_import_logs_error_message(self, _mock_print):
+        db = MagicMock()
+        db.get_request.return_value = {
+            "id": 123,
+            "artist_name": "Artist",
+            "album_title": "Album",
+            "mb_release_id": "mbid-123",
+            "min_bitrate": 320,
+        }
+
+        with patch("manual_import.run_manual_import") as mock_run, \
+                patch("manual_import.import_result_log_fields") as mock_fields:
+            mock_run.return_value = MagicMock(
+                success=False,
+                exit_code=5,
+                message="239kbps is not better than existing 320kbps",
+                import_result_json='{"decision":"downgrade","exit_code":5}',
+            )
+            mock_fields.return_value = {"actual_min_bitrate": 239}
+
+            args = MagicMock(id=123, path="/tmp/Album")
+            pipeline_cli.cmd_manual_import(db, args)
+
+        db.log_download.assert_called_once_with(
+            request_id=123,
+            outcome="failed",
+            import_result='{"decision":"downgrade","exit_code":5}',
+            staged_path="/tmp/Album",
+            error_message="239kbps is not better than existing 320kbps",
+            actual_min_bitrate=239,
+        )
+
+
 @unittest.skipUnless(TEST_DSN, "TEST_DB_DSN not set")
 class TestCmdStatusShowsDownloading(unittest.TestCase):
     def setUp(self):

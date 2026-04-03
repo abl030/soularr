@@ -1,5 +1,6 @@
 """Tests for lib.manual_import — folder scanning, matching, and import execution."""
 
+import json
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock, ANY
@@ -7,6 +8,8 @@ from lib.manual_import import (
     FolderInfo,
     ImportRequest,
     ManualImportResult,
+    import_result_failure_message,
+    import_result_log_fields,
     parse_folder_name,
     match_folders_to_requests,
     parse_import_result_stdout,
@@ -151,6 +154,49 @@ class TestManualImportResult(unittest.TestCase):
                                import_result_json='{"decision":"error"}')
         self.assertFalse(r.success)
         self.assertIsNotNone(r.import_result_json)
+
+
+class TestImportResultHelpers(unittest.TestCase):
+    def test_failure_message_uses_import_result_error(self) -> None:
+        ir = json.dumps({
+            "version": 2,
+            "exit_code": 2,
+            "decision": "import_failed",
+            "error": "Harness returned rc=2",
+        })
+        self.assertEqual(import_result_failure_message(ir, 2), "Harness returned rc=2")
+
+    def test_failure_message_formats_downgrade(self) -> None:
+        ir = json.dumps({
+            "version": 2,
+            "exit_code": 5,
+            "decision": "downgrade",
+            "new_measurement": {"min_bitrate_kbps": 239},
+            "existing_measurement": {"min_bitrate_kbps": 320},
+        })
+        self.assertEqual(
+            import_result_failure_message(ir, 5),
+            "239kbps is not better than existing 320kbps",
+        )
+
+    def test_log_fields_extract_measurements(self) -> None:
+        ir = json.dumps({
+            "version": 2,
+            "exit_code": 5,
+            "decision": "downgrade",
+            "new_measurement": {
+                "min_bitrate_kbps": 239,
+                "spectral_grade": "suspect",
+                "spectral_bitrate_kbps": 192,
+            },
+            "existing_measurement": {"min_bitrate_kbps": 320},
+        })
+        fields = import_result_log_fields(ir)
+        self.assertEqual(fields["bitrate"], 239000)
+        self.assertEqual(fields["actual_min_bitrate"], 239)
+        self.assertEqual(fields["spectral_grade"], "suspect")
+        self.assertEqual(fields["spectral_bitrate"], 192)
+        self.assertEqual(fields["existing_min_bitrate"], 320)
 
 
 class TestRunManualImport(unittest.TestCase):

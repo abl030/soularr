@@ -12,7 +12,12 @@ def _server():
 
 
 def get_manual_import_scan(h, params: dict[str, list[str]]) -> None:
-    from lib.manual_import import scan_complete_folder, match_folders_to_requests, ImportRequest
+    from lib.manual_import import (
+        scan_complete_folder,
+        match_folders_to_requests,
+        ImportRequest,
+        import_result_log_fields,
+    )
 
     complete_dir = params.get("dir", ["/mnt/data/Media/Temp/Music/Complete"])[0]
     folders = scan_complete_folder(complete_dir)
@@ -57,7 +62,7 @@ def get_manual_import_scan(h, params: dict[str, list[str]]) -> None:
 
 
 def post_manual_import(h, body: dict) -> None:
-    from lib.manual_import import run_manual_import
+    from lib.manual_import import run_manual_import, import_result_log_fields
 
     srv = _server()
     request_id = body.get("request_id")
@@ -87,11 +92,14 @@ def post_manual_import(h, body: dict) -> None:
     )
 
     # Log to download_log
+    log_fields = import_result_log_fields(result.import_result_json)
     srv._db().log_download(
         request_id=int(request_id),
         outcome="manual_import" if result.success else "failed",
         import_result=result.import_result_json,
         staged_path=path,
+        error_message=None if result.success else result.message,
+        **log_fields,
     )
 
     # Update status on success

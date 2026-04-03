@@ -6,9 +6,11 @@ ClassifiedEntry with badge, verdict, and summary.
 No I/O, no database — fully unit-testable.
 """
 
+import json
 from dataclasses import dataclass, fields
 from typing import Any, Optional
 
+from lib.quality import ImportResult
 
 # ---------------------------------------------------------------------------
 # Types
@@ -33,6 +35,8 @@ class LogEntry:
     beets_detail: Optional[str] = None
     soulseek_username: Optional[str] = None
     error_message: Optional[str] = None
+    import_result: Optional[Any] = None
+    validation_result: Optional[Any] = None
 
     # download quality
     filetype: Optional[str] = None
@@ -155,7 +159,7 @@ def _classify(entry: LogEntry) -> tuple[str, str, str, str]:
         elif entry.error_message:
             verdict = f"Import error: {entry.error_message}"
         else:
-            verdict = "Import error"
+            verdict = _failure_verdict_from_import_result(entry) or "Import error"
         return ("Failed", "badge-failed", "#a33", verdict)
 
     # --- Force import ---
@@ -198,6 +202,50 @@ def _classify(entry: LogEntry) -> tuple[str, str, str, str]:
     # --- Unknown outcome ---
     label = str(entry.outcome).capitalize() if entry.outcome else "Unknown"
     return (label, "badge-rejected", "#444", str(entry.outcome or "Unknown outcome"))
+
+
+def _failure_verdict_from_import_result(entry: LogEntry) -> str | None:
+    """Recover a useful verdict from ImportResult JSON for failed rows."""
+    raw = entry.import_result
+    if raw is None:
+        return None
+
+    try:
+        if isinstance(raw, dict):
+            ir = ImportResult.from_dict(raw)
+        elif isinstance(raw, str):
+            ir = ImportResult.from_json(raw)
+        else:
+            return None
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return None
+
+    new_m = ir.new_measurement
+    existing_m = ir.existing_measurement
+    new_kbps = new_m.min_bitrate_kbps if new_m is not None else None
+    old_kbps = None
+    if existing_m is not None:
+        old_kbps = (existing_m.min_bitrate_kbps
+                    if existing_m.min_bitrate_kbps is not None
+                    else existing_m.spectral_bitrate_kbps)
+
+    if ir.decision == "downgrade":
+        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
+        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
+        return f"{new_s} is not better than existing {old_s}"
+
+    if ir.decision == "transcode_downgrade":
+        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
+        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
+        return f"Transcode at {new_s} - not better than existing {old_s}"
+
+    if ir.error:
+        return f"Import error: {ir.error}"
+
+    if ir.decision:
+        return ir.decision.replace("_", " ")
+
+    return None
 
 
 def _classify_transcode(entry: LogEntry) -> tuple[str, str, str, str]:
