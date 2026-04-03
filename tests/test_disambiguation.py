@@ -167,6 +167,34 @@ class TestRunImportKeptDuplicate(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertFalse(kept_duplicate)
 
+    @patch("import_one.select.select")
+    @patch("import_one.subprocess.Popen")
+    def test_harness_nonzero_after_apply_returns_error(self, mock_popen, mock_select):
+        """A harness crash after applying a candidate must still fail run_import."""
+        import import_one
+
+        messages = [
+            {"type": "choose_match", "candidates": [
+                {"album_id": TARGET_MBID, "distance": 0.02,
+                 "artist": "The National", "album": "High Violet"},
+            ]},
+        ]
+        proc = _make_harness_proc(messages)
+        proc.poll.return_value = 2
+        proc.wait.return_value = 2
+        proc.stderr.read.return_value = (
+            "beets.dbcore.db.DBAccessError: attempt to write a readonly database\n"
+        )
+        mock_popen.return_value = proc
+        mock_select.return_value = ([99], [], [])
+
+        rc, beets_lines, kept_duplicate = import_one.run_import(
+            "/tmp/test", TARGET_MBID)
+
+        self.assertEqual(rc, 2)
+        self.assertFalse(kept_duplicate)
+        self.assertIn("readonly database", "\n".join(beets_lines))
+
 
 class TestDisambiguateBeetMove(unittest.TestCase):
     """Test that beet move is called when kept_duplicate is True."""

@@ -253,6 +253,12 @@ def run_manual_import(
     if override_min_bitrate is not None:
         cmd.extend(["--override-min-bitrate", str(override_min_bitrate)])
 
+    # Importing into the beets SQLite library needs write access to the
+    # database directory for journal/WAL files. Local admin CLI usage often
+    # runs as a non-root user, while the deployed services run as root.
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+
     logger.info("MANUAL-IMPORT: running %s", " ".join(cmd))
 
     try:

@@ -1,6 +1,8 @@
 """Tests for lib.manual_import — folder scanning, matching, and import execution."""
 
+import tempfile
 import unittest
+from unittest.mock import patch, MagicMock, ANY
 from lib.manual_import import (
     FolderInfo,
     ImportRequest,
@@ -8,6 +10,7 @@ from lib.manual_import import (
     parse_folder_name,
     match_folders_to_requests,
     parse_import_result_stdout,
+    run_manual_import,
 )
 
 
@@ -148,6 +151,49 @@ class TestManualImportResult(unittest.TestCase):
                                import_result_json='{"decision":"error"}')
         self.assertFalse(r.success)
         self.assertIsNotNone(r.import_result_json)
+
+
+class TestRunManualImport(unittest.TestCase):
+    @patch("lib.manual_import.subprocess.run")
+    @patch("lib.manual_import.os.geteuid", return_value=1000)
+    def test_non_root_uses_sudo(self, _mock_geteuid, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='__IMPORT_RESULT__{"decision":"import","exit_code":0}\n',
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            result = run_manual_import(
+                request_id=1,
+                mb_release_id="mbid-1",
+                path=d,
+                import_one_path="/tmp/import_one.py",
+            )
+
+        self.assertTrue(result.success)
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[:2], ["sudo", "-n"])
+        self.assertEqual(cmd[2], ANY)
+
+    @patch("lib.manual_import.subprocess.run")
+    @patch("lib.manual_import.os.geteuid", return_value=0)
+    def test_root_runs_import_directly(self, _mock_geteuid, mock_run) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='__IMPORT_RESULT__{"decision":"import","exit_code":0}\n',
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            result = run_manual_import(
+                request_id=1,
+                mb_release_id="mbid-1",
+                path=d,
+                import_one_path="/tmp/import_one.py",
+            )
+
+        self.assertTrue(result.success)
+        cmd = mock_run.call_args.args[0]
+        self.assertNotEqual(cmd[0], "sudo")
 
 
 if __name__ == "__main__":

@@ -356,8 +356,7 @@ def run_import(path, mb_release_id):
     except BrokenPipeError:
         print("  [WARN] Harness pipe broken", file=sys.stderr)
 
-    if proc.poll() is None:
-        proc.wait()
+    proc_rc = proc.wait() if proc.poll() is None else proc.poll()
 
     stderr_out = proc.stderr.read() if proc.stderr else ""
     beets_lines: list[str] = []
@@ -366,6 +365,9 @@ def run_import(path, mb_release_id):
             if "Disabled fetchart" not in line:
                 print(f"  [BEETS] {line}", file=sys.stderr)
                 beets_lines.append(line.strip())
+
+    if proc_rc not in (None, 0):
+        return 2, beets_lines, kept_duplicate
 
     return (0 if applied else 2), beets_lines, kept_duplicate
 
@@ -604,7 +606,8 @@ def main():
     if rc != 0:
         r.exit_code = rc
         r.decision = "import_failed" if rc == 2 else "mbid_missing" if rc == 4 else "import_failed"
-        r.error = f"Harness returned rc={rc}"
+        r.error = next((line for line in reversed(beets_lines) if line.strip()),
+                       f"Harness returned rc={rc}")
         _log(f"[ERROR] Import failed (rc={rc})")
         _emit_and_exit(r)
 
