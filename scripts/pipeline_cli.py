@@ -340,6 +340,102 @@ def cmd_show(db, args):
 
 
 
+def cmd_quality(db, args):
+    """Show quality state and simulate decisions for common download scenarios."""
+    from quality import full_pipeline_decision, quality_gate_decision, AudioQualityMeasurement
+
+    req = db.get_request(args.id)
+    if not req:
+        print(f"  Request {args.id} not found.")
+        return
+
+    label = f"{req['artist_name']} - {req['album_title']}"
+    min_br = req.get("min_bitrate")
+    verified = bool(req.get("verified_lossless"))
+    s_br = req.get("spectral_bitrate")
+    od_br = req.get("on_disk_spectral_bitrate")
+    q_override = req.get("quality_override")
+
+    print(f"  {label}")
+    print(f"  Status: {req['status']}")
+    print()
+
+    # --- Current quality gate ---
+    if min_br is not None:
+        from beets_db import BeetsDB
+        mbid = req.get("mb_release_id")
+        is_cbr = False
+        if mbid:
+            try:
+                with BeetsDB() as beets:
+                    info = beets.get_album_info(mbid)
+                if info:
+                    is_cbr = info.is_cbr
+            except Exception:
+                pass
+        current = AudioQualityMeasurement(
+            min_bitrate_kbps=min_br, is_cbr=is_cbr,
+            verified_lossless=verified,
+            spectral_bitrate_kbps=s_br)
+        gate = quality_gate_decision(current)
+        gate_label = {"accept": "DONE", "requeue_upgrade": "NEEDS UPGRADE",
+                      "requeue_flac": "NEEDS FLAC"}[gate]
+        print(f"  Quality gate:  {gate_label}")
+        print(f"    min_bitrate={_fmt_br(min_br)}, verified_lossless={verified}, "
+              f"is_cbr={is_cbr}")
+        if s_br:
+            print(f"    spectral_bitrate={s_br}kbps")
+        if q_override:
+            print(f"    searching: {q_override}")
+    else:
+        print(f"  Quality gate:  NO DATA (not yet imported)")
+
+    # --- Simulate common scenarios ---
+    effective_existing = min_br
+    if od_br and min_br and od_br < min_br:
+        effective_existing = od_br
+
+    scenarios = [
+        ("Genuine FLAC → V0", dict(
+            is_flac=True, min_bitrate=245, is_cbr=False,
+            spectral_grade="genuine", converted_count=12,
+            post_conversion_min_bitrate=245)),
+        ("MP3 V0 (240kbps)", dict(
+            is_flac=False, min_bitrate=240, is_cbr=False)),
+        ("MP3 CBR 320", dict(
+            is_flac=False, min_bitrate=320, is_cbr=True)),
+        ("Suspect FLAC (transcode)", dict(
+            is_flac=True, min_bitrate=190, is_cbr=False,
+            spectral_grade="suspect", converted_count=12,
+            post_conversion_min_bitrate=190)),
+    ]
+
+    print(f"\n  What would happen if we downloaded:")
+    for name, params in scenarios:
+        result = full_pipeline_decision(
+            existing_min_bitrate=effective_existing,
+            existing_spectral_bitrate=od_br,
+            override_min_bitrate=od_br if od_br and min_br and od_br < min_br else None,
+            verified_lossless=verified,
+            **params)
+
+        imported = "IMPORT" if result["imported"] else "REJECT"
+        parts = [imported]
+        if result["denylisted"]:
+            parts.append("denylist")
+        if result["keep_searching"]:
+            parts.append("keep searching")
+        final = result["final_status"] or "?"
+        decision_chain = " → ".join(
+            f"{s}={result[s]}" for s in ["stage1_spectral", "stage2_import", "stage3_quality_gate"]
+            if result[s] is not None)
+
+        print(f"    {name}:")
+        print(f"      → {', '.join(parts)} (final: {final})")
+        if decision_chain:
+            print(f"      chain: {decision_chain}")
+
+
 IMPORT_ONE = os.path.join(os.path.dirname(__file__), "..", "harness", "import_one.py")
 
 # Known slskd download dirs to resolve old relative failed_paths against
@@ -567,6 +663,10 @@ def main():
     p_show = sub.add_parser("show", help="Show full details of a request")
     p_show.add_argument("id", type=int, help="Request ID")
 
+    # quality
+    p_quality = sub.add_parser("quality", help="Show quality state and simulate decisions")
+    p_quality.add_argument("id", type=int, help="Request ID")
+
     # force-import
     p_force = sub.add_parser("force-import", help="Force-import a rejected download by download_log ID")
     p_force.add_argument("download_log_id", type=int, help="Download log ID")
@@ -591,6 +691,7 @@ def main():
         "cancel": cmd_cancel,
         "set": cmd_set,
         "show": cmd_show,
+        "quality": cmd_quality,
         "force-import": cmd_force_import,
         "manual-import": cmd_manual_import,
     }
