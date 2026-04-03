@@ -63,7 +63,8 @@ class DownloadFile:
     # Transient: poll_active_downloads
     status: Optional[dict] = None   # slskd status object with "state" key
     retry: Optional[int] = None     # retry counter, initialized on error
+    bytes_transferred: Optional[int] = None
+    last_state: Optional[str] = None
 
     # Transient: process_completed_album
     import_path: Optional[str] = None
-

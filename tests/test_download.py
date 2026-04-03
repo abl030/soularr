@@ -22,7 +22,7 @@ def _utc_now_iso() -> str:
 def _make_file(filename="01 - Track.mp3", username="user1",
                bitRate=320, sampleRate=44100, bitDepth=None,
                isVariableBitRate=None, file_dir="user1\\Music",
-               size=5000000):
+               size=5000000, bytes_transferred=None, last_state=None):
     """Build a mock DownloadFile."""
     f = MagicMock()
     f.filename = filename
@@ -36,6 +36,8 @@ def _make_file(filename="01 - Track.mp3", username="user1",
     f.id = "file-id-1"
     f.status = None
     f.retry = None
+    f.bytes_transferred = bytes_transferred
+    f.last_state = last_state
     f.import_path = None
     f.disk_no = None
     f.disk_count = None
@@ -711,22 +713,29 @@ class TestPollActiveDownloads(unittest.TestCase):
         mock_db.update_status.assert_called_once_with(1, "imported")
 
     def test_poll_active_timeout(self):
-        """enqueued_at is old, timeout exceeded → cancel, log, reset to wanted."""
+        """No byte/state progress for stalled_timeout → cancel, log, reset to wanted."""
         from lib.download import poll_active_downloads
-        # Use an enqueued_at far in the past
+        stale = "2020-01-01T00:00:00+00:00"
         state_dict = {
             "filetype": "flac",
-            "enqueued_at": "2020-01-01T00:00:00+00:00",  # Very old
+            "enqueued_at": stale,
+            "last_progress_at": stale,
             "files": [
                 {"username": "user1", "filename": "user1\\Music\\01.flac",
-                 "file_dir": "user1\\Music", "size": 30000000},
+                 "file_dir": "user1\\Music", "size": 30000000,
+                 "bytes_transferred": 12345, "last_state": "InProgress"},
             ],
         }
         row = self._make_downloading_row(state_dict=state_dict)
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
 
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "InProgress", "bytesTransferred": 12345}
+            return True
         with patch("lib.download.cancel_and_delete"):
-            poll_active_downloads(ctx)
+            with patch("lib.download.slskd_download_status", side_effect=mock_status):
+                poll_active_downloads(ctx)
 
         # Should have logged a timeout download and reset to wanted
         mock_db.log_download.assert_called_once()
@@ -736,6 +745,36 @@ class TestPollActiveDownloads(unittest.TestCase):
         reset_calls = [c for c in mock_db._execute.call_args_list
                        if "wanted" in str(c)]
         self.assertTrue(len(reset_calls) > 0, "Expected _reset_to_wanted SQL call")
+
+    def test_poll_active_old_album_with_progress_does_not_timeout(self):
+        """Fresh byte progress should refresh stall timer even for an old album."""
+        from lib.download import poll_active_downloads
+        stale = "2020-01-01T00:00:00+00:00"
+        state_dict = {
+            "filetype": "flac",
+            "enqueued_at": stale,
+            "last_progress_at": stale,
+            "files": [
+                {"username": "user1", "filename": "user1\\Music\\01.flac",
+                 "file_dir": "user1\\Music", "size": 30000000,
+                 "bytes_transferred": 12345, "last_state": "InProgress"},
+            ],
+        }
+        row = self._make_downloading_row(state_dict=state_dict)
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "InProgress", "bytesTransferred": 22345}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            poll_active_downloads(ctx)
+
+        mock_db.log_download.assert_not_called()
+        mock_db.update_download_state.assert_called_once()
+        persisted_json = mock_db.update_download_state.call_args[0][1]
+        self.assertIn('"bytes_transferred": 22345', persisted_json)
+        self.assertIn('"last_progress_at"', persisted_json)
 
     def test_poll_active_transfer_vanished_all(self):
         """slskd returns no matching transfers → treat as timeout."""
@@ -754,20 +793,20 @@ class TestPollActiveDownloads(unittest.TestCase):
         self.assertEqual(kwargs["outcome"], "timeout")
 
     def test_poll_active_in_progress(self):
-        """Files still downloading → no action, remains downloading."""
+        """Files still downloading with fresh state transition → persist progress snapshot."""
         from lib.download import poll_active_downloads
         row = self._make_downloading_row()
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
 
         def mock_status(downloads, ctx_arg):
             for f in downloads:
-                f.status = {"state": "InProgress"}
+                f.status = {"state": "InProgress", "bytesTransferred": 2048}
             return True
         with patch("lib.download.slskd_download_status", side_effect=mock_status):
             poll_active_downloads(ctx)
 
         # Should NOT process or timeout
-        mock_db.update_download_state.assert_not_called()
+        mock_db.update_download_state.assert_called_once()
         mock_db.log_download.assert_not_called()
 
     @patch("lib.download.process_completed_album")
@@ -1112,6 +1151,29 @@ class TestBuildActiveDownloadState(unittest.TestCase):
         state = build_active_download_state(entry)
         self.assertEqual(state.files[0].retry_count, 4)
 
+    def test_persists_progress_fields(self):
+        from lib.download import build_active_download_state
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+            files=[
+                DownloadFile(
+                    filename="u\\M\\01.flac", id="tid-1",
+                    file_dir="u\\M", username="user1", size=30000000,
+                    bytes_transferred=2048, last_state="InProgress",
+                ),
+            ],
+        )
+        state = build_active_download_state(
+            entry,
+            enqueued_at="2026-04-03T12:00:00+00:00",
+            last_progress_at="2026-04-03T12:05:00+00:00",
+        )
+        self.assertEqual(state.last_progress_at, "2026-04-03T12:05:00+00:00")
+        self.assertEqual(state.files[0].bytes_transferred, 2048)
+        self.assertEqual(state.files[0].last_state, "InProgress")
+
     def test_enqueued_at_is_utc_iso(self):
         from lib.download import build_active_download_state
         from lib.grab_list import GrabListEntry, DownloadFile
@@ -1126,6 +1188,7 @@ class TestBuildActiveDownloadState(unittest.TestCase):
         state = build_active_download_state(entry)
         parsed = dt.fromisoformat(state.enqueued_at)
         self.assertEqual(parsed.tzinfo, tz.utc)
+        self.assertEqual(state.last_progress_at, state.enqueued_at)
 
 
 class TestReconstructGrabListEntry(unittest.TestCase):
@@ -1222,6 +1285,31 @@ class TestReconstructGrabListEntry(unittest.TestCase):
                    "quality_override": None}
         entry = reconstruct_grab_list_entry(request, state)
         self.assertEqual(entry.files[0].retry, 5)
+
+    def test_reconstruct_progress_fields(self):
+        from lib.download import reconstruct_grab_list_entry
+        from lib.quality import ActiveDownloadState, ActiveDownloadFileState
+        state = ActiveDownloadState(
+            filetype="flac",
+            enqueued_at="now",
+            last_progress_at="2026-04-03T12:05:00+00:00",
+            files=[
+                ActiveDownloadFileState(
+                    username="user1",
+                    filename="user1\\Music\\01.flac",
+                    file_dir="user1\\Music",
+                    size=30000000,
+                    bytes_transferred=4096,
+                    last_state="InProgress",
+                ),
+            ],
+        )
+        request = {"id": 10, "album_title": "B", "artist_name": "A",
+                   "year": 2020, "mb_release_id": "mbid", "source": "request",
+                   "quality_override": None}
+        entry = reconstruct_grab_list_entry(request, state)
+        self.assertEqual(entry.files[0].bytes_transferred, 4096)
+        self.assertEqual(entry.files[0].last_state, "InProgress")
 
     def test_reconstruct_missing_year(self):
         from lib.download import reconstruct_grab_list_entry

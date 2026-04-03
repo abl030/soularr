@@ -245,6 +245,8 @@ class ActiveDownloadFileState:
     disk_no: int | None = None
     disk_count: int | None = None
     retry_count: int = 0
+    bytes_transferred: int = 0
+    last_state: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -253,11 +255,14 @@ class ActiveDownloadFileState:
             "file_dir": self.file_dir,
             "size": self.size,
             "retry_count": self.retry_count,
+            "bytes_transferred": self.bytes_transferred,
         }
         if self.disk_no is not None:
             d["disk_no"] = self.disk_no
         if self.disk_count is not None:
             d["disk_count"] = self.disk_count
+        if self.last_state is not None:
+            d["last_state"] = self.last_state
         return d
 
     @staticmethod
@@ -270,6 +275,12 @@ class ActiveDownloadFileState:
             disk_no=int(d["disk_no"]) if d.get("disk_no") is not None else None,  # type: ignore[arg-type]
             disk_count=int(d["disk_count"]) if d.get("disk_count") is not None else None,  # type: ignore[arg-type]
             retry_count=int(d.get("retry_count", 0)),  # type: ignore[arg-type]
+            bytes_transferred=int(d.get("bytes_transferred", 0)),  # type: ignore[arg-type]
+            last_state=(
+                str(d["last_state"])
+                if d.get("last_state") is not None
+                else None
+            ),
         )
 
 
@@ -279,6 +290,7 @@ class ActiveDownloadState:
     filetype: str                         # "flac", "mp3 v0", etc.
     enqueued_at: str                      # ISO8601 UTC timestamp
     files: list[ActiveDownloadFileState]
+    last_progress_at: str | None = None
     processing_started_at: str | None = None
 
     def to_json(self) -> str:
@@ -287,6 +299,8 @@ class ActiveDownloadState:
             "enqueued_at": self.enqueued_at,
             "files": [f.to_dict() for f in self.files],
         }
+        if self.last_progress_at is not None:
+            data["last_progress_at"] = self.last_progress_at
         if self.processing_started_at is not None:
             data["processing_started_at"] = self.processing_started_at
         return json.dumps(data)
@@ -299,6 +313,11 @@ class ActiveDownloadState:
             filetype=str(d["filetype"]),
             enqueued_at=str(d["enqueued_at"]),
             files=[ActiveDownloadFileState.from_dict(f) for f in files_raw],
+            last_progress_at=(
+                str(d["last_progress_at"])
+                if d.get("last_progress_at") is not None
+                else None
+            ),
             processing_started_at=(
                 str(d["processing_started_at"])
                 if d.get("processing_started_at") is not None

@@ -412,6 +412,7 @@ def build_active_download_state(
     entry: GrabListEntry,
     *,
     enqueued_at: str | None = None,
+    last_progress_at: str | None = None,
     processing_started_at: str | None = None,
 ) -> ActiveDownloadState:
     """Build an ActiveDownloadState from a GrabListEntry.
@@ -429,12 +430,15 @@ def build_active_download_state(
             disk_no=f.disk_no,
             disk_count=f.disk_count,
             retry_count=f.retry or 0,
+            bytes_transferred=f.bytes_transferred or 0,
+            last_state=f.last_state,
         )
         for f in entry.files
     ]
     return ActiveDownloadState(
         filetype=entry.filetype,
         enqueued_at=enqueued_at_value,
+        last_progress_at=last_progress_at or enqueued_at_value,
         files=files,
         processing_started_at=processing_started_at,
     )
@@ -510,6 +514,8 @@ def reconstruct_grab_list_entry(
             disk_no=f.disk_no,
             disk_count=f.disk_count,
             retry=f.retry_count,
+            bytes_transferred=f.bytes_transferred,
+            last_state=f.last_state,
         ))
     year = request.get("year")
     return GrabListEntry(
@@ -586,9 +592,54 @@ def _persist_updated_download_state(
         build_active_download_state(
             entry,
             enqueued_at=state.enqueued_at,
+            last_progress_at=state.last_progress_at,
             processing_started_at=state.processing_started_at,
         ).to_json(),
     )
+
+
+_NON_PROGRESS_STATES = {
+    "",
+    "Queued, Remotely",
+    "Completed, Cancelled",
+    "Completed, TimedOut",
+    "Completed, Errored",
+    "Completed, Rejected",
+    "Completed, Aborted",
+}
+
+
+def _capture_download_progress(
+    downloads: list[DownloadFile],
+    state: ActiveDownloadState,
+    now: datetime,
+) -> bool:
+    """Record byte/state progress from fresh slskd status snapshots.
+
+    Returns True when any file made observable forward progress this cycle.
+    """
+    progress_made = False
+    for file in downloads:
+        if not file.status:
+            continue
+
+        current_state = str(file.status.get("state", ""))
+        current_bytes = int(file.status.get("bytesTransferred") or 0)
+        previous_bytes = file.bytes_transferred or 0
+        previous_state = file.last_state or ""
+
+        if current_bytes > previous_bytes:
+            progress_made = True
+        elif current_state != previous_state and current_state not in _NON_PROGRESS_STATES:
+            progress_made = True
+
+        file.bytes_transferred = current_bytes
+        file.last_state = current_state or file.last_state
+
+    if progress_made:
+        state.last_progress_at = now.isoformat()
+
+    return progress_made
 
 
 def _run_completed_processing(
@@ -681,16 +732,10 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             if f.id == "":
                 f.status = {"state": "Completed, Errored"}
 
-        # Check absolute timeout from enqueued_at
+        # Track total album age separately from stall/progress timing.
         enqueued_at = datetime.fromisoformat(state.enqueued_at)
         now = datetime.now(timezone.utc)
         elapsed_seconds = (now - enqueued_at).total_seconds()
-
-        if elapsed_seconds >= ctx.cfg.stalled_timeout:
-            _timeout_album(entry, request_id,
-                          f"stalled_timeout {ctx.cfg.stalled_timeout}s exceeded "
-                          f"({elapsed_seconds:.0f}s elapsed)", ctx)
-            continue
 
         # Poll status for files that have transfer IDs
         files_with_ids = [f for f in entry.files if f.id]
@@ -700,6 +745,7 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             continue
 
         album_done, problems, queued = downloads_all_done(entry.files)
+        state_changed = _capture_download_progress(files_with_ids, state, now)
 
         # Remote queue timeout: all files stuck in remote queue
         if queued == len(entry.files) and elapsed_seconds >= ctx.cfg.remote_queue_timeout:
@@ -721,7 +767,6 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
                 continue
 
             # Partial errors: attempt re-enqueue for errored files
-            state_changed = False
             album_timed_out = False
             for file in problems:
                 state_str = file.status.get("state", "") if file.status else ""
@@ -754,6 +799,9 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
                             state_changed = True
                             if requeue:
                                 df.id = requeue[0].id
+                                df.bytes_transferred = 0
+                                df.last_state = None
+                                state.last_progress_at = now.isoformat()
                             else:
                                 logger.warning(f"Failed to re-enqueue file: {file.filename}")
                             break
@@ -765,8 +813,26 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             refreshed = db.get_request(request_id)
             if refreshed and refreshed["status"] != "downloading":
                 continue
-            if state_changed:
-                _persist_updated_download_state(db, request_id, entry, state)
+
+        progress_at = state.last_progress_at or state.enqueued_at
+        idle_seconds = (
+            now - datetime.fromisoformat(progress_at)
+        ).total_seconds()
+        if idle_seconds >= ctx.cfg.stalled_timeout:
+            _timeout_album(
+                entry,
+                request_id,
+                f"no download progress for {idle_seconds:.0f}s "
+                f"(stalled_timeout {ctx.cfg.stalled_timeout}s)",
+                ctx,
+            )
+            continue
+
+        refreshed = db.get_request(request_id)
+        if refreshed and refreshed["status"] != "downloading":
+            continue
+        if state_changed:
+            _persist_updated_download_state(db, request_id, entry, state)
 
         # Still in progress — log and continue to next album
         files_done = sum(1 for f in entry.files
