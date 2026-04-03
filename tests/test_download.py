@@ -504,6 +504,309 @@ class TestRederiveTransferIds(unittest.TestCase):
         self.assertEqual(entry.files[0].id, "")
 
 
+class TestPollActiveDownloads(unittest.TestCase):
+    """Test poll_active_downloads() — core polling function."""
+
+    def _make_downloading_row(self, request_id=1, state_dict=None):
+        """Build a mock album_requests row with status='downloading'."""
+        if state_dict is None:
+            state_dict = {
+                "filetype": "flac",
+                "enqueued_at": "2026-04-03T12:00:00+00:00",
+                "files": [
+                    {"username": "user1", "filename": "user1\\Music\\01.flac",
+                     "file_dir": "user1\\Music", "size": 30000000},
+                ],
+            }
+        return {
+            "id": request_id,
+            "album_title": "Test Album",
+            "artist_name": "Test Artist",
+            "year": 2020,
+            "mb_release_id": "test-mbid",
+            "source": "request",
+            "quality_override": None,
+            "status": "downloading",
+            "active_download_state": state_dict,
+        }
+
+    def _make_poll_ctx(self, downloading_rows=None, slskd_downloads=None):
+        """Build context with mocked DB + slskd for polling."""
+        ctx = _make_ctx()
+        mock_db = MagicMock()
+        mock_db.get_downloading.return_value = downloading_rows or []
+        mock_db.get_request.return_value = None  # default: album not found after processing
+        ctx.pipeline_db_source._get_db.return_value = mock_db
+
+        if slskd_downloads is not None:
+            ctx.slskd.transfers.get_downloads.return_value = slskd_downloads
+        else:
+            # Default: return transfers that match the files
+            ctx.slskd.transfers.get_downloads.return_value = {
+                "directories": [{"directory": "user1\\Music", "files": [
+                    {"filename": "user1\\Music\\01.flac", "id": "tid-1"},
+                ]}],
+            }
+        return ctx, mock_db
+
+    def test_poll_active_no_downloading(self):
+        """No downloading albums → no-op."""
+        from lib.download import poll_active_downloads
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[])
+        poll_active_downloads(ctx)
+        mock_db.clear_download_state.assert_not_called()
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_all_complete(self, mock_process):
+        """1 downloading album, all files complete → calls process_completed_album."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        # Mock slskd status: file is complete
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Completed, Succeeded"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            mock_process.return_value = True
+            # After process_completed_album, DB shows status='imported'
+            mock_db.get_request.return_value = {"id": 1, "status": "imported"}
+            poll_active_downloads(ctx)
+
+        mock_db.clear_download_state.assert_called_once_with(1)
+        mock_process.assert_called_once()
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_all_complete_no_beets(self, mock_process):
+        """beets_validation_enabled=False → process returns True, poll sets imported."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Completed, Succeeded"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            mock_process.return_value = True
+            # After process_completed_album, status still 'downloading' (no beets)
+            mock_db.get_request.return_value = {"id": 1, "status": "downloading"}
+            poll_active_downloads(ctx)
+
+        mock_db.update_status.assert_called_once_with(1, "imported")
+
+    def test_poll_active_timeout(self):
+        """enqueued_at is old, timeout exceeded → cancel, log, reset to wanted."""
+        from lib.download import poll_active_downloads
+        # Use an enqueued_at far in the past
+        state_dict = {
+            "filetype": "flac",
+            "enqueued_at": "2020-01-01T00:00:00+00:00",  # Very old
+            "files": [
+                {"username": "user1", "filename": "user1\\Music\\01.flac",
+                 "file_dir": "user1\\Music", "size": 30000000},
+            ],
+        }
+        row = self._make_downloading_row(state_dict=state_dict)
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        with patch("lib.download.cancel_and_delete"):
+            poll_active_downloads(ctx)
+
+        # Should have logged a timeout download and reset to wanted
+        mock_db.log_download.assert_called_once()
+        kwargs = mock_db.log_download.call_args.kwargs
+        self.assertEqual(kwargs["outcome"], "timeout")
+        # Check the _reset_to_wanted was called via raw SQL
+        reset_calls = [c for c in mock_db._execute.call_args_list
+                       if "wanted" in str(c)]
+        self.assertTrue(len(reset_calls) > 0, "Expected _reset_to_wanted SQL call")
+
+    def test_poll_active_transfer_vanished_all(self):
+        """slskd returns no matching transfers → treat as timeout."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(
+            downloading_rows=[row],
+            slskd_downloads={"directories": [{"directory": "user1\\Music", "files": []}]},
+        )
+        with patch("lib.download.cancel_and_delete"):
+            poll_active_downloads(ctx)
+
+        mock_db.log_download.assert_called_once()
+        # Check outcome is timeout
+        kwargs = mock_db.log_download.call_args.kwargs
+        self.assertEqual(kwargs["outcome"], "timeout")
+
+    def test_poll_active_in_progress(self):
+        """Files still downloading → no action, remains downloading."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "InProgress"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            poll_active_downloads(ctx)
+
+        # Should NOT process or timeout
+        mock_db.clear_download_state.assert_not_called()
+        mock_db.log_download.assert_not_called()
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_multiple_albums(self, mock_process):
+        """2 albums: 1 completes, 1 in progress → correct handling."""
+        from lib.download import poll_active_downloads
+        row1 = self._make_downloading_row(request_id=1)
+        state2 = {
+            "filetype": "mp3 v0",
+            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "files": [
+                {"username": "user2", "filename": "user2\\Music\\01.mp3",
+                 "file_dir": "user2\\Music", "size": 5000000},
+            ],
+        }
+        row2 = self._make_downloading_row(request_id=2, state_dict=state2)
+        row2["album_title"] = "Album 2"
+        row2["artist_name"] = "Artist 2"
+
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row1, row2])
+
+        # slskd returns transfers for both users
+        def get_downloads_side_effect(username=None):
+            if username == "user1":
+                return {"directories": [{"directory": "user1\\Music", "files": [
+                    {"filename": "user1\\Music\\01.flac", "id": "tid-1"},
+                ]}]}
+            elif username == "user2":
+                return {"directories": [{"directory": "user2\\Music", "files": [
+                    {"filename": "user2\\Music\\01.mp3", "id": "tid-2"},
+                ]}]}
+            return {"directories": []}
+        ctx.slskd.transfers.get_downloads.side_effect = get_downloads_side_effect
+
+        call_count = [0]
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                if f.username == "user1":
+                    f.status = {"state": "Completed, Succeeded"}
+                else:
+                    f.status = {"state": "InProgress"}
+            return True
+
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            mock_process.return_value = True
+            mock_db.get_request.return_value = {"id": 1, "status": "imported"}
+            poll_active_downloads(ctx)
+
+        # Album 1 completed, album 2 still in progress
+        mock_db.clear_download_state.assert_called_once_with(1)
+        mock_process.assert_called_once()
+
+    def test_poll_crash_recovery_no_state(self):
+        """Downloading album with no active_download_state → reset to wanted."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        row["active_download_state"] = None  # Simulates crash
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        poll_active_downloads(ctx)
+
+        # Should call _reset_to_wanted
+        reset_calls = [c for c in mock_db._execute.call_args_list
+                       if "wanted" in str(c)]
+        self.assertTrue(len(reset_calls) > 0)
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_active_all_errors(self, mock_process):
+        """All files errored → timeout the album."""
+        from lib.download import poll_active_downloads
+        row = self._make_downloading_row()
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Completed, Errored"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            with patch("lib.download.cancel_and_delete"):
+                poll_active_downloads(ctx)
+
+        mock_process.assert_not_called()
+        mock_db.log_download.assert_called_once()
+
+    def test_poll_active_remote_queue_timeout(self):
+        """All files queued remotely past timeout → timeout."""
+        from lib.download import poll_active_downloads
+        # enqueued long enough ago to exceed remote_queue_timeout but not stalled_timeout
+        from datetime import datetime, timezone, timedelta
+        past = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat()
+        state_dict = {
+            "filetype": "flac",
+            "enqueued_at": past,
+            "files": [
+                {"username": "user1", "filename": "user1\\Music\\01.flac",
+                 "file_dir": "user1\\Music", "size": 30000000},
+            ],
+        }
+        row = self._make_downloading_row(state_dict=state_dict)
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+        ctx.cfg.remote_queue_timeout = 120  # 2 minutes
+        ctx.cfg.stalled_timeout = 600  # 10 minutes (not exceeded)
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Queued, Remotely"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            with patch("lib.download.cancel_and_delete"):
+                poll_active_downloads(ctx)
+
+        mock_db.log_download.assert_called_once()
+        kwargs = mock_db.log_download.call_args.kwargs
+        self.assertEqual(kwargs["outcome"], "timeout")
+
+    @patch("lib.download.process_completed_album")
+    def test_poll_transfer_vanished_partial(self, mock_process):
+        """7/12 files vanish → treated as errors, not complete."""
+        from lib.download import poll_active_downloads
+        # 12 files, only 5 have transfers in slskd
+        files = []
+        for i in range(12):
+            files.append({"username": "user1",
+                          "filename": f"user1\\Music\\{i:02d}.flac",
+                          "file_dir": "user1\\Music", "size": 30000000})
+        state_dict = {
+            "filetype": "flac",
+            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "files": files,
+        }
+        row = self._make_downloading_row(state_dict=state_dict)
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+
+        # Only files 0-4 have transfers in slskd
+        slskd_files = [{"filename": f"user1\\Music\\{i:02d}.flac", "id": f"tid-{i}"}
+                       for i in range(5)]
+        ctx.slskd.transfers.get_downloads.return_value = {
+            "directories": [{"directory": "user1\\Music", "files": slskd_files}],
+        }
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                if f.id:  # Only files with IDs get polled
+                    f.status = {"state": "InProgress"}
+            return True
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            poll_active_downloads(ctx)
+
+        # Should NOT process — 7 files vanished (errored), album not complete
+        mock_process.assert_not_called()
+        mock_db.clear_download_state.assert_not_called()
+
+
 class TestReconstructGrabListEntry(unittest.TestCase):
     """Test reconstruct_grab_list_entry() — rebuild GrabListEntry from DB row + state."""
 
