@@ -109,7 +109,7 @@ def make_directory(dir_path, files):
 
 
 def make_download_list(directories):
-    """Build a get_downloads response dict."""
+    """Build a transfer-group directories payload."""
     return {"directories": directories}
 
 
@@ -198,11 +198,15 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         files = [{"filename": file_dir + "\\01 - Track.flac", "size": 52428800}]
 
         ctx.slskd.transfers.enqueue.return_value = True
-        ctx.slskd.transfers.get_downloads.return_value = make_download_list([
-            make_directory(file_dir, [
-                {"filename": file_dir + "\\01 - Track.flac", "id": "xfer-1", "size": 52428800},
-            ])
-        ])
+        ctx.slskd.transfers.get_all_downloads.return_value = [{
+            "username": "testuser",
+            "directories": make_download_list([
+                make_directory(file_dir, [
+                    {"filename": file_dir + "\\01 - Track.flac",
+                     "id": "xfer-1", "size": 52428800},
+                ])
+            ])["directories"],
+        }]
 
         result = slskd_do_enqueue("testuser", files, file_dir, ctx)
 
@@ -229,12 +233,15 @@ class TestSlskdDoEnqueue(unittest.TestCase):
             {"filename": file_dir + "\\02 - B.flac", "size": 200},
         ]
         ctx.slskd.transfers.enqueue.return_value = True
-        ctx.slskd.transfers.get_downloads.return_value = make_download_list([
-            make_directory(file_dir, [
-                {"filename": file_dir + "\\01 - A.flac", "id": "id1", "size": 100},
-                {"filename": file_dir + "\\02 - B.flac", "id": "id2", "size": 200},
-            ])
-        ])
+        ctx.slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user",
+            "directories": make_download_list([
+                make_directory(file_dir, [
+                    {"filename": file_dir + "\\01 - A.flac", "id": "id1", "size": 100},
+                    {"filename": file_dir + "\\02 - B.flac", "id": "id2", "size": 200},
+                ])
+            ])["directories"],
+        }]
 
         result = slskd_do_enqueue("user", files, file_dir, ctx)
         assert result is not None

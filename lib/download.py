@@ -86,24 +86,26 @@ def slskd_do_enqueue(username: str, files: list[dict[str, Any]],
 
     downloads: list[DownloadFile] = []
     time.sleep(5)
-    try:
-        download_list = ctx.slskd.transfers.get_downloads(username=username)
-    except Exception:
-        logger.warning(f"Failed to get download status for {username} after enqueue",
-                       exc_info=True)
+    download_list = _get_all_downloads_snapshot(
+        ctx.slskd,
+        purpose=f"download status for {username} after enqueue",
+    )
+    if download_list is None:
         return None
     for file in files:
-        for directory in download_list.get("directories", []):
-            if directory["directory"] == file_dir:
-                for slskd_file in directory["files"]:
-                    if file["filename"] == slskd_file["filename"]:
-                        downloads.append(DownloadFile(
-                            filename=file["filename"],
-                            id=slskd_file["id"],
-                            file_dir=file_dir,
-                            username=username,
-                            size=file["size"],
-                        ))
+        transfer_id = match_transfer_id(
+            download_list,
+            file["filename"],
+            username=username,
+        )
+        if transfer_id is not None:
+            downloads.append(DownloadFile(
+                filename=file["filename"],
+                id=transfer_id,
+                file_dir=file_dir,
+                username=username,
+                size=file["size"],
+            ))
     return downloads
 
 
@@ -447,19 +449,51 @@ def build_active_download_state(
 # === Transfer ID re-derivation ===
 
 def match_transfer_id(
-    downloads: dict[str, Any],
+    downloads: dict[str, Any] | list[dict[str, Any]],
     target_filename: str,
+    username: str | None = None,
 ) -> str | None:
-    """Find the slskd transfer ID for a filename in a get_downloads() response.
+    """Find the slskd transfer ID for a filename in slskd download responses.
 
-    downloads is the return value of slskd.transfers.get_downloads(username).
+    downloads may be a single-user transfer dict or the list returned by
+    slskd.transfers.get_all_downloads(). When a list is provided, username
+    narrows the search to one peer.
     Returns the transfer ID string, or None if not found.
     """
-    for directory in downloads.get("directories", []):
-        for slskd_file in directory.get("files", []):
-            if slskd_file.get("filename") == target_filename:
-                return slskd_file.get("id", "")
+    groups = downloads if isinstance(downloads, list) else [downloads]
+    for group in groups:
+        if username is not None and group.get("username") not in (None, "", username):
+            continue
+        for directory in group.get("directories", []):
+            for slskd_file in directory.get("files", []):
+                if slskd_file.get("filename") == target_filename:
+                    return slskd_file.get("id", "")
     return None
+
+
+def _get_all_downloads_snapshot(
+    slskd_client: Any,
+    *,
+    purpose: str,
+) -> list[dict[str, Any]] | None:
+    """Fetch the full slskd download snapshot via the bulk endpoint.
+
+    The username-scoped endpoint is unreliable for some valid peer names
+    containing spaces/punctuation, so monitoring code uses the bulk list and
+    matches locally instead.
+    """
+    try:
+        downloads = slskd_client.transfers.get_all_downloads()
+    except Exception:
+        logger.warning(f"Failed to get all downloads for {purpose}", exc_info=True)
+        return None
+
+    if not isinstance(downloads, list):
+        logger.warning("Unexpected get_all_downloads() response type %s",
+                       type(downloads).__name__)
+        return None
+
+    return downloads
 
 
 def rederive_transfer_ids(
@@ -468,28 +502,23 @@ def rederive_transfer_ids(
 ) -> bool:
     """Re-derive slskd transfer IDs for all files in a GrabListEntry.
 
-    Queries the slskd API for each unique username and matches by filename.
+    Queries the slskd bulk download API once and matches by username+filename.
     Updates file.id in-place. Files whose transfers have vanished keep id="".
     """
-    by_user: dict[str, list[DownloadFile]] = {}
-    all_queries_ok = True
-    for f in entry.files:
-        by_user.setdefault(f.username, []).append(f)
+    downloads = _get_all_downloads_snapshot(
+        slskd_client,
+        purpose=f"transfer re-derivation for {entry.artist} - {entry.title}",
+    )
+    if downloads is None:
+        return False
 
-    for username, files in by_user.items():
-        try:
-            downloads = slskd_client.transfers.get_downloads(username=username)
-        except Exception:
-            logger.warning(f"Failed to get downloads for {username}", exc_info=True)
-            all_queries_ok = False
-            continue
-        for f in files:
-            tid = match_transfer_id(downloads, f.filename)
-            if tid is not None:
-                f.id = tid
-            else:
-                logger.debug(f"Transfer not found for {f.filename} from {username}")
-    return all_queries_ok
+    for f in entry.files:
+        tid = match_transfer_id(downloads, f.filename, username=f.username)
+        if tid is not None:
+            f.id = tid
+        else:
+            logger.debug(f"Transfer not found for {f.filename} from {f.username}")
+    return True
 
 
 # === GrabListEntry reconstruction from DB ===

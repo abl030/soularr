@@ -296,12 +296,13 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         from lib.download import slskd_do_enqueue
         ctx = _make_ctx()
         ctx.slskd.transfers.enqueue.return_value = True
-        ctx.slskd.transfers.get_downloads.return_value = {
+        ctx.slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
             "directories": [{
                 "directory": "user1\\Music",
-                "files": [{"filename": "track.mp3", "id": "new-id"}]
-            }]
-        }
+                "files": [{"filename": "track.mp3", "id": "new-id"}],
+            }],
+        }]
         files = [{"filename": "track.mp3", "size": 5000000}]
         with patch("time.sleep"):
             result = slskd_do_enqueue("user1", files, "user1\\Music", ctx)
@@ -528,6 +529,29 @@ class TestMatchTransferId(unittest.TestCase):
         result = match_transfer_id(downloads, "d2\\01.flac")
         self.assertEqual(result, "id-2")
 
+    def test_bulk_downloads_respects_username(self):
+        from lib.download import match_transfer_id
+        downloads = [
+            {
+                "username": "Mr. Odd",
+                "directories": [{"directory": "a", "files": [
+                    {"filename": "shared\\01.flac", "id": "wrong-id"},
+                ]}],
+            },
+            {
+                "username": "Miick Starr",
+                "directories": [{"directory": "b", "files": [
+                    {"filename": "shared\\01.flac", "id": "right-id"},
+                ]}],
+            },
+        ]
+        result = match_transfer_id(
+            downloads,
+            "shared\\01.flac",
+            username="Miick Starr",
+        )
+        self.assertEqual(result, "right-id")
+
 
 class TestRederiveTransferIds(unittest.TestCase):
     """Test rederive_transfer_ids() — re-derive IDs from slskd API."""
@@ -546,12 +570,13 @@ class TestRederiveTransferIds(unittest.TestCase):
             mb_release_id="mbid",
         )
         mock_slskd = MagicMock()
-        mock_slskd.transfers.get_downloads.return_value = {
+        mock_slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
             "directories": [{"directory": "u\\M", "files": [
                 {"filename": "u\\M\\01.flac", "id": "new-id-1"},
                 {"filename": "u\\M\\02.flac", "id": "new-id-2"},
             ]}],
-        }
+        }]
         rederive_transfer_ids(entry, mock_slskd)
         self.assertEqual(entry.files[0].id, "new-id-1")
         self.assertEqual(entry.files[1].id, "new-id-2")
@@ -568,11 +593,61 @@ class TestRederiveTransferIds(unittest.TestCase):
             mb_release_id="mbid",
         )
         mock_slskd = MagicMock()
-        mock_slskd.transfers.get_downloads.return_value = {
+        mock_slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
             "directories": [{"directory": "u\\M", "files": []}],
-        }
+        }]
         rederive_transfer_ids(entry, mock_slskd)
         self.assertEqual(entry.files[0].id, "")
+
+    def test_uses_bulk_downloads_for_spacey_usernames(self):
+        from lib.download import rederive_transfer_ids
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1,
+            files=[
+                DownloadFile(
+                    filename="Miick Starr\\Album\\01.flac",
+                    id="",
+                    file_dir="Miick Starr\\Album",
+                    username="Miick Starr",
+                    size=1000,
+                ),
+                DownloadFile(
+                    filename="Mr. Odd\\Album\\01.flac",
+                    id="",
+                    file_dir="Mr. Odd\\Album",
+                    username="Mr. Odd",
+                    size=1000,
+                ),
+            ],
+            filetype="flac",
+            title="T",
+            artist="A",
+            year="2020",
+            mb_release_id="mbid",
+        )
+        mock_slskd = MagicMock()
+        mock_slskd.transfers.get_all_downloads.return_value = [
+            {
+                "username": "Mr. Odd",
+                "directories": [{"directory": "Mr. Odd\\Album", "files": [
+                    {"filename": "Mr. Odd\\Album\\01.flac", "id": "odd-id"},
+                ]}],
+            },
+            {
+                "username": "Miick Starr",
+                "directories": [{"directory": "Miick Starr\\Album", "files": [
+                    {"filename": "Miick Starr\\Album\\01.flac", "id": "starr-id"},
+                ]}],
+            },
+        ]
+
+        rederive_transfer_ids(entry, mock_slskd)
+
+        self.assertEqual(entry.files[0].id, "starr-id")
+        self.assertEqual(entry.files[1].id, "odd-id")
+        mock_slskd.transfers.get_downloads.assert_not_called()
 
 
 class TestProcessCompletedAlbumReturnsBool(unittest.TestCase):
@@ -654,14 +729,15 @@ class TestPollActiveDownloads(unittest.TestCase):
         cast(Any, ctx.pipeline_db_source._get_db).return_value = mock_db
 
         if slskd_downloads is not None:
-            ctx.slskd.transfers.get_downloads.return_value = slskd_downloads
+            ctx.slskd.transfers.get_all_downloads.return_value = slskd_downloads
         else:
             # Default: return transfers that match the files
-            ctx.slskd.transfers.get_downloads.return_value = {
+            ctx.slskd.transfers.get_all_downloads.return_value = [{
+                "username": "user1",
                 "directories": [{"directory": "user1\\Music", "files": [
                     {"filename": "user1\\Music\\01.flac", "id": "tid-1"},
                 ]}],
-            }
+            }]
         return ctx, mock_db
 
     def test_poll_active_no_downloading(self):
@@ -782,7 +858,10 @@ class TestPollActiveDownloads(unittest.TestCase):
         row = self._make_downloading_row()
         ctx, mock_db = self._make_poll_ctx(
             downloading_rows=[row],
-            slskd_downloads={"directories": [{"directory": "user1\\Music", "files": []}]},
+            slskd_downloads=[{
+                "username": "user1",
+                "directories": [{"directory": "user1\\Music", "files": []}],
+            }],
         )
         with patch("lib.download.cancel_and_delete"):
             poll_active_downloads(ctx)
@@ -830,16 +909,18 @@ class TestPollActiveDownloads(unittest.TestCase):
 
         # slskd returns transfers for both users
         def get_downloads_side_effect(username=None):
-            if username == "user1":
-                return {"directories": [{"directory": "user1\\Music", "files": [
+            return [{
+                "username": "user1",
+                "directories": [{"directory": "user1\\Music", "files": [
                     {"filename": "user1\\Music\\01.flac", "id": "tid-1"},
-                ]}]}
-            elif username == "user2":
-                return {"directories": [{"directory": "user2\\Music", "files": [
+                ]}]},
+                {
+                    "username": "user2",
+                    "directories": [{"directory": "user2\\Music", "files": [
                     {"filename": "user2\\Music\\01.mp3", "id": "tid-2"},
-                ]}]}
-            return {"directories": []}
-        ctx.slskd.transfers.get_downloads.side_effect = get_downloads_side_effect
+                ]}]},
+            ]
+        ctx.slskd.transfers.get_all_downloads.side_effect = get_downloads_side_effect
 
         call_count = [0]
         def mock_status(downloads, ctx_arg):
@@ -944,9 +1025,10 @@ class TestPollActiveDownloads(unittest.TestCase):
         # Only files 0-4 have transfers in slskd
         slskd_files = [{"filename": f"user1\\Music\\{i:02d}.flac", "id": f"tid-{i}"}
                        for i in range(5)]
-        ctx.slskd.transfers.get_downloads.return_value = {
+        ctx.slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
             "directories": [{"directory": "user1\\Music", "files": slskd_files}],
-        }
+        }]
 
         def mock_status(downloads, ctx_arg):
             for f in downloads:
@@ -983,13 +1065,14 @@ class TestPollActiveDownloads(unittest.TestCase):
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
 
         # All 3 files have transfers in slskd
-        ctx.slskd.transfers.get_downloads.return_value = {
+        ctx.slskd.transfers.get_all_downloads.return_value = [{
+            "username": "user1",
             "directories": [{"directory": "user1\\Music", "files": [
                 {"filename": "user1\\Music\\01.flac", "id": "tid-1"},
                 {"filename": "user1\\Music\\02.flac", "id": "tid-2"},
                 {"filename": "user1\\Music\\03.flac", "id": "tid-3"},
             ]}],
-        }
+        }]
 
         def mock_status(downloads, ctx_arg):
             for f in downloads:
@@ -1016,12 +1099,14 @@ class TestPollActiveDownloads(unittest.TestCase):
         persisted_json = mock_db.update_download_state.call_args[0][1]
         self.assertIn('"retry_count": 1', persisted_json)
 
-    def test_poll_active_get_downloads_api_error_waits_for_next_cycle(self):
-        """Transient get_downloads() failures must not be treated as vanished transfers."""
+    def test_poll_active_get_all_downloads_api_error_waits_for_next_cycle(self):
+        """Transient bulk-download API failures must not be treated as vanished transfers."""
         from lib.download import poll_active_downloads
         row = self._make_downloading_row()
         ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
-        ctx.slskd.transfers.get_downloads.side_effect = RuntimeError("temporary slskd failure")
+        ctx.slskd.transfers.get_all_downloads.side_effect = RuntimeError(
+            "temporary slskd failure"
+        )
 
         with patch("lib.download.cancel_and_delete") as mock_cancel:
             poll_active_downloads(ctx)
