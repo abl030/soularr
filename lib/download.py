@@ -402,6 +402,29 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
                    f"| denylisted users: {', '.join(usernames)}")
 
 
+# === ActiveDownloadState building ===
+
+def build_active_download_state(entry: GrabListEntry) -> ActiveDownloadState:
+    """Build an ActiveDownloadState from a GrabListEntry just after enqueue."""
+    now = datetime.now(timezone.utc).isoformat()
+    files = [
+        ActiveDownloadFileState(
+            username=f.username,
+            filename=f.filename,
+            file_dir=f.file_dir,
+            size=f.size,
+            disk_no=f.disk_no,
+            disk_count=f.disk_count,
+        )
+        for f in entry.files
+    ]
+    return ActiveDownloadState(
+        filetype=entry.filetype,
+        enqueued_at=now,
+        files=files,
+    )
+
+
 # === Transfer ID re-derivation ===
 
 def match_transfer_id(

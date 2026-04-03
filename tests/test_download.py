@@ -849,6 +849,60 @@ class TestPollActiveDownloads(unittest.TestCase):
         mock_db.clear_download_state.assert_not_called()
 
 
+class TestBuildActiveDownloadState(unittest.TestCase):
+    """Test build_active_download_state() — GrabListEntry → ActiveDownloadState."""
+
+    def test_basic(self):
+        from lib.download import build_active_download_state
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+            files=[
+                DownloadFile(filename="u\\M\\01.flac", id="tid-1",
+                             file_dir="u\\M", username="user1", size=30000000),
+            ],
+        )
+        state = build_active_download_state(entry)
+        self.assertEqual(state.filetype, "flac")
+        self.assertIsNotNone(state.enqueued_at)
+        self.assertEqual(len(state.files), 1)
+        self.assertEqual(state.files[0].username, "user1")
+        self.assertEqual(state.files[0].filename, "u\\M\\01.flac")
+        self.assertEqual(state.files[0].size, 30000000)
+
+    def test_multi_disc(self):
+        from lib.download import build_active_download_state
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+            files=[
+                DownloadFile(filename="u\\M\\D1-01.flac", id="tid-1",
+                             file_dir="u\\M", username="user1", size=30000000,
+                             disk_no=1, disk_count=2),
+            ],
+        )
+        state = build_active_download_state(entry)
+        self.assertEqual(state.files[0].disk_no, 1)
+        self.assertEqual(state.files[0].disk_count, 2)
+
+    def test_enqueued_at_is_utc_iso(self):
+        from lib.download import build_active_download_state
+        from lib.grab_list import GrabListEntry, DownloadFile
+        from datetime import datetime as dt, timezone as tz
+        entry = GrabListEntry(
+            album_id=1, filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid", files=[
+                DownloadFile(filename="u\\M\\01.flac", id="tid-1",
+                             file_dir="u\\M", username="user1", size=1000),
+            ],
+        )
+        state = build_active_download_state(entry)
+        parsed = dt.fromisoformat(state.enqueued_at)
+        self.assertEqual(parsed.tzinfo, tz.utc)
+
+
 class TestReconstructGrabListEntry(unittest.TestCase):
     """Test reconstruct_grab_list_entry() — rebuild GrabListEntry from DB row + state."""
 
