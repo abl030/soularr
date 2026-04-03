@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS album_requests (
 
     -- Status lifecycle
     status TEXT NOT NULL DEFAULT 'wanted'
-        CHECK(status IN ('wanted', 'imported', 'manual')),
+        CHECK(status IN ('wanted', 'downloading', 'imported', 'manual')),
 
     -- Retry
     search_attempts INTEGER NOT NULL DEFAULT 0,
@@ -203,6 +203,8 @@ class PipelineDB:
                 # regardless of how they got there — updated on every spectral run)
                 ("on_disk_spectral_grade", "TEXT"),
                 ("on_disk_spectral_bitrate", "INTEGER"),
+                # Async downloads: per-album download state
+                ("active_download_state", "JSONB"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
@@ -216,6 +218,14 @@ class PipelineDB:
                     ALTER TABLE download_log DROP CONSTRAINT IF EXISTS download_log_outcome_check;
                     ALTER TABLE download_log ADD CONSTRAINT download_log_outcome_check
                         CHECK (outcome IN ('success', 'rejected', 'failed', 'timeout', 'force_import', 'manual_import'));
+                END $$;
+            """)
+            # Migrate status CHECK to include 'downloading'
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE album_requests DROP CONSTRAINT IF EXISTS album_requests_status_check;
+                    ALTER TABLE album_requests ADD CONSTRAINT album_requests_status_check
+                        CHECK(status IN ('wanted', 'downloading', 'imported', 'manual'));
                 END $$;
             """)
         mig_conn.close()
@@ -321,6 +331,41 @@ class PipelineDB:
                     updated_at = %s
                 WHERE id = %s
             """, (quality_override, now, request_id))
+        self.conn.commit()
+
+    # --- Downloading state ---
+
+    def set_downloading(self, request_id: int, state_json: str) -> None:
+        """Set album to downloading and store the active download state."""
+        now = datetime.now(timezone.utc)
+        self._execute("""
+            UPDATE album_requests
+            SET status = 'downloading',
+                active_download_state = %s::jsonb,
+                download_attempts = COALESCE(download_attempts, 0) + 1,
+                last_attempt_at = %s,
+                updated_at = %s
+            WHERE id = %s
+        """, (state_json, now, now, request_id))
+        self.conn.commit()
+
+    def get_downloading(self) -> list[dict[str, Any]]:
+        """Get all albums currently being downloaded."""
+        cur = self._execute(
+            "SELECT * FROM album_requests WHERE status = 'downloading' "
+            "ORDER BY updated_at ASC"
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def clear_download_state(self, request_id: int) -> None:
+        """Clear active_download_state when download completes/fails."""
+        now = datetime.now(timezone.utc)
+        self._execute("""
+            UPDATE album_requests
+            SET active_download_state = NULL,
+                updated_at = %s
+            WHERE id = %s
+        """, (now, request_id))
         self.conn.commit()
 
     # --- Query methods ---

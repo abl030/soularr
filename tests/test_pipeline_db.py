@@ -6,6 +6,7 @@ Requires a PostgreSQL server. Set TEST_DB_DSN env var to run, e.g.:
 Tests create/drop tables in the target database — use a dedicated test DB.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -633,6 +634,114 @@ class TestTrackCounts(unittest.TestCase):
     def test_empty_list(self):
         result = self.db.get_track_counts([])
         self.assertEqual(result, {})
+
+
+@requires_postgres
+class TestDownloadingStatus(unittest.TestCase):
+    """Test the 'downloading' status and active_download_state JSONB column."""
+
+    def setUp(self):
+        self.db = make_db()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_downloading_status_allowed(self):
+        """Insert row, update to 'downloading', verify roundtrip."""
+        req_id = self.db.add_request(
+            mb_release_id="dl-status-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        self.db.update_status(req_id, "downloading")
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["status"], "downloading")
+
+    def test_active_download_state_jsonb_roundtrip(self):
+        """Write JSONB to active_download_state column, read back, verify structure."""
+        req_id = self.db.add_request(
+            mb_release_id="ads-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        state = {
+            "filetype": "flac",
+            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "files": [
+                {"username": "user1", "filename": "user1\\Music\\01.flac",
+                 "file_dir": "user1\\Music", "size": 30000000}
+            ],
+        }
+        self.db._execute(
+            "UPDATE album_requests SET active_download_state = %s::jsonb WHERE id = %s",
+            (json.dumps(state), req_id),
+        )
+        req = self.db.get_request(req_id)
+        assert req is not None
+        ads = req["active_download_state"]
+        self.assertIsInstance(ads, dict)
+        self.assertEqual(ads["filetype"], "flac")
+        self.assertEqual(len(ads["files"]), 1)
+        self.assertEqual(ads["files"][0]["username"], "user1")
+
+    def test_get_downloading(self):
+        """get_downloading() returns only status='downloading' rows."""
+        id1 = self.db.add_request(mb_release_id="gd-1", artist_name="A",
+                                  album_title="B", source="request")
+        id2 = self.db.add_request(mb_release_id="gd-2", artist_name="C",
+                                  album_title="D", source="request")
+        id3 = self.db.add_request(mb_release_id="gd-3", artist_name="E",
+                                  album_title="F", source="request")
+        self.db.update_status(id1, "downloading")
+        self.db.update_status(id2, "downloading")
+        # id3 stays wanted
+
+        downloading = self.db.get_downloading()
+        dl_ids = [r["id"] for r in downloading]
+        self.assertIn(id1, dl_ids)
+        self.assertIn(id2, dl_ids)
+        self.assertNotIn(id3, dl_ids)
+
+    def test_set_downloading(self):
+        """set_downloading() sets status + writes JSONB atomically."""
+        req_id = self.db.add_request(
+            mb_release_id="sd-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        state_json = json.dumps({
+            "filetype": "mp3 v0",
+            "enqueued_at": "2026-04-03T12:00:00+00:00",
+            "files": [],
+        })
+        self.db.set_downloading(req_id, state_json)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["status"], "downloading")
+        self.assertIsNotNone(req["active_download_state"])
+        ads = req["active_download_state"]
+        self.assertEqual(ads["filetype"], "mp3 v0")
+        # Verify download_attempts was incremented
+        self.assertEqual(req["download_attempts"], 1)
+
+    def test_clear_download_state(self):
+        """clear_download_state() nulls the JSONB column."""
+        req_id = self.db.add_request(
+            mb_release_id="cds-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        state_json = json.dumps({"filetype": "flac", "enqueued_at": "now", "files": []})
+        self.db.set_downloading(req_id, state_json)
+        self.db.clear_download_state(req_id)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertIsNone(req["active_download_state"])
 
 
 if __name__ == "__main__":
