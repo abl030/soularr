@@ -1131,8 +1131,16 @@ def main():
         broken_user = []
 
         slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
-        wanted_records = []
 
+        # --- Phase 1: Poll active downloads from previous runs ---
+        from lib.download import poll_active_downloads as _poll_impl
+        logger.info("Polling active downloads...")
+        try:
+            _poll_impl(_make_ctx())
+        except Exception:
+            logger.exception("Error polling active downloads — continuing to search phase")
+
+        # --- Phase 2: Search and enqueue new downloads ---
         logger.info("Getting wanted records from pipeline DB...")
         wanted_records = pipeline_db_source.get_wanted(limit=cfg.page_size)
         logger.info(f"Pipeline DB: {len(wanted_records)} wanted record(s)")
@@ -1153,12 +1161,13 @@ def main():
                 sys.exit(0)
             if failed == 0:
                 logger.info("Soularr finished. Exiting...")
-                slskd.transfers.remove_completed_downloads()
             else:
                 logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
-                slskd.transfers.remove_completed_downloads()
         else:
             logger.info("No releases wanted. Exiting...")
+
+        # Clean up completed transfer UI entries
+        slskd.transfers.remove_completed_downloads()
 
     finally:
         # Bust web UI cache so freshly imported albums appear immediately
