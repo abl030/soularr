@@ -59,7 +59,8 @@ lib/
                            - compute_effective_override_bitrate(), extract_usernames()
                            - verify_filetype() (slskd file matching, moved from soularr.py)
                            Import result types:
-                           - ImportResult, ConversionInfo, QualityInfo, SpectralInfo, PostflightInfo
+                           - ImportResult, ConversionInfo, SpectralDetail, PostflightInfo
+                           - AudioQualityMeasurement (on ImportResult as new_measurement/existing_measurement)
                            Validation result types:
                            - ValidationResult, CandidateSummary
                            Harness data types:
@@ -81,7 +82,7 @@ harness/
                            conversion_decision(), quality_decision_stage(), final_exit_decision().
                            Flags: --force, --override-min-bitrate, --request-id, --dry-run
 scripts/
-  pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, force-import, migrate
+  pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, quality, force-import, migrate
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
 tests/                     695 tests total
@@ -276,7 +277,7 @@ WHERE id = <id>;
 
 All types in `lib/quality.py`, fully typed with pyright, JSON round-trip serialization:
 
-- **Import path**: `ImportResult` → `ConversionInfo`, `QualityInfo`, `SpectralInfo`, `PostflightInfo`
+- **Import path**: `ImportResult` → `AudioQualityMeasurement` (new/existing), `ConversionInfo`, `SpectralDetail`, `PostflightInfo`
 - **Validation path**: `ValidationResult` → `CandidateSummary` → `HarnessTrackInfo`, `HarnessItem`, `TrackMapping`
 - **Dispatch path**: `DispatchAction` (action flags from `dispatch_action()`), `StageResult` (in `import_one.py` — pure stage decisions)
 - **Shared**: `DownloadInfo` (replaces untyped dl_info dict), `SpectralContext` (pre-import spectral gathering), `AlbumInfo` (beets DB queries in `lib/beets_db.py`)
@@ -519,6 +520,25 @@ First run will auto-install the package. You may still need `npx playwright inst
 5. **Auto-import only for `source='request'`** — redownloads always stage for manual review
 6. **All scripts deploy via Nix** — no manual `cp` to virtiofs. Change code → push → flake update → rebuild
 7. **PostgreSQL must use `autocommit=True`** — prevents idle-in-transaction deadlocks. DDL migrations run on separate short-lived connections with `lock_timeout`. See the PostgreSQL audit in git history (commit ca579e3).
+
+## Debugging Quality Decisions
+
+When an album has unexpected quality behavior, use these CLI commands on doc2:
+
+```bash
+# Full album state: quality columns, download history with import decisions
+pipeline-cli show <request_id>
+
+# Quality simulator: current gate status + what would happen for common downloads
+pipeline-cli quality <request_id>
+
+# Raw JSONB audit data for a specific download attempt
+pipeline-cli debug-download <download_log_id>
+```
+
+`pipeline-cli quality` runs `full_pipeline_decision()` with the album's actual state and shows whether genuine FLAC, V0, CBR 320, or suspect FLAC would be imported or rejected.
+
+`pipeline-cli show` displays the 8 quality columns from `album_requests` (min_bitrate, prev_min_bitrate, verified_lossless, spectral_grade, spectral_bitrate, on_disk_spectral_grade, on_disk_spectral_bitrate, quality_override) and renders the `ImportResult` JSONB from each download history entry showing the decision chain and measurements.
 
 ## Known Issues
 
