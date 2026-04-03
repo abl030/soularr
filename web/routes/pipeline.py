@@ -134,12 +134,12 @@ def get_pipeline_all(h, params: dict[str, list[str]]) -> None:
     # Collect all items across statuses, then batch-fetch history
     status_items: dict[str, list[dict]] = {}
     all_ids: list[int] = []
-    for status in ("wanted", "imported", "manual"):
+    for status in ("wanted", "downloading", "imported", "manual"):
         rows = [s._serialize_row(r) for r in s._db().get_by_status(status)]
         status_items[status] = rows
         all_ids.extend([int(str(r["id"])) for r in rows])
     history_batch = s._db().get_download_history_batch(all_ids)
-    for status in ("wanted", "imported", "manual"):
+    for status in ("wanted", "downloading", "imported", "manual"):
         items = []
         for item in status_items[status]:
             history = history_batch.get(item["id"], [])

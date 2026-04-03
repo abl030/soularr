@@ -46,6 +46,7 @@ export function renderDisambRG(rg) {
   let badges = '';
   if (rg.library_status) badges += '<span class="badge badge-library">in library</span>';
   if (rg.pipeline_status === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+  if (rg.pipeline_status === 'downloading') badges += '<span class="badge badge-downloading">downloading</span>';
   if (rg.pipeline_status === 'imported') badges += '<span class="badge badge-imported">imported</span>';
   if (rg.pipeline_status === 'manual') badges += '<span class="badge badge-manual">manual</span>';
 
@@ -119,6 +120,7 @@ export function toggleDisambRGTracks(rgId) {
       let badges = '';
       if (p.in_library) badges += '<span class="badge badge-library">in library</span>';
       if (pStatus === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+      if (pStatus === 'downloading') badges += '<span class="badge badge-downloading">downloading</span>';
       if (pStatus === 'imported') badges += '<span class="badge badge-imported">imported</span>';
 
       const canAdd = !p.in_library && !pStatus;

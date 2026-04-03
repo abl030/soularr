@@ -164,6 +164,7 @@ export async function loadReleaseGroup(id, el) {
       let badges = '';
       if (rel.in_library) badges += '<span class="badge badge-library">in library</span>';
       if (pStatus === 'wanted') badges += '<span class="badge badge-wanted">wanted</span>';
+      if (pStatus === 'downloading') badges += '<span class="badge badge-downloading">downloading</span>';
       if (pStatus === 'imported') badges += '<span class="badge badge-imported">imported</span>';
       if (pStatus === 'manual') badges += '<span class="badge badge-manual">manual</span>';
       const canAdd = !rel.in_library && !pStatus;

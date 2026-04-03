@@ -147,7 +147,7 @@ def cmd_status(db, args):
         return
     total = sum(counts.values())
     print(f"  Pipeline DB status ({total} total):\n")
-    for status in ["wanted", "imported", "manual"]:
+    for status in ["wanted", "downloading", "imported", "manual"]:
         c = counts.get(status, 0)
         if c > 0:
             print(f"    {status:15s} {c:4d}")
@@ -286,6 +286,17 @@ def cmd_show(db, args):
     print(f"  Attempts:     search={req['search_attempts']} dl={req['download_attempts']} val={req['validation_attempts']}")
     print(f"  Created:      {req['created_at']}")
     print(f"  Updated:      {req['updated_at']}")
+
+    # --- Active download state ---
+    ads = req.get("active_download_state")
+    if ads and isinstance(ads, dict):
+        enq = ads.get("enqueued_at", "?")
+        ftype = ads.get("filetype", "?")
+        fcount = len(ads.get("files", []))
+        print(f"\n  Active Download:")
+        print(f"    filetype:     {ftype}")
+        print(f"    enqueued_at:  {enq}")
+        print(f"    files:        {fcount}")
 
     # --- Quality state ---
     min_br = req.get("min_bitrate")

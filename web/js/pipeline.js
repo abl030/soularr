@@ -39,7 +39,7 @@ export function renderPipeline() {
 
   let items = [];
   if (state.pipelineFilter === 'all') {
-    items = [...(data.wanted || []), ...(data.imported || []), ...(data.manual || [])];
+    items = [...(data.wanted || []), ...(data.downloading || []), ...(data.imported || []), ...(data.manual || [])];
   } else {
     items = data[state.pipelineFilter] || [];
   }
@@ -93,6 +93,7 @@ export function renderPipeline() {
  */
 export function renderPipelineItem(item) {
   const statusBadge = item.status === 'wanted' ? '<span class="badge badge-wanted">wanted</span>'
+    : item.status === 'downloading' ? '<span class="badge badge-downloading">downloading</span>'
     : item.status === 'imported' ? '<span class="badge badge-imported">imported</span>'
     : '<span class="badge badge-manual">manual</span>';
   const srcClass = 'src-' + (item.source || 'request');
