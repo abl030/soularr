@@ -419,6 +419,91 @@ class TestGrabMostWanted(unittest.TestCase):
         self.assertEqual(count, 1)
 
 
+class TestMatchTransferId(unittest.TestCase):
+    """Test match_transfer_id() — find slskd transfer ID by filename."""
+
+    def test_exact_filename_match(self):
+        from lib.download import match_transfer_id
+        downloads = {
+            "directories": [{
+                "directory": "user\\Music",
+                "files": [
+                    {"filename": "user\\Music\\01.flac", "id": "abc-123"},
+                    {"filename": "user\\Music\\02.flac", "id": "def-456"},
+                ],
+            }],
+        }
+        result = match_transfer_id(downloads, "user\\Music\\01.flac")
+        self.assertEqual(result, "abc-123")
+
+    def test_not_found(self):
+        from lib.download import match_transfer_id
+        downloads = {"directories": [{"directory": "user\\Music", "files": []}]}
+        result = match_transfer_id(downloads, "user\\Music\\missing.flac")
+        self.assertIsNone(result)
+
+    def test_multi_directory(self):
+        from lib.download import match_transfer_id
+        downloads = {
+            "directories": [
+                {"directory": "d1", "files": [
+                    {"filename": "d1\\01.flac", "id": "id-1"},
+                ]},
+                {"directory": "d2", "files": [
+                    {"filename": "d2\\01.flac", "id": "id-2"},
+                ]},
+            ],
+        }
+        result = match_transfer_id(downloads, "d2\\01.flac")
+        self.assertEqual(result, "id-2")
+
+
+class TestRederiveTransferIds(unittest.TestCase):
+    """Test rederive_transfer_ids() — re-derive IDs from slskd API."""
+
+    def test_updates_files_in_place(self):
+        from lib.download import rederive_transfer_ids
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, files=[
+                DownloadFile(filename="u\\M\\01.flac", id="", file_dir="u\\M",
+                             username="user1", size=1000),
+                DownloadFile(filename="u\\M\\02.flac", id="", file_dir="u\\M",
+                             username="user1", size=2000),
+            ],
+            filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+        )
+        mock_slskd = MagicMock()
+        mock_slskd.transfers.get_downloads.return_value = {
+            "directories": [{"directory": "u\\M", "files": [
+                {"filename": "u\\M\\01.flac", "id": "new-id-1"},
+                {"filename": "u\\M\\02.flac", "id": "new-id-2"},
+            ]}],
+        }
+        rederive_transfer_ids(entry, mock_slskd)
+        self.assertEqual(entry.files[0].id, "new-id-1")
+        self.assertEqual(entry.files[1].id, "new-id-2")
+
+    def test_missing_transfer_keeps_empty_id(self):
+        from lib.download import rederive_transfer_ids
+        from lib.grab_list import GrabListEntry, DownloadFile
+        entry = GrabListEntry(
+            album_id=1, files=[
+                DownloadFile(filename="u\\M\\01.flac", id="", file_dir="u\\M",
+                             username="user1", size=1000),
+            ],
+            filetype="flac", title="T", artist="A", year="2020",
+            mb_release_id="mbid",
+        )
+        mock_slskd = MagicMock()
+        mock_slskd.transfers.get_downloads.return_value = {
+            "directories": [{"directory": "u\\M", "files": []}],
+        }
+        rederive_transfer_ids(entry, mock_slskd)
+        self.assertEqual(entry.files[0].id, "")
+
+
 class TestReconstructGrabListEntry(unittest.TestCase):
     """Test reconstruct_grab_list_entry() — rebuild GrabListEntry from DB row + state."""
 

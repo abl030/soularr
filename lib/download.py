@@ -398,6 +398,51 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
                    f"| denylisted users: {', '.join(usernames)}")
 
 
+# === Transfer ID re-derivation ===
+
+def match_transfer_id(
+    downloads: dict[str, Any],
+    target_filename: str,
+) -> str | None:
+    """Find the slskd transfer ID for a filename in a get_downloads() response.
+
+    downloads is the return value of slskd.transfers.get_downloads(username).
+    Returns the transfer ID string, or None if not found.
+    """
+    for directory in downloads.get("directories", []):
+        for slskd_file in directory.get("files", []):
+            if slskd_file.get("filename") == target_filename:
+                return slskd_file.get("id", "")
+    return None
+
+
+def rederive_transfer_ids(
+    entry: GrabListEntry,
+    slskd_client: Any,
+) -> None:
+    """Re-derive slskd transfer IDs for all files in a GrabListEntry.
+
+    Queries the slskd API for each unique username and matches by filename.
+    Updates file.id in-place. Files whose transfers have vanished keep id="".
+    """
+    by_user: dict[str, list[DownloadFile]] = {}
+    for f in entry.files:
+        by_user.setdefault(f.username, []).append(f)
+
+    for username, files in by_user.items():
+        try:
+            downloads = slskd_client.transfers.get_downloads(username=username)
+        except Exception:
+            logger.warning(f"Failed to get downloads for {username} — transfers may have vanished")
+            continue
+        for f in files:
+            tid = match_transfer_id(downloads, f.filename)
+            if tid is not None:
+                f.id = tid
+            else:
+                logger.debug(f"Transfer not found for {f.filename} from {username}")
+
+
 # === GrabListEntry reconstruction from DB ===
 
 def reconstruct_grab_list_entry(
