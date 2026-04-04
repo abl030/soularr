@@ -492,6 +492,7 @@ import inspect
 EXPECTED_RESULT_KEYS = {
     "stage1_spectral", "stage2_import", "stage3_quality_gate",
     "final_status", "imported", "denylisted", "keep_searching",
+    "opus_final_format",
 }
 
 # Valid values for each stage (None means stage was skipped)
@@ -509,7 +510,7 @@ EXPECTED_PARAMS = {
     "existing_min_bitrate", "existing_spectral_bitrate",
     "override_min_bitrate",
     "post_conversion_min_bitrate", "converted_count",
-    "verified_lossless",
+    "verified_lossless", "opus_conversion",
 }
 
 
@@ -604,9 +605,9 @@ class TestFullPipelineContract(unittest.TestCase):
         tree = get_decision_tree()
         ids = [s["id"] for s in tree["stages"]]
         self.assertEqual(ids, ["flac_spectral", "flac_convert", "transcode",
-                               "verified_lossless", "mp3_spectral",
-                               "mp3_vbr_note", "import_decision",
-                               "quality_gate", "dispatch"])
+                               "verified_lossless", "opus_conversion",
+                               "mp3_spectral", "mp3_vbr_note",
+                               "import_decision", "quality_gate", "dispatch"])
 
     def test_decision_tree_outcomes_match_valid_values(self):
         """Outcomes declared in the tree must match what the contract allows."""
@@ -648,6 +649,40 @@ class TestFullPipelineContract(unittest.TestCase):
         for stage in tree["stages"]:
             self.assertIn(stage.get("path"), valid_paths,
                           f"Stage {stage['id']} has invalid path")
+
+    def test_opus_conversion_genuine_flac(self):
+        """Genuine FLAC + opus_conversion → Opus 128, accepted."""
+        r = full_pipeline_decision(
+            is_flac=True, min_bitrate=0, is_cbr=False,
+            spectral_grade="genuine", converted_count=10,
+            post_conversion_min_bitrate=245, opus_conversion=True)
+        self.assertEqual(r["opus_final_format"], "opus 128")
+        self.assertTrue(r["imported"])
+        self.assertEqual(r["stage3_quality_gate"], "accept")
+
+    def test_opus_conversion_disabled(self):
+        """Genuine FLAC without opus_conversion → no Opus."""
+        r = full_pipeline_decision(
+            is_flac=True, min_bitrate=0, is_cbr=False,
+            spectral_grade="genuine", converted_count=10,
+            post_conversion_min_bitrate=245, opus_conversion=False)
+        self.assertIsNone(r["opus_final_format"])
+        self.assertTrue(r["imported"])
+
+    def test_opus_conversion_transcode_skips(self):
+        """Transcode FLAC + opus_conversion → no Opus (not verified)."""
+        r = full_pipeline_decision(
+            is_flac=True, min_bitrate=0, is_cbr=False,
+            spectral_grade="suspect", converted_count=10,
+            post_conversion_min_bitrate=190, opus_conversion=True)
+        self.assertIsNone(r["opus_final_format"])
+
+    def test_opus_conversion_mp3_skips(self):
+        """MP3 path + opus_conversion → no Opus (not lossless)."""
+        r = full_pipeline_decision(
+            is_flac=False, min_bitrate=245, is_cbr=False,
+            opus_conversion=True)
+        self.assertIsNone(r["opus_final_format"])
 
 
 # ============================================================================

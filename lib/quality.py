@@ -1303,6 +1303,26 @@ def get_decision_tree() -> dict[str, Any]:
                 ],
             },
             {
+                "id": "opus_conversion",
+                "title": "Opus Conversion (Optional)",
+                "path": "flac",
+                "function": "convert_lossless_to_opus",
+                "when": "After verified lossless, if opus_conversion enabled",
+                "inputs": ["verified_lossless", "opus_conversion config",
+                           "original FLAC files"],
+                "rules": [
+                    {"condition": "verified_lossless AND opus_conversion enabled",
+                     "result": "FLAC → Opus 128kbps (V0 discarded)",
+                     "color": "green",
+                     "effect": "V0 bitrate stored as v0_verification_bitrate"},
+                    {"condition": "NOT verified_lossless OR opus disabled",
+                     "result": "Keep V0 files (standard path)",
+                     "color": "amber"},
+                ],
+                "note": "V0 exists only to verify genuineness. "
+                        "Opus 128 is ~50% smaller than V0 for identical quality.",
+            },
+            {
                 "id": "mp3_spectral",
                 "title": "CBR Spectral Check",
                 "path": "mp3",
@@ -1454,6 +1474,8 @@ def full_pipeline_decision(
     converted_count=0,
     # Pipeline state
     verified_lossless=False,
+    # Opus conversion
+    opus_conversion=False,
 ):
     """Run the full decision chain and return the final outcome.
 
@@ -1479,6 +1501,7 @@ def full_pipeline_decision(
         "imported": False,
         "denylisted": False,
         "keep_searching": False,
+        "opus_final_format": None,
     }
 
     # --- Stage 1: Pre-import spectral (MP3/CBR path) ---
@@ -1534,6 +1557,10 @@ def full_pipeline_decision(
         if (converted_count > 0 and not is_transcode and
                 spectral_grade in ("genuine", "marginal", None)):
             verified_lossless = True
+
+        # Opus conversion: if verified lossless + enabled, final format is Opus 128
+        if verified_lossless and opus_conversion:
+            result["opus_final_format"] = "opus 128"
 
         # Use post-conversion bitrate for quality gate
         gate_bitrate = post_conversion_min_bitrate or min_bitrate

@@ -282,6 +282,10 @@ def convert_lossless_to_opus(album_path, dry_run=False):
 
     Returns (converted, failed). Does NOT delete source files —
     the caller manages the lifecycle of lossless originals.
+
+    Note: embedded cover art from FLAC does not transfer to Opus (Ogg
+    containers don't support attached pictures via ffmpeg). Beets'
+    fetchart plugin re-fetches art from Cover Art Archive during import.
     """
     lossless_files = sorted(f for f in os.listdir(album_path) if _is_lossless_file(f, album_path))
     if not lossless_files:
