@@ -52,6 +52,7 @@ search_cache = {}
 folder_cache = {}
 user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
+_slskd_version_gt_0_22_2: bool | None = None  # cached per-run
 
 
 def album_match(expected_tracks, slskd_tracks, username, filetype):
@@ -283,6 +284,20 @@ def download_filter(allowed_filetype, directory: Any):
     return directory  # If we didn't find unwanted files or we aren't filtering just return the original list
 
 
+def _get_version_check() -> bool:
+    """Return whether slskd version > 0.22.2. Cached per-run."""
+    global _slskd_version_gt_0_22_2
+    if _slskd_version_gt_0_22_2 is None:
+        version = slskd.application.version()
+        _slskd_version_gt_0_22_2 = slskd_version_check(version)
+        if not _slskd_version_gt_0_22_2:
+            logger.info(
+                f"slskd version {version} is ≤ 0.22.2. "
+                f"Consider updating slskd for best results."
+            )
+    return _slskd_version_gt_0_22_2
+
+
 def check_for_match(tracks, allowed_filetype, file_dirs, username):
     """
     Does the actual match checking on a single disk/album.
@@ -297,11 +312,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
 
         if file_dir not in folder_cache[username]:
             logger.info(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
-            version = slskd.application.version()
-            version_check = slskd_version_check(version)
-
-            if not version_check:
-                logger.info(f"Error checking slskd version number: {version}. Version check > 0.22.2: {version_check}. This would most likely be fixed by updating your slskd.")
+            version_check = _get_version_check()
 
             try:
                 directory: Any
@@ -685,7 +696,6 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
     Otherwise it's basically the same as the single album search.
     """
     split_release = []
-    tmp_results = copy.deepcopy(results)
     for media in release.media:
         disk = {}
         disk["source"] = None
@@ -702,7 +712,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
     denied_users = _get_denied_users(album_id)
     is_catch_all = allowed_filetype == "*"
     for disk in split_release:
-        for username in tmp_results:
+        for username in results:
             if username in denied_users:
                 logger.info(f"Skipping user '{username}' for album ID {album_id} (multi-disc): denylisted (previously provided mislabeled quality)")
                 continue
@@ -713,7 +723,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
                 if not file_dirs:
                     continue
             else:
-                if allowed_filetype not in tmp_results[username]:
+                if allowed_filetype not in results[username]:
                     continue
                 file_dirs = results[username][allowed_filetype]
             found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
@@ -1035,7 +1045,8 @@ def main():
         search_cache, \
         folder_cache, \
         user_upload_speed, \
-        broken_user
+        broken_user, \
+        _slskd_version_gt_0_22_2
 
     # Let's allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soularr downloads wanted albums from Soulseek via slskd""")
@@ -1129,6 +1140,7 @@ def main():
         folder_cache = {}
         user_upload_speed = {}
         broken_user = []
+        _slskd_version_gt_0_22_2 = None
 
         slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
 
