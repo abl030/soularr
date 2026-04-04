@@ -581,6 +581,7 @@ class ConversionInfo:
     target_filetype: Optional[str] = None
     post_conversion_min_bitrate: Optional[int] = None  # min bitrate after lossless→V0
     is_transcode: bool = False  # True if FLAC was actually a transcode
+    final_format: Optional[str] = None  # "opus 128" when Opus conversion used
 
 
 @dataclass
@@ -630,6 +631,9 @@ class ImportResult:
     postflight: PostflightInfo = field(default_factory=PostflightInfo)
     beets_log: list[str] = field(default_factory=list)  # beets stderr lines from import
     error: Optional[str] = None
+    # Opus audit trail — V0 bitrate that proved genuineness, final format on disk
+    v0_verification_bitrate: Optional[int] = None
+    final_format: Optional[str] = None  # "opus 128", None means V0/MP3 as before
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -720,6 +724,8 @@ class ImportResult:
                         if "postflight" in d else PostflightInfo()),
             beets_log=d.get("beets_log", []),
             error=d.get("error"),
+            v0_verification_bitrate=d.get("v0_verification_bitrate"),
+            final_format=d.get("final_format"),
         )
 
     @classmethod

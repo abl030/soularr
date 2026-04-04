@@ -64,6 +64,7 @@ class SoularrConfig:
     beets_staging_dir: str = ""
     audio_check_mode: str = "normal"
     beets_tracking_file: str = ""
+    opus_conversion: bool = False  # Convert verified lossless to Opus 128 instead of V0
 
     # --- Pipeline DB ---
     pipeline_db_enabled: bool = False
@@ -181,6 +182,7 @@ class SoularrConfig:
             beets_staging_dir=get("Beets Validation", "staging_dir", ""),
             audio_check_mode=get("Beets Validation", "audio_check", "normal"),
             beets_tracking_file=get("Beets Validation", "tracking_file", ""),
+            opus_conversion=getbool("Beets Validation", "opus_conversion", False),
             # Pipeline DB
             pipeline_db_enabled=getbool("Pipeline DB", "enabled", False),
             pipeline_db_dsn=get("Pipeline DB", "dsn", "postgresql://soularr@localhost/soularr"),

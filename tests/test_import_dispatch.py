@@ -405,5 +405,60 @@ class TestQualityGateUsesIntent(unittest.TestCase):
         )
 
 
+class TestOpusConversionDispatch(unittest.TestCase):
+    """Test --opus-conversion flag passing and Opus dl_info population."""
+
+    def _get_cmd(self, opus_conversion=False):
+        """Run dispatch_import, capture the cmd passed to sp.run."""
+        from lib.import_dispatch import dispatch_import
+        album_data = _make_album_data()
+        ctx = _make_ctx()
+        ctx.cfg.opus_conversion = opus_conversion
+        bv_result = _make_bv_result()
+        dl_info = DownloadInfo(filetype="flac")
+        ir = _make_import_result(decision="import", was_converted=True,
+                                 original_filetype="flac", target_filetype="mp3")
+
+        with patch("lib.import_dispatch.sp.run") as mock_run, \
+             patch("lib.import_dispatch._cleanup_staged_dir"), \
+             patch("lib.import_dispatch.trigger_meelo_scan"), \
+             patch("lib.import_dispatch._check_quality_gate"), \
+             patch("lib.import_dispatch.parse_import_result", return_value=ir):
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr="")
+            dispatch_import(album_data, bv_result, "/tmp/dest", dl_info,
+                            42, ctx)
+            return mock_run.call_args[0][0]
+
+    def test_opus_flag_passed_when_enabled(self):
+        cmd = self._get_cmd(opus_conversion=True)
+        self.assertIn("--opus-conversion", cmd)
+
+    def test_opus_flag_not_passed_when_disabled(self):
+        cmd = self._get_cmd(opus_conversion=False)
+        self.assertNotIn("--opus-conversion", cmd)
+
+    def test_opus_import_result_populates_dl_info(self):
+        """ImportResult with final_format='opus 128' should update dl_info."""
+        from lib.import_dispatch import _populate_dl_info_from_import_result
+        dl = DownloadInfo(filetype="flac")
+        ir = ImportResult(
+            decision="import",
+            final_format="opus 128",
+            v0_verification_bitrate=247,
+            new_measurement=AudioQualityMeasurement(
+                min_bitrate_kbps=128, verified_lossless=True,
+                was_converted_from="flac"),
+            conversion=ConversionInfo(
+                was_converted=True, original_filetype="flac",
+                target_filetype="opus", final_format="opus 128"),
+        )
+        _populate_dl_info_from_import_result(dl, ir)
+        self.assertEqual(dl.actual_filetype, "opus")
+        self.assertEqual(dl.slskd_filetype, "flac")
+        self.assertTrue(dl.is_vbr)
+        self.assertEqual(dl.bitrate, 128000)
+
+
 if __name__ == "__main__":
     unittest.main()

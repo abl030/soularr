@@ -226,6 +226,22 @@ class TestConfigDefaults(unittest.TestCase):
         cfg = SoularrConfig.from_ini(config)
         self.assertEqual(cfg.allowed_filetypes, ("flac",))
 
+    def test_opus_conversion_default_false(self):
+        config = configparser.ConfigParser()
+        for section in ["Slskd", "Search Settings", "Release Settings",
+                        "Download Settings", "Beets Validation", "Pipeline DB", "Meelo", "Plex"]:
+            config.add_section(section)
+        cfg = SoularrConfig.from_ini(config)
+        self.assertFalse(cfg.opus_conversion)
+
+    def test_opus_conversion_enabled(self):
+        config = configparser.ConfigParser()
+        for section in ["Slskd", "Search Settings", "Release Settings",
+                        "Download Settings", "Beets Validation", "Pipeline DB", "Meelo", "Plex"]:
+            config.add_section(section)
+        config.set("Beets Validation", "opus_conversion", "true")
+        cfg = SoularrConfig.from_ini(config)
+        self.assertTrue(cfg.opus_conversion)
 
 
 if __name__ == "__main__":

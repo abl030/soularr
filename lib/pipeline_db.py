@@ -184,6 +184,8 @@ class PipelineDB:
                 ("import_result", "JSONB"),
                 # Full validation result for audit trail
                 ("validation_result", "JSONB"),
+                # Final format on disk (e.g. "opus 128" when Opus conversion used)
+                ("final_format", "TEXT"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
@@ -205,6 +207,8 @@ class PipelineDB:
                 ("on_disk_spectral_bitrate", "INTEGER"),
                 # Async downloads: per-album download state
                 ("active_download_state", "JSONB"),
+                # Final format on disk (e.g. "opus 128" when Opus conversion used)
+                ("final_format", "TEXT"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN

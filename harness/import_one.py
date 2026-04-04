@@ -115,6 +115,14 @@ def quality_decision_stage(
     return StageResult(decision=decision, exit_code=0)
 
 
+def opus_conversion_decision(will_be_verified_lossless: bool,
+                             opus_conversion_enabled: bool) -> StageResult:
+    """Decide whether to convert verified lossless to Opus 128 (pure)."""
+    if will_be_verified_lossless and opus_conversion_enabled:
+        return StageResult(decision="opus_convert")
+    return StageResult(decision="skip_opus")
+
+
 def final_exit_decision(is_transcode: bool) -> int:
     """Determine the final exit code after a successful import."""
     return 6 if is_transcode else 0
@@ -125,16 +133,21 @@ def final_exit_decision(is_transcode: bool) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _get_folder_min_bitrate(folder_path):
+def _get_folder_min_bitrate(folder_path, ext_filter: set[str] | None = None):
     """Get min bitrate (kbps) of audio files in a folder via ffprobe.
 
     Uses audio stream bitrate (excludes cover art overhead). Falls back
     to format bitrate for VBR MP3s where stream bitrate is N/A.
+
+    ext_filter: if provided, only measure files with these extensions
+    (e.g. {".mp3"} to measure only V0 files when FLAC coexists).
     """
     min_br = None
     for fname in os.listdir(folder_path):
         ext = os.path.splitext(fname)[1].lower()
         if ext not in AUDIO_EXTENSIONS:
+            continue
+        if ext_filter is not None and ext not in ext_filter:
             continue
         fpath = os.path.join(folder_path, fname)
         try:
@@ -196,11 +209,14 @@ def _is_lossless_file(fname: str, folder: str = "") -> bool:
     return False
 
 
-def convert_lossless_to_v0(album_path, dry_run=False):
+def convert_lossless_to_v0(album_path, dry_run=False, keep_source=False):
     """Convert all lossless files (FLAC, ALAC/m4a, WAV) to MP3 VBR V0.
 
     Returns (converted, failed, original_filetype) where original_filetype
     is the extension of the source files (e.g. "flac", "m4a", "wav").
+
+    When keep_source=True, the original lossless files are preserved
+    (used by Opus path which needs them for a second conversion).
     """
     lossless_files = sorted(f for f in os.listdir(album_path) if _is_lossless_file(f, album_path))
     if not lossless_files:
@@ -243,10 +259,60 @@ def convert_lossless_to_v0(album_path, dry_run=False):
                 os.remove(mp3_path)
             failed += 1
         else:
-            os.remove(src_path)
+            if not keep_source:
+                os.remove(src_path)
             converted += 1
 
     return converted, failed, original_ext
+
+
+def convert_lossless_to_opus(album_path, dry_run=False):
+    """Convert all lossless files to Opus 128kbps.
+
+    Returns (converted, failed). Does NOT delete source files —
+    the caller manages the lifecycle of lossless originals.
+    """
+    lossless_files = sorted(f for f in os.listdir(album_path) if _is_lossless_file(f, album_path))
+    if not lossless_files:
+        return 0, 0
+
+    converted = 0
+    failed = 0
+    for fname in lossless_files:
+        src_path = os.path.join(album_path, fname)
+        opus_path = os.path.splitext(src_path)[0] + ".opus"
+
+        if os.path.exists(opus_path):
+            continue
+
+        if dry_run:
+            print(f"  [DRY] {fname} → {os.path.basename(opus_path)}", file=sys.stderr)
+            converted += 1
+            continue
+
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-i", src_path,
+                "-c:a", "libopus", "-b:a", "128k",
+                "-map_metadata", "0",
+                "-y", opus_path,
+            ], capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(f"  [FAIL] {fname}: ffmpeg timed out after 300s", file=sys.stderr)
+            if os.path.exists(opus_path):
+                os.remove(opus_path)
+            failed += 1
+            continue
+
+        if result.returncode != 0 or not os.path.exists(opus_path) or os.path.getsize(opus_path) == 0:
+            print(f"  [FAIL] {fname}: {result.stderr[-200:]}", file=sys.stderr)
+            if os.path.exists(opus_path):
+                os.remove(opus_path)
+            failed += 1
+        else:
+            converted += 1
+
+    return converted, failed
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +495,8 @@ def main():
                         help="Override existing min bitrate for downgrade check (kbps)")
     parser.add_argument("--force", action="store_true",
                         help="Skip distance check (for force-importing rejected albums)")
+    parser.add_argument("--opus-conversion", action="store_true",
+                        help="Convert verified lossless to Opus 128 instead of keeping V0")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -519,7 +587,9 @@ def main():
 
     # --- Convert lossless → V0 ---
     _log(f"[CONVERT] {args.path}")
-    converted, failed, original_ext = convert_lossless_to_v0(args.path, dry_run=args.dry_run)
+    converted, failed, original_ext = convert_lossless_to_v0(
+        args.path, dry_run=args.dry_run,
+        keep_source=args.opus_conversion)
     r.conversion.converted = converted
     r.conversion.failed = failed
     if converted > 0:
@@ -536,7 +606,9 @@ def main():
         _emit_and_exit(r)
 
     # --- Transcode detection ---
-    post_conv_br = _get_folder_min_bitrate(args.path) if converted > 0 else None
+    # When keep_source=True, FLAC+MP3 coexist — measure only MP3 for V0 bitrate
+    v0_ext_filter = {".mp3"} if args.opus_conversion and converted > 0 else None
+    post_conv_br = _get_folder_min_bitrate(args.path, ext_filter=v0_ext_filter) if converted > 0 else None
     r.conversion.post_conversion_min_bitrate = post_conv_br
     is_transcode = transcode_detection(converted, post_conv_br,
                                        spectral_grade=spectral_grade)
@@ -552,7 +624,7 @@ def main():
         _emit_and_exit(r)
 
     # --- Quality comparison ---
-    new_min_br = _get_folder_min_bitrate(args.path)
+    new_min_br = _get_folder_min_bitrate(args.path, ext_filter=v0_ext_filter)
     existing_min_br = beets.get_min_bitrate(mbid)
     if args.override_min_bitrate is not None and existing_min_br is not None:
         if args.override_min_bitrate != existing_min_br:
@@ -606,6 +678,41 @@ def main():
              f"{effective_existing}kbps — upgrading (transcode)")
     elif decision == "transcode_first":
         _log(f"  [QUALITY] no existing album in beets — importing transcode")
+
+    # --- Opus conversion (after V0 verdict, before import) ---
+    opus_stage = opus_conversion_decision(will_be_verified_lossless, args.opus_conversion)
+    if opus_stage.decision == "opus_convert":
+        _log(f"[OPUS] Converting verified lossless → Opus 128kbps")
+        r.v0_verification_bitrate = post_conv_br
+        opus_converted, opus_failed = convert_lossless_to_opus(args.path, dry_run=args.dry_run)
+        if opus_failed > 0:
+            r.exit_code = 1
+            r.decision = "opus_conversion_failed"
+            r.error = f"{opus_failed} Opus conversions failed"
+            _log(f"[ERROR] {r.error}")
+            _emit_and_exit(r)
+        # Remove V0 temp files (they were ephemeral verification artifacts)
+        for fname in os.listdir(args.path):
+            if fname.lower().endswith(".mp3"):
+                os.remove(os.path.join(args.path, fname))
+        # Remove original lossless files
+        for fname in os.listdir(args.path):
+            if _is_lossless_file(fname, args.path):
+                os.remove(os.path.join(args.path, fname))
+        # Update measurements and conversion info for Opus
+        opus_min_br = _get_folder_min_bitrate(args.path)
+        r.new_measurement = AudioQualityMeasurement(
+            min_bitrate_kbps=opus_min_br,
+            spectral_grade=spectral_grade,
+            spectral_bitrate_kbps=spectral_bitrate,
+            verified_lossless=True,
+            was_converted_from=(original_ext or "flac"),
+        )
+        r.conversion.target_filetype = "opus"
+        r.conversion.final_format = "opus 128"
+        r.final_format = "opus 128"
+        _log(f"  Opus conversion complete: {opus_converted} files, min_bitrate={opus_min_br}kbps")
+        _log(f"  V0 verification bitrate: {post_conv_br}kbps")
 
     # --- Import ---
     _log(f"[IMPORT] {args.path} → beets (mbid={mbid})")

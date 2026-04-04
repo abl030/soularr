@@ -7,6 +7,7 @@ takes data inputs and returns a StageResult without I/O.
 
 import importlib
 import os
+import subprocess
 import sys
 import unittest
 
@@ -218,6 +219,140 @@ class TestFinalExitDecision(unittest.TestCase):
     def test_normal_exit_0(self):
         from import_one import final_exit_decision
         self.assertEqual(final_exit_decision(is_transcode=False), 0)
+
+
+# ============================================================================
+# convert_lossless_to_v0 keep_source parameter
+# ============================================================================
+
+# ============================================================================
+# opus_conversion_decision
+# ============================================================================
+
+class TestOpusConversionDecision(unittest.TestCase):
+    """Test the Opus conversion stage decision (pure)."""
+
+    def test_verified_lossless_with_flag_converts(self):
+        from import_one import opus_conversion_decision
+        r = opus_conversion_decision(will_be_verified_lossless=True,
+                                     opus_conversion_enabled=True)
+        self.assertEqual(r.decision, "opus_convert")
+        self.assertFalse(r.is_terminal)
+
+    def test_not_verified_skips(self):
+        from import_one import opus_conversion_decision
+        r = opus_conversion_decision(will_be_verified_lossless=False,
+                                     opus_conversion_enabled=True)
+        self.assertEqual(r.decision, "skip_opus")
+        self.assertFalse(r.is_terminal)
+
+    def test_flag_disabled_skips(self):
+        from import_one import opus_conversion_decision
+        r = opus_conversion_decision(will_be_verified_lossless=True,
+                                     opus_conversion_enabled=False)
+        self.assertEqual(r.decision, "skip_opus")
+        self.assertFalse(r.is_terminal)
+
+    def test_both_false_skips(self):
+        from import_one import opus_conversion_decision
+        r = opus_conversion_decision(will_be_verified_lossless=False,
+                                     opus_conversion_enabled=False)
+        self.assertEqual(r.decision, "skip_opus")
+        self.assertFalse(r.is_terminal)
+
+
+class TestConvertV0KeepSource(unittest.TestCase):
+    """Test that keep_source=True preserves original lossless files."""
+
+    def test_keep_source_preserves_flac(self):
+        """With keep_source=True, FLAC files should remain after V0 conversion."""
+        import tempfile
+        from import_one import convert_lossless_to_v0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a small valid FLAC file via ffmpeg
+            flac_path = os.path.join(tmpdir, "track01.flac")
+            subprocess.run(
+                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-y", flac_path],
+                capture_output=True, timeout=30)
+            self.assertTrue(os.path.exists(flac_path))
+            converted, failed, ext = convert_lossless_to_v0(tmpdir, keep_source=True)
+            self.assertEqual(converted, 1)
+            self.assertEqual(failed, 0)
+            # FLAC still present
+            self.assertTrue(os.path.exists(flac_path))
+            # MP3 was created
+            mp3_path = os.path.join(tmpdir, "track01.mp3")
+            self.assertTrue(os.path.exists(mp3_path))
+
+    def test_default_removes_flac(self):
+        """Default behavior (keep_source=False) removes FLAC after conversion."""
+        import tempfile
+        from import_one import convert_lossless_to_v0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_path = os.path.join(tmpdir, "track01.flac")
+            subprocess.run(
+                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-y", flac_path],
+                capture_output=True, timeout=30)
+            converted, failed, ext = convert_lossless_to_v0(tmpdir)
+            self.assertEqual(converted, 1)
+            # FLAC removed (default behavior)
+            self.assertFalse(os.path.exists(flac_path))
+
+
+# ============================================================================
+# convert_lossless_to_opus
+# ============================================================================
+
+class TestConvertLosslessToOpus(unittest.TestCase):
+    """Test the Opus conversion function."""
+
+    def test_converts_flac_to_opus(self):
+        """FLAC files should be converted to .opus files."""
+        import tempfile
+        from import_one import convert_lossless_to_opus
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_path = os.path.join(tmpdir, "track01.flac")
+            subprocess.run(
+                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-y", flac_path],
+                capture_output=True, timeout=30)
+            converted, failed = convert_lossless_to_opus(tmpdir)
+            self.assertEqual(converted, 1)
+            self.assertEqual(failed, 0)
+            opus_path = os.path.join(tmpdir, "track01.opus")
+            self.assertTrue(os.path.exists(opus_path))
+            # Source FLAC is NOT deleted (caller manages lifecycle)
+            self.assertTrue(os.path.exists(flac_path))
+
+    def test_no_lossless_files_noop(self):
+        """No lossless files → (0, 0)."""
+        import tempfile
+        from import_one import convert_lossless_to_opus
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mp3_path = os.path.join(tmpdir, "track01.mp3")
+            with open(mp3_path, "w") as f:
+                f.write("not real")
+            converted, failed = convert_lossless_to_opus(tmpdir)
+            self.assertEqual(converted, 0)
+            self.assertEqual(failed, 0)
+
+    def test_dry_run_no_files_created(self):
+        """Dry run should not create any Opus files."""
+        import tempfile
+        from import_one import convert_lossless_to_opus
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_path = os.path.join(tmpdir, "track01.flac")
+            subprocess.run(
+                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-y", flac_path],
+                capture_output=True, timeout=30)
+            converted, failed = convert_lossless_to_opus(tmpdir, dry_run=True)
+            self.assertEqual(converted, 1)
+            self.assertEqual(failed, 0)
+            opus_path = os.path.join(tmpdir, "track01.opus")
+            self.assertFalse(os.path.exists(opus_path))
 
 
 if __name__ == "__main__":

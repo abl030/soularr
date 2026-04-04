@@ -35,6 +35,11 @@ class TestImportResultConstruction(unittest.TestCase):
         self.assertIsInstance(r.spectral, SpectralDetail)
         self.assertIsInstance(r.postflight, PostflightInfo)
 
+    def test_opus_fields_default_none(self):
+        r = ImportResult()
+        self.assertIsNone(r.v0_verification_bitrate)
+        self.assertIsNone(r.final_format)
+
     def test_conversion_defaults(self):
         c = ConversionInfo()
         self.assertEqual(c.converted, 0)
@@ -44,6 +49,7 @@ class TestImportResultConstruction(unittest.TestCase):
         self.assertIsNone(c.target_filetype)
         self.assertIsNone(c.post_conversion_min_bitrate)
         self.assertFalse(c.is_transcode)
+        self.assertIsNone(c.final_format)
 
     def test_spectral_detail_defaults(self):
         s = SpectralDetail()
@@ -136,6 +142,35 @@ class TestImportResultSerialization(unittest.TestCase):
         j = r.to_json()
         r2 = ImportResult.from_json(j)
         self.assertEqual(r, r2)
+
+    def test_round_trip_opus_fields(self):
+        """Opus audit fields survive JSON round-trip."""
+        r = ImportResult(
+            decision="import",
+            v0_verification_bitrate=247,
+            final_format="opus 128",
+            conversion=ConversionInfo(
+                converted=10, was_converted=True,
+                original_filetype="flac", target_filetype="mp3",
+                final_format="opus 128"),
+        )
+        j = r.to_json()
+        r2 = ImportResult.from_json(j)
+        self.assertEqual(r2.v0_verification_bitrate, 247)
+        self.assertEqual(r2.final_format, "opus 128")
+        self.assertEqual(r2.conversion.final_format, "opus 128")
+
+    def test_from_dict_without_opus_fields_defaults_none(self):
+        """Old JSONB rows without opus fields should parse with None defaults."""
+        d = {"version": 2, "exit_code": 0, "decision": "import",
+             "conversion": {"converted": 5, "failed": 0, "was_converted": True,
+                            "original_filetype": "flac", "target_filetype": "mp3",
+                            "post_conversion_min_bitrate": 247,
+                            "is_transcode": False}}
+        r = ImportResult.from_dict(d)
+        self.assertIsNone(r.v0_verification_bitrate)
+        self.assertIsNone(r.final_format)
+        self.assertIsNone(r.conversion.final_format)
 
     def test_to_json_is_valid_json(self):
         r = ImportResult(decision="import", exit_code=0)

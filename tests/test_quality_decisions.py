@@ -356,6 +356,18 @@ class TestQualityGateDecision(unittest.TestCase):
                                     spectral_bitrate_kbps=150)
         self.assertEqual(quality_gate_decision(m), "accept")
 
+    # --- Opus path ---
+
+    def test_opus_128_verified_lossless_accepts(self):
+        """Opus 128kbps from verified lossless is the endgame — always accept."""
+        m = AudioQualityMeasurement(min_bitrate_kbps=128, verified_lossless=True)
+        self.assertEqual(quality_gate_decision(m), "accept")
+
+    def test_opus_128_not_verified_requeues(self):
+        """Opus 128kbps without verified_lossless should requeue (below threshold)."""
+        m = AudioQualityMeasurement(min_bitrate_kbps=128)
+        self.assertEqual(quality_gate_decision(m), "requeue_upgrade")
+
     # --- None min_bitrate ---
 
     def test_none_bitrate_requeues(self):

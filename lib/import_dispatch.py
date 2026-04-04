@@ -218,6 +218,8 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
     try:
         cmd = [sys.executable, import_script, dest, mb_id,
                "--request-id", str(request_id)]
+        if ctx.cfg.opus_conversion:
+            cmd.append("--opus-conversion")
         try:
             req = ctx.pipeline_db_source._get_db().get_request(request_id)
             if req:
