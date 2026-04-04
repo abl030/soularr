@@ -309,9 +309,14 @@ def post_pipeline_update(h, body: dict) -> None:
             if b.album_exists(mbid):
                 quality = intent_to_quality_override(QualityIntent.upgrade)
                 min_br = b.get_min_bitrate(mbid)
-        s._db().reset_to_wanted(int(req_id), quality_override=quality, min_bitrate=min_br)
+        from lib.transitions import apply_transition
+        apply_transition(s._db(), int(req_id), "wanted",
+                         from_status=req["status"],
+                         quality_override=quality, min_bitrate=min_br)
     else:
-        s._db().update_status(int(req_id), new_status)
+        from lib.transitions import apply_transition
+        apply_transition(s._db(), int(req_id), new_status,
+                         from_status=req["status"])
 
     h._json({"status": "ok", "id": req_id, "new_status": new_status})
 
@@ -332,12 +337,14 @@ def post_pipeline_upgrade(h, body: dict) -> None:
     if b:
         min_bitrate = b.get_min_bitrate(mbid)
 
+    from lib.transitions import apply_transition
     existing = s._db().get_request_by_mb_release_id(mbid)
     if existing:
         req_id = existing["id"]
-        s._db().reset_to_wanted(req_id,
-                                quality_override=quality,
-                                min_bitrate=min_bitrate)
+        apply_transition(s._db(), req_id, "wanted",
+                         from_status=existing["status"],
+                         quality_override=quality,
+                         min_bitrate=min_bitrate)
         h._json({
             "status": "upgrade_queued",
             "id": req_id,
@@ -357,9 +364,11 @@ def post_pipeline_upgrade(h, body: dict) -> None:
         )
         if release.get("tracks"):
             s._db().set_tracks(req_id, release["tracks"])
-        s._db().reset_to_wanted(req_id,
-                                quality_override=quality,
-                                min_bitrate=min_bitrate)
+        # Newly added request — status is already 'wanted', set quality override
+        apply_transition(s._db(), req_id, "wanted",
+                         from_status="wanted",
+                         quality_override=quality,
+                         min_bitrate=min_bitrate)
         h._json({
             "status": "upgrade_queued",
             "id": req_id,
@@ -394,6 +403,7 @@ def post_pipeline_set_quality(h, body: dict) -> None:
         )
 
     if new_status:
+        from lib.transitions import apply_transition
         if new_status not in ("wanted", "imported", "manual"):
             h._error(f"Invalid status: {new_status}")
             return
@@ -402,17 +412,17 @@ def post_pipeline_set_quality(h, body: dict) -> None:
                 b = s._beets_db()
                 if b:
                     min_bitrate = b.get_avg_bitrate_kbps(mbid)
-            sets = "status = 'imported', quality_override = NULL, updated_at = NOW()"
+            extra: dict[str, object] = {"quality_override": None}
             if min_bitrate is not None:
-                sets += f", min_bitrate = {int(min_bitrate)}"
-            s._db()._execute(
-                f"UPDATE album_requests SET {sets} WHERE id = %s",
-                (req_id,),
-            )
+                extra["min_bitrate"] = int(min_bitrate)
+            apply_transition(s._db(), req_id, "imported",
+                             from_status=existing["status"], **extra)
         elif new_status == "wanted" and existing["status"] != "wanted":
-            s._db().reset_to_wanted(req_id)
+            apply_transition(s._db(), req_id, "wanted",
+                             from_status=existing["status"])
         else:
-            s._db().update_status(req_id, new_status)
+            apply_transition(s._db(), req_id, new_status,
+                             from_status=existing["status"])
 
     h._json({
         "status": "ok",
@@ -452,9 +462,12 @@ def post_pipeline_set_intent(h, body: dict) -> None:
 
     if req["status"] == "imported":
         # Re-queue for search with the new intent
+        from lib.transitions import apply_transition
         min_br = req.get("min_bitrate")
-        s._db().reset_to_wanted(int(req_id), quality_override=quality_override,
-                                min_bitrate=min_br)
+        apply_transition(s._db(), int(req_id), "wanted",
+                         from_status="imported",
+                         quality_override=quality_override,
+                         min_bitrate=min_br)
         h._json({
             "status": "ok",
             "id": int(req_id),
@@ -505,9 +518,12 @@ def post_pipeline_ban_source(h, body: dict) -> None:
     req = s._db().get_request(int(req_id))
     if req:
         from lib.quality import QualityIntent, intent_to_quality_override
+        from lib.transitions import apply_transition
         quality = req.get("quality_override") or intent_to_quality_override(QualityIntent.upgrade)
         min_br = req.get("min_bitrate")
-        s._db().reset_to_wanted(int(req_id), quality_override=quality, min_bitrate=min_br)
+        apply_transition(s._db(), int(req_id), "wanted",
+                         from_status=req["status"],
+                         quality_override=quality, min_bitrate=min_br)
 
     h._json({
         "status": "ok",
@@ -596,7 +612,9 @@ def post_pipeline_force_import(h, body: dict) -> None:
                 update_fields = s._extract_import_fields(json.loads(import_result_json))
             except (json.JSONDecodeError, TypeError):
                 pass
-        s._db().update_status(request_id, "imported", **update_fields)
+        from lib.transitions import apply_transition
+        apply_transition(s._db(), request_id, "imported",
+                         from_status=req["status"], **update_fields)
 
     h._json({
         "status": "ok" if result.returncode == 0 else "error",

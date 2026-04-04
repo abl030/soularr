@@ -910,10 +910,8 @@ class TestPollActiveDownloads(unittest.TestCase):
         mock_db.log_download.assert_called_once()
         kwargs = mock_db.log_download.call_args.kwargs
         self.assertEqual(kwargs["outcome"], "timeout")
-        # Check the _reset_to_wanted was called via raw SQL
-        reset_calls = [c for c in mock_db._execute.call_args_list
-                       if "wanted" in str(c)]
-        self.assertTrue(len(reset_calls) > 0, "Expected _reset_to_wanted SQL call")
+        # Check apply_transition called reset_to_wanted
+        mock_db.reset_to_wanted.assert_called_once()
 
     def test_poll_active_old_album_with_progress_does_not_timeout(self):
         """Fresh byte progress should refresh stall timer even for an old album."""
@@ -1078,10 +1076,8 @@ class TestPollActiveDownloads(unittest.TestCase):
 
         poll_active_downloads(ctx)
 
-        # Should call _reset_to_wanted
-        reset_calls = [c for c in mock_db._execute.call_args_list
-                       if "wanted" in str(c)]
-        self.assertTrue(len(reset_calls) > 0)
+        # apply_transition calls reset_to_wanted for downloading→wanted
+        mock_db.reset_to_wanted.assert_called_once()
 
     @patch("lib.download.process_completed_album")
     def test_poll_active_all_errors(self, mock_process):

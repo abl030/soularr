@@ -154,20 +154,22 @@ def cmd_status(db, args):
 
 
 def cmd_retry(db, args):
+    from lib.transitions import apply_transition
     req = db.get_request(args.id)
     if not req:
         print(f"  Request {args.id} not found.")
         return
-    db.reset_to_wanted(args.id)
+    apply_transition(db, args.id, "wanted", from_status=req["status"])
     print(f"  Reset to wanted: [{args.id}] {req['artist_name']} - {req['album_title']}")
 
 
 def cmd_cancel(db, args):
+    from lib.transitions import apply_transition
     req = db.get_request(args.id)
     if not req:
         print(f"  Request {args.id} not found.")
         return
-    db.update_status(args.id, "manual")
+    apply_transition(db, args.id, "manual", from_status=req["status"])
     print(f"  Marked for manual download: [{args.id}] {req['artist_name']} - {req['album_title']}")
 
 
@@ -175,6 +177,7 @@ VALID_STATUSES = ["wanted", "imported", "manual"]
 
 
 def cmd_set(db, args):
+    from lib.transitions import apply_transition
     req = db.get_request(args.id)
     if not req:
         print(f"  Request {args.id} not found.")
@@ -183,13 +186,14 @@ def cmd_set(db, args):
     if old_status == args.status:
         print(f"  [{args.id}] already has status '{args.status}'.")
         return
-    db.update_status(args.id, args.status)
+    apply_transition(db, args.id, args.status, from_status=old_status)
     print(f"  [{args.id}] {req['artist_name']} - {req['album_title']}: {old_status} → {args.status}")
 
 
 def cmd_set_intent(db, args):
     """Set quality intent for a request."""
     from lib.quality import QualityIntent, intent_to_quality_override
+    from lib.transitions import apply_transition
     req = db.get_request(args.id)
     if not req:
         print(f"  Request {args.id} not found.")
@@ -203,8 +207,9 @@ def cmd_set_intent(db, args):
 
     if req["status"] == "imported":
         min_br = req.get("min_bitrate")
-        db.reset_to_wanted(args.id, quality_override=quality_override,
-                           min_bitrate=min_br)
+        apply_transition(db, args.id, "wanted", from_status="imported",
+                         quality_override=quality_override,
+                         min_bitrate=min_br)
         print(f"  [{args.id}] {req['artist_name']} - {req['album_title']}: "
               f"intent={intent.value}, re-queued for search")
     else:
@@ -583,8 +588,9 @@ def cmd_force_import(db, args):
     )
 
     if result.returncode == 0:
+        from lib.transitions import apply_transition
         print(f"  [OK] Force-import successful (exit code 0)")
-        db.update_status(request_id, "imported")
+        apply_transition(db, request_id, "imported")
     else:
         print(f"  [WARN] import_one.py exited with code {result.returncode}")
 
@@ -665,7 +671,8 @@ def cmd_manual_import(db, args):
                         update_fields["verified_lossless"] = True
             except (json.JSONDecodeError, TypeError):
                 pass
-        db.update_status(request_id, "imported", **update_fields)
+        from lib.transitions import apply_transition
+        apply_transition(db, request_id, "imported", **update_fields)
         print(f"  [OK] {result.message}")
     else:
         print(f"  [FAIL] {result.message}")

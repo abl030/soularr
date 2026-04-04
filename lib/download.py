@@ -20,6 +20,7 @@ from lib.grab_list import GrabListEntry, DownloadFile
 from lib.quality import (spectral_import_decision, SpectralContext,
                          ActiveDownloadState, ActiveDownloadFileState)
 from lib.import_dispatch import (_build_download_info, dispatch_import)
+from lib.transitions import apply_transition
 from lib.util import (sanitize_folder_name, move_failed_import, stage_to_ai,
                       repair_mp3_headers, validate_audio, log_validation_result)
 from lib.beets_db import BeetsDB
@@ -629,22 +630,6 @@ def reconstruct_grab_list_entry(
 
 # === Async download polling ===
 
-def _reset_to_wanted(
-    db: Any,
-    request_id: int,
-) -> None:
-    """Atomically clear download state and reset to wanted in a single UPDATE."""
-    now = datetime.now(timezone.utc)
-    db._execute("""
-        UPDATE album_requests
-        SET status = 'wanted',
-            active_download_state = NULL,
-            updated_at = %s
-        WHERE id = %s
-    """, (now, request_id))
-    db.conn.commit()
-
-
 def _timeout_album(
     entry: GrabListEntry,
     request_id: int,
@@ -671,8 +656,9 @@ def _timeout_album(
         outcome="timeout",
         error_message=reason,
     )
-    db.record_attempt(request_id, "download")
-    _reset_to_wanted(db, request_id)
+    apply_transition(db, request_id, "wanted",
+                     from_status="downloading",
+                     attempt_type="download")
 
 
 def _persist_updated_download_state(
@@ -761,11 +747,14 @@ def _run_completed_processing(
         if success:
             logger.info(f"  process_completed_album succeeded without "
                         f"setting status — setting imported")
-            db.update_status(request_id, "imported")
+            apply_transition(db, request_id, "imported",
+                             from_status="downloading")
         else:
             logger.warning(f"  process_completed_album failed without "
                            f"setting status — resetting to wanted")
-            _reset_to_wanted(db, request_id)
+            apply_transition(db, request_id, "wanted",
+                             from_status="downloading",
+                             attempt_type="download")
 
 
 def poll_active_downloads(ctx: SoularrContext) -> None:
@@ -796,7 +785,8 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             # crashed on a previous run. Reset to wanted so it gets re-searched.
             logger.error(f"Downloading album {request_id} has no active_download_state — "
                          f"resetting to wanted")
-            _reset_to_wanted(db, request_id)
+            apply_transition(db, request_id, "wanted",
+                             from_status="downloading")
             continue
 
         # psycopg2 returns JSONB as dict, not string — use from_dict directly
@@ -969,7 +959,9 @@ def grab_most_wanted(albums: list[Any],
         if request_id:
             state = build_active_download_state(entry)
             db = ctx.pipeline_db_source._get_db()
-            db.set_downloading(request_id, state.to_json())
+            apply_transition(db, request_id, "downloading",
+                             from_status="wanted",
+                             state_json=state.to_json())
             logger.info(f"  Set status=downloading, {len(entry.files)} files tracked")
 
     logger.info(f"Failed to grab: {len(failed_grab)}")

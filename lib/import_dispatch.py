@@ -19,6 +19,7 @@ from lib.quality import (parse_import_result, DownloadInfo, ImportResult,
                          QualityIntent, intent_to_quality_override,
                          dispatch_action, compute_effective_override_bitrate,
                          extract_usernames)
+from lib.transitions import apply_transition
 from lib.util import cleanup_disambiguation_orphans, trigger_meelo_clean
 
 if TYPE_CHECKING:
@@ -99,6 +100,8 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
     mb_id = album_data.mb_release_id
     if not mb_id or not ctx.cfg.pipeline_db_enabled or ctx.pipeline_db_source is None:
         return
+    if request_id is None:
+        return
     try:
         with BeetsDB() as beets:
             info = beets.get_album_info(mb_id)
@@ -138,9 +141,10 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
                     f"QUALITY GATE: {label} gate_bitrate < {QUALITY_MIN_BITRATE_KBPS}kbps "
                     f"but verified_lossless=True — accepting")
             db = ctx.pipeline_db_source._get_db()
-            db.reset_to_wanted(request_id,
-                               quality_override=upgrade_override,
-                               min_bitrate=min_br_kbps)
+            apply_transition(db, request_id, "wanted",
+                             from_status="imported",
+                             quality_override=upgrade_override,
+                             min_bitrate=min_br_kbps)
             usernames = extract_usernames(album_data.files)
             gate_br = compute_effective_override_bitrate(min_br_kbps, spectral_br) or min_br_kbps
             if spectral_br and spectral_br < min_br_kbps:
@@ -158,9 +162,10 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
         elif decision == "requeue_flac":
             flac_override = intent_to_quality_override(QualityIntent.flac_only)
             db = ctx.pipeline_db_source._get_db()
-            db.reset_to_wanted(request_id,
-                               quality_override=flac_override,
-                               min_bitrate=min_br_kbps)
+            apply_transition(db, request_id, "wanted",
+                             from_status="imported",
+                             quality_override=flac_override,
+                             min_bitrate=min_br_kbps)
             logger.info(
                 f"QUALITY GATE: {label} "
                 f"min_bitrate={min_br_kbps}kbps CBR, not verified lossless — "
@@ -170,7 +175,8 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
             update_fields: dict[str, object] = {"min_bitrate": min_br_kbps}
             if spectral_br:
                 update_fields["spectral_bitrate"] = spectral_br
-            db.update_status(request_id, "imported", **update_fields)
+            apply_transition(db, request_id, "imported",
+                             from_status="imported", **update_fields)
             if verified_lossless:
                 logger.info(f"QUALITY GATE: {label} min_bitrate={min_br_kbps}kbps — quality OK")
             else:
@@ -256,7 +262,8 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                     if request_id and (prev_br is not None or new_br is not None):
                         try:
                             db = ctx.pipeline_db_source._get_db()
-                            db.update_status(request_id, "imported",
+                            apply_transition(db, request_id, "imported",
+                                             from_status="imported",
                                              prev_min_bitrate=prev_br,
                                              min_bitrate=new_br)
                         except Exception:
@@ -300,10 +307,10 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                     db.add_denylist(request_id, username, reason)
                 logger.info(f"  Denylisted {usernames} for request {request_id}")
 
-            if action.requeue:
+            if action.requeue and request_id is not None:
                 db = ctx.pipeline_db_source._get_db()
-                db.reset_to_wanted(
-                    request_id,
+                apply_transition(
+                    db, request_id, "wanted",
                     quality_override=intent_to_quality_override(QualityIntent.upgrade),
                     min_bitrate=new_br if action.mark_done else None)
 

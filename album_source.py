@@ -191,11 +191,12 @@ class DatabaseSource:
 
     def update_status(self, album_record, status, **extra):
         """Update album status in the pipeline DB."""
+        from lib.transitions import apply_transition
         request_id = getattr(album_record, "db_request_id", None)
         if not request_id:
             return
         db = self._get_db()
-        db.update_status(request_id, status, **extra)
+        apply_transition(db, request_id, status, **extra)
 
     def mark_done(self, album_record, bv_result, dest_path=None,
                   download_info=None):
@@ -234,7 +235,8 @@ class DatabaseSource:
             update_fields["on_disk_spectral_bitrate"] = dl.bitrate // 1000
         elif dl.spectral_bitrate is not None:
             update_fields["on_disk_spectral_bitrate"] = dl.spectral_bitrate
-        db.update_status(request_id, "imported", **update_fields)
+        from lib.transitions import apply_transition
+        apply_transition(db, request_id, "imported", **update_fields)
 
         db.log_download(
             request_id=request_id,
@@ -273,7 +275,8 @@ class DatabaseSource:
 
         db = self._get_db()
         dl = download_info if isinstance(download_info, DownloadInfo) else DownloadInfo()
-        db.update_status(request_id, "wanted",
+        from lib.transitions import apply_transition
+        apply_transition(db, request_id, "wanted",
                          beets_distance=bv_result.distance,
                          beets_scenario=bv_result.scenario)
         db.record_attempt(request_id, "validation")

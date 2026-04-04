@@ -1,12 +1,14 @@
 """Tests for lib/transitions.py — state transition validation and side effects."""
 
 import unittest
+from unittest.mock import MagicMock
 
 from lib.transitions import (
     VALID_TRANSITIONS,
     TransitionSideEffects,
     validate_transition,
     transition_side_effects,
+    apply_transition,
 )
 
 
@@ -129,13 +131,81 @@ class TestTransitionTable(unittest.TestCase):
             self.assertIsInstance(fx, TransitionSideEffects,
                                  f"({from_s}, {to_s}) is not TransitionSideEffects")
 
-    def test_exactly_10_transitions(self):
-        self.assertEqual(len(VALID_TRANSITIONS), 10)
+    def test_exactly_11_transitions(self):
+        self.assertEqual(len(VALID_TRANSITIONS), 11)
 
     def test_all_statuses_reachable(self):
         """Every status appears as a target at least once."""
         targets = {to_s for _, to_s in VALID_TRANSITIONS}
         self.assertEqual(targets, {"wanted", "downloading", "imported", "manual"})
+
+
+class TestApplyTransition(unittest.TestCase):
+    """Tests for the imperative apply_transition function."""
+
+    def _make_db(self, current_status="wanted"):
+        db = MagicMock()
+        db.get_request.return_value = {"status": current_status}
+        return db
+
+    def test_downloading_to_imported_calls_update_status(self):
+        db = self._make_db("downloading")
+        apply_transition(db, 1, "imported", from_status="downloading")
+        db.update_status.assert_called_once_with(1, "imported")
+
+    def test_downloading_to_wanted_calls_reset(self):
+        db = self._make_db("downloading")
+        apply_transition(db, 1, "wanted", from_status="downloading",
+                         quality_override="flac", attempt_type="download")
+        db.reset_to_wanted.assert_called_once_with(
+            1, quality_override="flac", min_bitrate=None)
+        db.record_attempt.assert_called_once_with(1, "download")
+
+    def test_imported_to_wanted_calls_reset(self):
+        db = self._make_db("imported")
+        apply_transition(db, 1, "wanted", from_status="imported",
+                         quality_override="flac,mp3 v0,mp3 320",
+                         min_bitrate=245)
+        db.reset_to_wanted.assert_called_once_with(
+            1, quality_override="flac,mp3 v0,mp3 320", min_bitrate=245)
+
+    def test_wanted_to_downloading_calls_set_downloading(self):
+        db = self._make_db("wanted")
+        apply_transition(db, 1, "downloading", from_status="wanted",
+                         state_json='{"filetype":"flac"}')
+        db.set_downloading.assert_called_once_with(1, '{"filetype":"flac"}')
+
+    def test_auto_detects_from_status(self):
+        db = self._make_db("downloading")
+        apply_transition(db, 1, "imported")
+        db.get_request.assert_called_once_with(1)
+        db.update_status.assert_called_once_with(1, "imported")
+
+    def test_extra_fields_passed_to_update_status(self):
+        db = self._make_db("downloading")
+        apply_transition(db, 1, "imported", from_status="downloading",
+                         min_bitrate=245, spectral_grade="genuine")
+        db.update_status.assert_called_once_with(
+            1, "imported", min_bitrate=245, spectral_grade="genuine")
+
+    def test_invalid_transition_logs_warning(self):
+        """Invalid transitions still proceed (with warning) for backward compat."""
+        db = self._make_db("manual")
+        apply_transition(db, 1, "downloading", from_status="manual",
+                         state_json='{}')
+        # Should still call set_downloading despite invalid transition
+        db.set_downloading.assert_called_once()
+
+    def test_request_not_found(self):
+        db = MagicMock()
+        db.get_request.return_value = None
+        apply_transition(db, 999, "imported")
+        db.update_status.assert_not_called()
+
+    def test_wanted_to_manual(self):
+        db = self._make_db("wanted")
+        apply_transition(db, 1, "manual", from_status="wanted")
+        db.update_status.assert_called_once_with(1, "manual")
 
 
 if __name__ == "__main__":

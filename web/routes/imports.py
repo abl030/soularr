@@ -110,7 +110,9 @@ def post_manual_import(h, body: dict) -> None:
                 update_fields = srv._extract_import_fields(json.loads(result.import_result_json))
             except (json.JSONDecodeError, TypeError):
                 pass
-        srv._db().update_status(int(request_id), "imported", **update_fields)
+        from lib.transitions import apply_transition
+        apply_transition(srv._db(), int(request_id), "imported",
+                         **update_fields)
 
     h._json({
         "status": "ok" if result.success else "error",

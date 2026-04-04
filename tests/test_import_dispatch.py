@@ -64,7 +64,7 @@ def _make_ctx():
     ctx.cfg.beets_distance_threshold = 0.15
     ctx.pipeline_db_source = MagicMock()
     db_mock = MagicMock()
-    db_mock.get_request.return_value = {"min_bitrate": None, "on_disk_spectral_bitrate": None, "spectral_bitrate": None, "verified_lossless": False}
+    db_mock.get_request.return_value = {"status": "downloading", "min_bitrate": None, "on_disk_spectral_bitrate": None, "spectral_bitrate": None, "verified_lossless": False}
     ctx.pipeline_db_source._get_db.return_value = db_mock
     return ctx
 
