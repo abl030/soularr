@@ -8,6 +8,16 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+from classify import classify_log_entry, LogEntry  # type: ignore[import-not-found]
+from lib.import_service import run_import, log_and_update_import  # type: ignore[import-not-found]
+from lib.quality import QualityIntent, intent_to_quality_override  # type: ignore[import-not-found]
+from lib.transitions import apply_transition  # type: ignore[import-not-found]
+from quality import get_decision_tree, full_pipeline_decision  # type: ignore[import-not-found]
+from spectral_check import (HF_DEFICIT_SUSPECT, HF_DEFICIT_MARGINAL,  # type: ignore[import-not-found]
+                             ALBUM_SUSPECT_PCT, MIN_CLIFF_SLICES,
+                             CLIFF_THRESHOLD_DB_PER_KHZ)
+import mb as mb_api  # type: ignore[import-not-found]
+
 
 def _server():
     """Deferred import to avoid circular deps."""
@@ -19,7 +29,6 @@ def _server():
 
 
 def get_pipeline_log(h, params: dict[str, list[str]]) -> None:
-    from classify import classify_log_entry, LogEntry
     outcome_filter = params.get("outcome", [None])[0]
     if outcome_filter not in (None, "imported", "rejected"):
         outcome_filter = None
@@ -127,7 +136,6 @@ def get_pipeline_recent(h, params: dict[str, list[str]]) -> None:
 
 
 def get_pipeline_all(h, params: dict[str, list[str]]) -> None:
-    from classify import classify_log_entry, LogEntry
     s = _server()
     counts = s._db().count_by_status()
     all_data: dict[str, object] = {"counts": counts}
@@ -158,10 +166,6 @@ def get_pipeline_all(h, params: dict[str, list[str]]) -> None:
 
 def get_pipeline_constants(h, params: dict[str, list[str]]) -> None:
     """Return decision tree structure + thresholds for the diagram."""
-    from quality import get_decision_tree
-    from spectral_check import (HF_DEFICIT_SUSPECT, HF_DEFICIT_MARGINAL,
-                                ALBUM_SUSPECT_PCT, MIN_CLIFF_SLICES,
-                                CLIFF_THRESHOLD_DB_PER_KHZ)
     tree = get_decision_tree()
     tree["constants"]["HF_DEFICIT_SUSPECT"] = HF_DEFICIT_SUSPECT
     tree["constants"]["HF_DEFICIT_MARGINAL"] = HF_DEFICIT_MARGINAL
@@ -173,7 +177,6 @@ def get_pipeline_constants(h, params: dict[str, list[str]]) -> None:
 
 def get_pipeline_simulate(h, params: dict[str, list[str]]) -> None:
     """Run full_pipeline_decision() with query-string inputs."""
-    from quality import full_pipeline_decision
 
     def _str(key: str) -> str | None:
         v = params.get(key, [None])[0]
@@ -204,7 +207,6 @@ def get_pipeline_simulate(h, params: dict[str, list[str]]) -> None:
 
 
 def get_pipeline_detail(h, params: dict[str, list[str]], req_id_str: str) -> None:
-    from classify import classify_log_entry, LogEntry
     s = _server()
     req_id = int(req_id_str)
     req = s._db().get_request(req_id)
@@ -240,7 +242,6 @@ def get_pipeline_detail(h, params: dict[str, list[str]], req_id_str: str) -> Non
 
 def post_pipeline_add(h, body: dict) -> None:
     s = _server()
-    import mb as mb_api
     mbid = body.get("mb_release_id", "").strip()
     source = body.get("source", "request")
 
@@ -300,7 +301,6 @@ def post_pipeline_update(h, body: dict) -> None:
         return
 
     if new_status == "wanted" and req["status"] != "wanted":
-        from lib.quality import QualityIntent, intent_to_quality_override
         mbid = req.get("mb_release_id")
         quality = None
         min_br = None
@@ -309,12 +309,10 @@ def post_pipeline_update(h, body: dict) -> None:
             if b.album_exists(mbid):
                 quality = intent_to_quality_override(QualityIntent.upgrade)
                 min_br = b.get_min_bitrate(mbid)
-        from lib.transitions import apply_transition
         apply_transition(s._db(), int(req_id), "wanted",
                          from_status=req["status"],
                          quality_override=quality, min_bitrate=min_br)
     else:
-        from lib.transitions import apply_transition
         apply_transition(s._db(), int(req_id), new_status,
                          from_status=req["status"])
 
@@ -323,8 +321,6 @@ def post_pipeline_update(h, body: dict) -> None:
 
 def post_pipeline_upgrade(h, body: dict) -> None:
     s = _server()
-    import mb as mb_api
-    from lib.quality import QualityIntent, intent_to_quality_override
     mbid = body.get("mb_release_id", "").strip()
     if not mbid:
         h._error("Missing mb_release_id")
@@ -337,7 +333,6 @@ def post_pipeline_upgrade(h, body: dict) -> None:
     if b:
         min_bitrate = b.get_min_bitrate(mbid)
 
-    from lib.transitions import apply_transition
     existing = s._db().get_request_by_mb_release_id(mbid)
     if existing:
         req_id = existing["id"]
@@ -403,7 +398,6 @@ def post_pipeline_set_quality(h, body: dict) -> None:
         )
 
     if new_status:
-        from lib.transitions import apply_transition
         if new_status not in ("wanted", "imported", "manual"):
             h._error(f"Invalid status: {new_status}")
             return
@@ -434,7 +428,6 @@ def post_pipeline_set_quality(h, body: dict) -> None:
 
 def post_pipeline_set_intent(h, body: dict) -> None:
     """Set quality intent for a pipeline request."""
-    from lib.quality import QualityIntent, intent_to_quality_override
     s = _server()
     req_id = body.get("id")
     intent_str = body.get("intent", "").strip()
@@ -462,7 +455,6 @@ def post_pipeline_set_intent(h, body: dict) -> None:
 
     if req["status"] == "imported":
         # Re-queue for search with the new intent
-        from lib.transitions import apply_transition
         min_br = req.get("min_bitrate")
         apply_transition(s._db(), int(req_id), "wanted",
                          from_status="imported",
@@ -517,8 +509,6 @@ def post_pipeline_ban_source(h, body: dict) -> None:
 
     req = s._db().get_request(int(req_id))
     if req:
-        from lib.quality import QualityIntent, intent_to_quality_override
-        from lib.transitions import apply_transition
         quality = req.get("quality_override") or intent_to_quality_override(QualityIntent.upgrade)
         min_br = req.get("min_bitrate")
         apply_transition(s._db(), int(req_id), "wanted",
@@ -576,7 +566,6 @@ def post_pipeline_force_import(h, body: dict) -> None:
         h._error(f"Files not found at: {failed_path}")
         return
 
-    from lib.import_service import run_import, log_and_update_import
     import_one_path = os.path.join(
         os.path.dirname(__file__), "..", "..", "harness", "import_one.py")
     outcome = run_import(
