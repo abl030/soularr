@@ -10,7 +10,7 @@ import { searchArtists, setSearchType, openBrowseArtist, closeBrowseArtist, swit
 import { renderArtistDiscography, loadReleaseGroup, addRelease, toggleReleaseDetail } from './discography.js';
 import { loadRecents, setRecentsFilter, renderRecentsItems } from './recents.js';
 import { loadPipeline, setFilter, renderPipeline, toggleDetail, deleteRequest, updateStatus } from './pipeline.js';
-import { renderLibraryResults, renderLibraryResultsInto, toggleLibDetail, banSource, setLibQuality, upgradeAlbum, confirmDeleteBeets, executeBeetsDeletion } from './library.js';
+import { renderLibraryResults, renderLibraryResultsInto, toggleLibDetail, banSource, setLibQuality, upgradeAlbum, setIntent, confirmDeleteBeets, executeBeetsDeletion } from './library.js';
 import { loadDecisions, dsPreset, runSimulator } from './decisions.js';
 import { renderDisambiguateInto, toggleDisambRGTracks, disambRemove, disambDeleteFromLibrary } from './analysis.js';
 import { loadManualImport, runManualImport } from './manual.js';
@@ -74,6 +74,7 @@ Object.assign(window, {
   banSource,
   setLibQuality,
   upgradeAlbum,
+  setIntent,
   confirmDeleteBeets,
   executeBeetsDeletion,
   loadDecisions,

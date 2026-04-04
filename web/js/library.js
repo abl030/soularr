@@ -181,6 +181,16 @@ export async function toggleLibDetail(id) {
         <button class="p-btn" onclick="event.stopPropagation(); var v=document.getElementById('lib-minbr-${id}').value; if(v) window.setLibQuality('${data.mb_albumid}', null, parseInt(v))">Set</button>
         <button class="p-btn" onclick="event.stopPropagation(); window.setLibQuality('${data.mb_albumid}', 'imported', null)">Accept</button>
       </div>`;
+      const currentIntent = overrideToIntent(data.quality_override);
+      html += `<div class="p-actions" style="margin-top:6px;">
+        <span class="p-detail-label" style="line-height:28px;">Intent:</span>
+        <select id="lib-intent-${id}" style="padding:2px 6px;background:#222;color:#eee;border:1px solid #444;border-radius:4px;font-size:0.8em;" onclick="event.stopPropagation()" onchange="event.stopPropagation(); window.setIntent(${data.pipeline_id}, this.value)">
+          <option value="best_effort"${currentIntent === 'best_effort' ? ' selected' : ''}>Best effort</option>
+          <option value="flac_only"${currentIntent === 'flac_only' ? ' selected' : ''}>FLAC only</option>
+          <option value="flac_preferred"${currentIntent === 'flac_preferred' ? ' selected' : ''}>FLAC preferred</option>
+          <option value="upgrade"${currentIntent === 'upgrade' ? ' selected' : ''}>Upgrade</option>
+        </select>
+      </div>`;
     }
     // Upgrade + Delete buttons
     html += '<div class="p-actions" style="margin-top:6px;">';
@@ -286,6 +296,40 @@ export async function upgradeAlbum(mbid, btn) {
     btn.textContent = 'Error';
     toast('Upgrade failed', true);
   }
+}
+
+/**
+ * Reverse-map quality_override DB string to QualityIntent enum value.
+ * @param {string|null|undefined} override
+ * @returns {string}
+ */
+function overrideToIntent(override) {
+  if (!override) return 'best_effort';
+  if (override === 'flac') return 'flac_only';
+  if (override === 'flac_preferred') return 'flac_preferred';
+  return 'upgrade';  // CSV like "flac,mp3 v0,mp3 320"
+}
+
+/**
+ * Set quality intent for a pipeline request.
+ * @param {number} pipelineId
+ * @param {string} intent
+ */
+export async function setIntent(pipelineId, intent) {
+  try {
+    const r = await fetch(`${API}/api/pipeline/set-intent`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: pipelineId, intent}),
+    });
+    const data = await r.json();
+    if (data.status === 'ok') {
+      const msg = data.requeued ? `Intent: ${intent} (requeued)` : `Intent: ${intent}`;
+      toast(msg);
+    } else {
+      toast(data.error || 'Failed to set intent', true);
+    }
+  } catch (e) { toast('Failed to set intent', true); }
 }
 
 /**

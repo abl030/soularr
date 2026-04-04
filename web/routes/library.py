@@ -47,6 +47,7 @@ def get_beets_album(h, params: dict[str, list[str]], album_id_str: str) -> None:
             result["pipeline_status"] = req["status"]
             result["pipeline_source"] = req.get("source")
             result["pipeline_min_bitrate"] = req.get("min_bitrate")
+            result["quality_override"] = req.get("quality_override")
             result["upgrade_queued"] = (
                 req["status"] == "wanted" and bool(req.get("quality_override"))
             )
