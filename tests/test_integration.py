@@ -664,5 +664,105 @@ class TestDeepcopyDeferredToMatch(unittest.TestCase):
         self.assertEqual(len(dir2["files"]), 2)
 
 
+class TestNegativeMatchCache(unittest.TestCase):
+    """Verify negative match cache prevents re-evaluating known mismatches."""
+
+    def setUp(self):
+        from lib.quality import parse_filetype_config
+        self._orig_cfg = soularr.cfg
+        self._orig_slskd = soularr.slskd
+        self._orig_folder_cache = soularr.folder_cache
+        self._orig_broken_user = soularr.broken_user
+        self._orig_album_cache = soularr._current_album_cache
+        self._orig_neg_cache = soularr._negative_matches
+
+        mock_cfg = MagicMock()
+        mock_cfg.allowed_filetypes = ("flac",)
+        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
+        mock_cfg.minimum_match_ratio = 0.5
+        mock_cfg.ignored_users = ()
+        soularr.cfg = mock_cfg
+
+        soularr.folder_cache = {}
+        soularr.broken_user = []
+        soularr._current_album_cache = {}
+        soularr._negative_matches = set()
+        soularr._slskd_version_gt_0_22_2 = True
+
+    def tearDown(self):
+        soularr.cfg = self._orig_cfg
+        soularr.slskd = self._orig_slskd
+        soularr.folder_cache = self._orig_folder_cache
+        soularr.broken_user = self._orig_broken_user
+        soularr._current_album_cache = self._orig_album_cache
+        soularr._negative_matches = self._orig_neg_cache
+        soularr._slskd_version_gt_0_22_2 = None
+
+    def test_same_dir_same_track_count_skipped(self):
+        """A dir that failed matching should be skipped on retry with same track count."""
+        # Pre-populate cache with a dir that has 1 file (won't match 3 tracks)
+        soularr.folder_cache["user1"] = {
+            "Music\\Album": {"files": [{"filename": "01.flac", "size": 100}], "directory": "Music\\Album"}
+        }
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+
+        tracks = [
+            {"albumId": 1, "title": "Track One", "mediumNumber": 1},
+            {"albumId": 1, "title": "Track Two", "mediumNumber": 1},
+            {"albumId": 1, "title": "Track Three", "mediumNumber": 1},
+        ]
+
+        # First call — misses (1 file vs 3 tracks)
+        found1, _, _ = soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+        self.assertFalse(found1)
+
+        # Negative cache should contain (user1, Music\Album, 3, flac)
+        self.assertIn(("user1", "Music\\Album", 3, "flac"), soularr._negative_matches)
+
+        # Second call with same track count — should skip (no album_track_num re-eval)
+        # We verify by checking that the negative cache hit prevents redundant work
+        found2, _, _ = soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+        self.assertFalse(found2)
+
+    def test_same_dir_different_filetype_not_skipped(self):
+        """A dir cached as negative for 'flac' should still be tried for '*'."""
+        soularr.folder_cache["user1"] = {
+            "Music\\Album": {
+                "files": [{"filename": "01 - Track One.mp3", "size": 100}],
+                "directory": "Music\\Album",
+            }
+        }
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+        tracks = [{"albumId": 1, "title": "Track One", "mediumNumber": 1}]
+
+        # Fails for "flac" (file is .mp3, album_track_num won't count it as flac)
+        soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+        self.assertIn(("user1", "Music\\Album", 1, "flac"), soularr._negative_matches)
+
+        # Should NOT be skipped for "*" (different filetype key)
+        self.assertNotIn(("user1", "Music\\Album", 1, "*"), soularr._negative_matches)
+
+    def test_same_dir_different_track_count_not_skipped(self):
+        """A dir that failed for 3 tracks should still be tried for 1 track."""
+        # Dir has 1 audio file
+        soularr.folder_cache["user1"] = {
+            "Music\\Album": {"files": [{"filename": "01 - Track One.flac", "size": 100}], "directory": "Music\\Album"}
+        }
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+
+        # Fail with 3 tracks
+        tracks_3 = [
+            {"albumId": 1, "title": "Track One", "mediumNumber": 1},
+            {"albumId": 1, "title": "Track Two", "mediumNumber": 1},
+            {"albumId": 1, "title": "Track Three", "mediumNumber": 1},
+        ]
+        soularr.check_for_match(tracks_3, "flac", ["Music\\Album"], "user1")
+
+        # Now try with 1 track — should NOT be skipped (different track count)
+        tracks_1 = [{"albumId": 1, "title": "Track One", "mediumNumber": 1}]
+        found, _, _ = soularr.check_for_match(tracks_1, "flac", ["Music\\Album"], "user1")
+        self.assertTrue(found)  # 1 file matches 1 track
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,7 @@ folder_cache = {}
 user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
 _slskd_version_gt_0_22_2: bool | None = None  # cached per-run
+_negative_matches: set[tuple[str, str, int, str]] = set()  # (username, file_dir, track_count, filetype)
 
 
 def album_match(expected_tracks, slskd_tracks, username, filetype):
@@ -305,7 +306,13 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
     logger.debug(f"Current broken users {broken_user}")
     if username in broken_user:
         return False, {}, ""
+    track_num = len(tracks)
     for file_dir in file_dirs:
+        neg_key = (username, file_dir, track_num, allowed_filetype)
+        if neg_key in _negative_matches:
+            logger.debug(f"Negative cache hit: {username} {file_dir} ({track_num} tracks, {allowed_filetype})")
+            continue
+
         if username not in folder_cache:
             logger.debug(f"Add user to cache: {username}")
             folder_cache[username] = {}
@@ -330,7 +337,6 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
             logger.info(f"User: {username} Folder: {file_dir} in cache. Using cached value")
 
         directory = folder_cache[username][file_dir]
-        track_num = len(tracks)
         tracks_info = album_track_num(directory)
 
         if tracks_info["count"] == track_num and tracks_info["filetype"] != "":
@@ -342,9 +348,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                         f"Track title cross-check FAILED for user {username}, "
                         f"dir {file_dir} — skipping (wrong pressing?)"
                     )
-                    continue
-            else:
-                continue
+        _negative_matches.add(neg_key)
     return False, {}, ""
 
 
@@ -712,6 +716,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
     denied_users = _get_denied_users(album_id)
     is_catch_all = allowed_filetype == "*"
     for disk in split_release:
+        _negative_matches.clear()  # each disc has different expected titles
         for username in results:
             if username in denied_users:
                 logger.info(f"Skipping user '{username}' for album ID {album_id} (multi-disc): denylisted (previously provided mislabeled quality)")
@@ -863,6 +868,9 @@ def find_download(album, grab_list):
     album_id = album.id
     artist_name = album.artist_name
     results = search_cache[album_id]
+
+    # Clear negative match cache per-album — same dir could match a different album
+    _negative_matches.clear()
 
     # Cache album so get_album_by_id() works during matching
     _current_album_cache[album_id] = album
@@ -1046,7 +1054,8 @@ def main():
         folder_cache, \
         user_upload_speed, \
         broken_user, \
-        _slskd_version_gt_0_22_2
+        _slskd_version_gt_0_22_2, \
+        _negative_matches
 
     # Let's allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soularr downloads wanted albums from Soulseek via slskd""")
@@ -1141,6 +1150,7 @@ def main():
         user_upload_speed = {}
         broken_user = []
         _slskd_version_gt_0_22_2 = None
+        _negative_matches = set()
 
         slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
 
