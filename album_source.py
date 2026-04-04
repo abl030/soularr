@@ -235,6 +235,8 @@ class DatabaseSource:
             update_fields["on_disk_spectral_bitrate"] = dl.bitrate // 1000
         elif dl.spectral_bitrate is not None:
             update_fields["on_disk_spectral_bitrate"] = dl.spectral_bitrate
+        if dl.final_format:
+            update_fields["final_format"] = dl.final_format
         from lib.transitions import apply_transition
         apply_transition(db, request_id, "imported", **update_fields)
 
@@ -263,6 +265,7 @@ class DatabaseSource:
             existing_spectral_bitrate=dl.existing_spectral_bitrate,
             import_result=dl.import_result,
             validation_result=dl.validation_result,
+            final_format=dl.final_format,
         )
 
     def mark_failed(self, album_record, bv_result, usernames=None,

@@ -537,6 +537,8 @@ class DownloadInfo:
     import_result: Optional[str] = None
     # Full validation result (JSON string)
     validation_result: Optional[str] = None
+    # Final format on disk (e.g. "opus 128" when Opus conversion used)
+    final_format: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

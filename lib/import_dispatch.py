@@ -56,6 +56,8 @@ def _populate_dl_info_from_import_result(dl_info: DownloadInfo,
         if existing_m.min_bitrate_kbps is not None:
             dl_info.existing_min_bitrate = existing_m.min_bitrate_kbps
     dl_info.import_result = ir.to_json()
+    if ir.final_format:
+        dl_info.final_format = ir.final_format
 
 
 def _cleanup_staged_dir(dest: str) -> None:

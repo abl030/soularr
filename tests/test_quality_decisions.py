@@ -742,6 +742,12 @@ class TestDispatchAction(unittest.TestCase):
         a = self._action("import_failed")
         self.assertTrue(a.mark_failed)
 
+    def test_opus_conversion_failed_marks_failed(self):
+        """Opus conversion failure falls into catch-all → mark_failed."""
+        a = self._action("opus_conversion_failed")
+        self.assertTrue(a.mark_failed)
+        self.assertFalse(a.denylist)
+
 
 # ============================================================================
 # extract_usernames

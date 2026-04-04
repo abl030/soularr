@@ -123,6 +123,17 @@ def opus_conversion_decision(will_be_verified_lossless: bool,
     return StageResult(decision="skip_opus")
 
 
+def opus_cleanup_decision(opus_skipped: bool, opus_conversion_enabled: bool,
+                          converted: int) -> bool:
+    """Should we clean up kept FLAC files after opus was skipped? (pure)
+
+    When --opus-conversion was passed, convert_lossless_to_v0() kept the
+    source files. If opus conversion was then skipped (transcode detected),
+    we must remove the FLAC files so beets only sees V0 MP3s.
+    """
+    return opus_skipped and opus_conversion_enabled and converted > 0
+
+
 def final_exit_decision(is_transcode: bool) -> int:
     """Determine the final exit code after a successful import."""
     return 6 if is_transcode else 0
@@ -713,6 +724,14 @@ def main():
         r.final_format = "opus 128"
         _log(f"  Opus conversion complete: {opus_converted} files, min_bitrate={opus_min_br}kbps")
         _log(f"  V0 verification bitrate: {post_conv_br}kbps")
+
+    # --- Clean up kept FLAC files if opus was skipped (transcode path) ---
+    if opus_cleanup_decision(opus_stage.decision == "skip_opus",
+                             args.opus_conversion, converted):
+        for fname in os.listdir(args.path):
+            if _is_lossless_file(fname, args.path):
+                os.remove(os.path.join(args.path, fname))
+        _log(f"  [CLEANUP] Removed lossless originals (opus skipped, not verified lossless)")
 
     # --- Import ---
     _log(f"[IMPORT] {args.path} → beets (mbid={mbid})")

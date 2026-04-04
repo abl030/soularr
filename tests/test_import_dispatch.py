@@ -458,6 +458,7 @@ class TestOpusConversionDispatch(unittest.TestCase):
         self.assertEqual(dl.slskd_filetype, "flac")
         self.assertTrue(dl.is_vbr)
         self.assertEqual(dl.bitrate, 128000)
+        self.assertEqual(dl.final_format, "opus 128")
 
 
 if __name__ == "__main__":

@@ -496,7 +496,9 @@ class PipelineDB:
                      # Full import_one.py result (JSON string)
                      import_result=None,
                      # Full validation result (JSON string)
-                     validation_result=None):
+                     validation_result=None,
+                     # Final format on disk
+                     final_format=None):
         self._execute("""
             INSERT INTO download_log (
                 request_id, soulseek_username, filetype, download_path,
@@ -508,9 +510,9 @@ class PipelineDB:
                 actual_filetype, actual_min_bitrate,
                 spectral_grade, spectral_bitrate,
                 existing_min_bitrate, existing_spectral_bitrate,
-                import_result, validation_result
+                import_result, validation_result, final_format
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             request_id, soulseek_username, filetype, download_path,
             beets_distance, beets_scenario, beets_detail, valid,
@@ -521,7 +523,7 @@ class PipelineDB:
             actual_filetype, actual_min_bitrate,
             spectral_grade, spectral_bitrate,
             existing_min_bitrate, existing_spectral_bitrate,
-            import_result, validation_result,
+            import_result, validation_result, final_format,
         ))
         self.conn.commit()
 

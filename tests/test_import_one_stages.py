@@ -261,6 +261,42 @@ class TestOpusConversionDecision(unittest.TestCase):
         self.assertFalse(r.is_terminal)
 
 
+# ============================================================================
+# opus_cleanup_decision — clean up FLAC when opus path skipped
+# ============================================================================
+
+class TestOpusCleanupDecision(unittest.TestCase):
+    """When opus was requested but skipped (transcode), FLAC files must be cleaned up."""
+
+    def test_opus_skipped_with_flag_needs_cleanup(self):
+        from import_one import opus_cleanup_decision
+        r = opus_cleanup_decision(opus_skipped=True,
+                                  opus_conversion_enabled=True,
+                                  converted=5)
+        self.assertTrue(r)
+
+    def test_opus_skipped_without_flag_no_cleanup(self):
+        from import_one import opus_cleanup_decision
+        r = opus_cleanup_decision(opus_skipped=True,
+                                  opus_conversion_enabled=False,
+                                  converted=5)
+        self.assertFalse(r)
+
+    def test_opus_not_skipped_no_cleanup(self):
+        from import_one import opus_cleanup_decision
+        r = opus_cleanup_decision(opus_skipped=False,
+                                  opus_conversion_enabled=True,
+                                  converted=5)
+        self.assertFalse(r)
+
+    def test_no_conversion_no_cleanup(self):
+        from import_one import opus_cleanup_decision
+        r = opus_cleanup_decision(opus_skipped=True,
+                                  opus_conversion_enabled=True,
+                                  converted=0)
+        self.assertFalse(r)
+
+
 class TestConvertV0KeepSource(unittest.TestCase):
     """Test that keep_source=True preserves original lossless files."""
 
