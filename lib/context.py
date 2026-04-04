@@ -32,3 +32,4 @@ class SoularrContext:
     search_dir_audio_count: dict[str, dict[str, int]] = field(default_factory=dict)
     negative_matches: set[tuple[str, str, int, str]] = field(default_factory=set)
     current_album_cache: dict[int, Any] = field(default_factory=dict)
+    denied_users_cache: dict[int, set[str]] = field(default_factory=dict)

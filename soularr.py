@@ -565,7 +565,6 @@ def search_for_album(album, ctx):
     # We must wait while state is Queued OR InProgress.
     # slskd's searchTimeout is "time since last response", not absolute.
     # Our poll timeout must be longer — let slskd complete on its own.
-    time.sleep(5)
     slskd_timeout_s = cfg.search_timeout / 1000 if cfg.search_timeout > 1000 else cfg.search_timeout
     poll_timeout_s = slskd_timeout_s * 2 + 15
     start_time = time.time()
@@ -671,7 +670,6 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
     # NOTE: slskd's searchTimeout is "time since last response", not absolute.
     # A 30s timeout means slskd waits 30s after the last peer responds. Our
     # poll timeout must be longer — slskd will complete the search on its own.
-    time.sleep(5)
     slskd_timeout_s = search_cfg.search_timeout / 1000 if search_cfg.search_timeout > 1000 else search_cfg.search_timeout
     timeout_s = slskd_timeout_s + slskd_timeout_s + 15  # worst case: responses arrive at T=timeout, then wait another timeout
     start_time = time.time()
@@ -760,15 +758,18 @@ def _merge_search_result(result, ctx):
             ctx.search_dir_audio_count[username][d] = max(existing, count)
 
 
-def _get_denied_users(album_id):
-    """Get denied users from pipeline DB source_denylist."""
-    denied = set()
+def _get_denied_users(album_id, ctx):
+    """Get denied users from pipeline DB source_denylist. Cached per album per run."""
     request_id = abs(album_id)
+    if request_id in ctx.denied_users_cache:
+        return ctx.denied_users_cache[request_id]
+    denied = set()
     try:
         db = pipeline_db_source._get_db()
         denied.update(e["username"] for e in db.get_denylisted_users(request_id))
     except Exception:
         pass
+    ctx.denied_users_cache[request_id] = denied
     return denied
 
 
@@ -778,9 +779,13 @@ def _get_user_dirs(results_for_user: dict[str, list[str]], allowed_filetype: str
     Returns None if the user has no dirs for the requested filetype.
     """
     if allowed_filetype == "*":
+        seen: set[str] = set()
         file_dirs: list[str] = []
         for ft_dirs in results_for_user.values():
-            file_dirs.extend(d for d in ft_dirs if d not in file_dirs)
+            for d in ft_dirs:
+                if d not in seen:
+                    seen.add(d)
+                    file_dirs.append(d)
         return file_dirs or None
     if allowed_filetype not in results_for_user:
         return None
@@ -793,7 +798,7 @@ def try_enqueue(all_tracks, results, allowed_filetype, ctx):
     Iterates over all users and enqueues a found match
     """
     album_id = all_tracks[0]["albumId"]
-    denied_users = _get_denied_users(album_id)
+    denied_users = _get_denied_users(album_id, ctx)
     # Sort users by upload speed (fastest first) for quicker downloads
     sorted_users = sorted(results.keys(), key=lambda u: ctx.user_upload_speed.get(u, 0), reverse=True)
     for username in sorted_users:
@@ -852,7 +857,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, ctx):
     total = len(split_release)
     count_found = 0
     album_id = all_tracks[0]["albumId"]
-    denied_users = _get_denied_users(album_id)
+    denied_users = _get_denied_users(album_id, ctx)
     for disk in split_release:
         ctx.negative_matches.clear()  # each disc has different expected titles
         for username in results:
