@@ -196,6 +196,15 @@ class TestApplyTransition(unittest.TestCase):
         # Should still call set_downloading despite invalid transition
         db.set_downloading.assert_called_once()
 
+    def test_downloading_guard_logs_when_rejected(self):
+        """When set_downloading returns False, transition logs a warning."""
+        db = self._make_db("wanted")
+        db.set_downloading.return_value = False
+        with self.assertLogs("soularr", level="WARNING") as cm:
+            apply_transition(db, 1, "downloading", from_status="wanted",
+                             state_json='{"filetype":"flac"}')
+        self.assertTrue(any("status guard" in msg for msg in cm.output))
+
     def test_request_not_found(self):
         db = MagicMock()
         db.get_request.return_value = None

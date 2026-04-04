@@ -728,6 +728,52 @@ class TestDownloadingStatus(unittest.TestCase):
         # Starting a download should not consume a backoff attempt.
         self.assertEqual(req["download_attempts"], 0)
 
+    def test_set_downloading_returns_true_from_wanted(self):
+        """set_downloading() returns True when album is wanted."""
+        req_id = self.db.add_request(
+            mb_release_id="guard-ok", artist_name="A", album_title="B",
+            source="request")
+        state_json = json.dumps({"filetype": "flac", "enqueued_at": "t", "files": []})
+        result = self.db.set_downloading(req_id, state_json)
+        self.assertTrue(result)
+        self.assertEqual(self.db.get_request(req_id)["status"], "downloading")
+
+    def test_set_downloading_noop_from_imported(self):
+        """set_downloading() returns False and doesn't overwrite imported status."""
+        req_id = self.db.add_request(
+            mb_release_id="guard-imp", artist_name="A", album_title="B",
+            source="request")
+        self.db.update_status(req_id, "imported")
+        state_json = json.dumps({"filetype": "flac", "enqueued_at": "t", "files": []})
+        result = self.db.set_downloading(req_id, state_json)
+        self.assertFalse(result)
+        self.assertEqual(self.db.get_request(req_id)["status"], "imported")
+
+    def test_set_downloading_noop_from_downloading(self):
+        """set_downloading() returns False when already downloading (no state overwrite)."""
+        req_id = self.db.add_request(
+            mb_release_id="guard-dl", artist_name="A", album_title="B",
+            source="request")
+        original_state = json.dumps({"filetype": "flac", "enqueued_at": "t", "files": []})
+        self.db.set_downloading(req_id, original_state)
+        new_state = json.dumps({"filetype": "mp3 v0", "enqueued_at": "t2", "files": []})
+        result = self.db.set_downloading(req_id, new_state)
+        self.assertFalse(result)
+        # Original state preserved
+        ads = self.db.get_request(req_id)["active_download_state"]
+        self.assertEqual(ads["filetype"], "flac")
+
+    def test_set_downloading_noop_from_manual(self):
+        """set_downloading() returns False when status is manual."""
+        req_id = self.db.add_request(
+            mb_release_id="guard-man", artist_name="A", album_title="B",
+            source="request")
+        self.db.update_status(req_id, "manual")
+        state_json = json.dumps({"filetype": "flac", "enqueued_at": "t", "files": []})
+        result = self.db.set_downloading(req_id, state_json)
+        self.assertFalse(result)
+        self.assertEqual(self.db.get_request(req_id)["status"], "manual")
+
     def test_update_download_state(self):
         """update_download_state() rewrites JSONB without changing status."""
         req_id = self.db.add_request(

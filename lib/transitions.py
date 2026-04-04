@@ -122,7 +122,10 @@ def apply_transition(
 
     # wanted → downloading: use set_downloading with JSONB state
     if to_status == "downloading" and state_json is not None:
-        db.set_downloading(request_id, state_json)
+        if not db.set_downloading(request_id, state_json):
+            logger.warning(
+                f"apply_transition: status guard prevented {from_status!r} -> "
+                f"'downloading' for request {request_id} (album no longer wanted)")
         return
 
     # → wanted with counter reset: use reset_to_wanted

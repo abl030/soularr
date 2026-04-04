@@ -341,18 +341,23 @@ class PipelineDB:
 
     # --- Downloading state ---
 
-    def set_downloading(self, request_id: int, state_json: str) -> None:
-        """Set album to downloading and store the active download state."""
+    def set_downloading(self, request_id: int, state_json: str) -> bool:
+        """Set album to downloading and store the active download state.
+
+        Only transitions from 'wanted' status. Returns True if the update
+        matched (album was wanted), False if the status guard prevented it.
+        """
         now = datetime.now(timezone.utc)
-        self._execute("""
+        cur = self._execute("""
             UPDATE album_requests
             SET status = 'downloading',
                 active_download_state = %s::jsonb,
                 last_attempt_at = %s,
                 updated_at = %s
-            WHERE id = %s
+            WHERE id = %s AND status = 'wanted'
         """, (state_json, now, now, request_id))
         self.conn.commit()
+        return cur.rowcount > 0
 
     def update_download_state(self, request_id: int, state_json: str) -> None:
         """Rewrite active_download_state without changing status or attempt counters."""
