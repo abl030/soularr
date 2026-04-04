@@ -10,7 +10,11 @@ import shutil
 import sys
 import tempfile
 import unittest
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch, PropertyMock
+
+if TYPE_CHECKING:
+    from lib.config import SoularrConfig
 
 # Mock heavy deps before importing soularr
 sys.modules["music_tag"] = MagicMock()
@@ -34,6 +38,34 @@ def _make_ctx(cfg=None, slskd=None):
         cfg=cfg or MagicMock(),
         slskd=slskd or MagicMock(),
         pipeline_db_source=MagicMock(),
+    )
+
+
+def _make_matching_cfg(
+    allowed_filetypes: tuple[str, ...] = ("flac",),
+    minimum_match_ratio: float = 0.5,
+    ignored_users: tuple[str, ...] = (),
+    browse_parallelism: int = 4,
+    download_filtering: bool = False,
+    use_extension_whitelist: bool = False,
+    extensions_whitelist: tuple[str, ...] = (),
+    **extra,
+) -> "SoularrConfig":
+    """Build a SoularrConfig with matching-friendly defaults.
+
+    Uses the real frozen dataclass so tests break immediately when new
+    required fields are added, rather than silently passing via MagicMock.
+    """
+    from lib.config import SoularrConfig
+    return SoularrConfig(
+        allowed_filetypes=allowed_filetypes,
+        minimum_match_ratio=minimum_match_ratio,
+        ignored_users=ignored_users,
+        browse_parallelism=browse_parallelism,
+        download_filtering=download_filtering,
+        use_extension_whitelist=use_extension_whitelist,
+        extensions_whitelist=extensions_whitelist,
+        **extra,
     )
 
 
@@ -147,12 +179,8 @@ class TestRawDictBoundary(unittest.TestCase):
 
     def test_album_track_num_with_raw_dicts(self):
         """album_track_num receives raw directory dicts."""
-        from lib.quality import parse_filetype_config
         orig_cfg = soularr.cfg
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac", "mp3")
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg(allowed_filetypes=("flac", "mp3"))
         try:
             directory = make_directory("Music\\Album", [
                 {"filename": "01 - Track.flac", "size": 100},
@@ -168,11 +196,11 @@ class TestRawDictBoundary(unittest.TestCase):
     def test_download_filter_with_raw_dicts(self):
         """download_filter receives raw directory dicts."""
         orig_cfg = soularr.cfg
-        mock_cfg = MagicMock()
-        mock_cfg.download_filtering = True
-        mock_cfg.use_extension_whitelist = True
-        mock_cfg.extensions_whitelist = ("jpg", "txt")
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg(
+            download_filtering=True,
+            use_extension_whitelist=True,
+            extensions_whitelist=("jpg", "txt"),
+        )
         try:
             directory = make_directory("Music\\Album", [
                 {"filename": "01 - Track.flac", "size": 100},
@@ -356,9 +384,7 @@ class TestCancelAndDelete(unittest.TestCase):
     """Verify cancel_and_delete works with DownloadFile instances."""
 
     def test_cancels_download_files(self):
-        mock_cfg = MagicMock()
-        mock_cfg.slskd_download_dir = tempfile.mkdtemp()
-        ctx = _make_ctx(cfg=mock_cfg)
+        ctx = _make_ctx(cfg=_make_matching_cfg(slskd_download_dir=tempfile.mkdtemp()))
         files = [
             DownloadFile(filename="track.flac", id="xfer-1",
                          file_dir="Music\\Album", username="user1", size=100),
@@ -403,7 +429,6 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
     """Verify try_multi_enqueue works without deepcopy on results."""
 
     def setUp(self):
-        from lib.quality import parse_filetype_config
         self._orig_cfg = soularr.cfg
         self._orig_slskd = soularr.slskd
         self._orig_folder_cache = soularr.folder_cache
@@ -411,14 +436,7 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
         self._orig_album_cache = soularr._current_album_cache
         self._orig_pdb = soularr.pipeline_db_source
 
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.download_filtering = False
-        mock_cfg.browse_parallelism = 4
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg()
 
         soularr.folder_cache = {}
         soularr.broken_user = []
@@ -482,23 +500,17 @@ class TestDeepcopyDeferredToMatch(unittest.TestCase):
     """Verify deepcopy only happens for matched directories, not every lookup."""
 
     def setUp(self):
-        from lib.quality import parse_filetype_config
         self._orig_cfg = soularr.cfg
         self._orig_slskd = soularr.slskd
         self._orig_folder_cache = soularr.folder_cache
         self._orig_broken_user = soularr.broken_user
         self._orig_album_cache = soularr._current_album_cache
 
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.browse_parallelism = 4
-        mock_cfg.download_filtering = True
-        mock_cfg.use_extension_whitelist = True
-        mock_cfg.extensions_whitelist = ("jpg",)
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg(
+            download_filtering=True,
+            use_extension_whitelist=True,
+            extensions_whitelist=("jpg",),
+        )
 
         soularr.folder_cache = {}
         soularr.broken_user = []
@@ -578,7 +590,6 @@ class TestNegativeMatchCache(unittest.TestCase):
     """Verify negative match cache prevents re-evaluating known mismatches."""
 
     def setUp(self):
-        from lib.quality import parse_filetype_config
         self._orig_cfg = soularr.cfg
         self._orig_slskd = soularr.slskd
         self._orig_folder_cache = soularr.folder_cache
@@ -586,20 +597,13 @@ class TestNegativeMatchCache(unittest.TestCase):
         self._orig_album_cache = soularr._current_album_cache
         self._orig_neg_cache = soularr._negative_matches
 
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.browse_parallelism = 4
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg()
 
         soularr.folder_cache = {}
         soularr.broken_user = []
         soularr._current_album_cache = {}
         soularr._negative_matches = set()
         soularr.search_dir_audio_count = {}
-
 
     def tearDown(self):
         soularr.cfg = self._orig_cfg
@@ -680,7 +684,6 @@ class TestSearchResultPreFiltering(unittest.TestCase):
     """Verify directories with wrong audio file count are skipped before browsing."""
 
     def setUp(self):
-        from lib.quality import parse_filetype_config
         self._orig_cfg = soularr.cfg
         self._orig_slskd = soularr.slskd
         self._orig_folder_cache = soularr.folder_cache
@@ -689,13 +692,7 @@ class TestSearchResultPreFiltering(unittest.TestCase):
         self._orig_neg_cache = soularr._negative_matches
         self._orig_dir_counts = soularr.search_dir_audio_count
 
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.browse_parallelism = 4
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg()
 
         self.mock_slskd = MagicMock()
         soularr.slskd = self.mock_slskd
@@ -827,7 +824,6 @@ class TestParallelDirectoryBrowsing(unittest.TestCase):
     """Verify parallel directory browsing populates folder_cache correctly."""
 
     def setUp(self):
-        from lib.quality import parse_filetype_config
         self._orig_cfg = soularr.cfg
         self._orig_slskd = soularr.slskd
         self._orig_folder_cache = soularr.folder_cache
@@ -836,13 +832,7 @@ class TestParallelDirectoryBrowsing(unittest.TestCase):
         self._orig_neg_cache = soularr._negative_matches
         self._orig_dir_counts = soularr.search_dir_audio_count
 
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.browse_parallelism = 4
-        soularr.cfg = mock_cfg
+        soularr.cfg = _make_matching_cfg()
 
         self.mock_slskd = MagicMock()
         soularr.slskd = self.mock_slskd
