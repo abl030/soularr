@@ -101,10 +101,8 @@ def cmd_fix(db: PipelineDB, slskd_host: str | None = None,
     for issue in issues:
         repair = suggest_repair(issue)
         if repair.action == "reset_to_wanted":
-            from_status = "downloading" if issue.issue_type in (
-                "corrupt_downloading", "orphaned_download") else issue.issue_type
             apply_transition(db, issue.request_id, "wanted",
-                             from_status=from_status)
+                             from_status="downloading")
             print(f"  [{issue.request_id}] Reset to wanted ({issue.issue_type})")
         elif repair.action == "clear_imported_path":
             db._execute(
