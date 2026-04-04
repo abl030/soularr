@@ -1133,6 +1133,38 @@ class TestPollActiveDownloads(unittest.TestCase):
         kwargs = mock_db.log_download.call_args.kwargs
         self.assertEqual(kwargs["outcome"], "timeout")
 
+    def test_poll_active_remote_queue_does_not_use_stalled_timeout(self):
+        """Fully remote-queued albums should not hit stalled_timeout first."""
+        from lib.download import poll_active_downloads
+        now = datetime.now(timezone.utc)
+        enqueued_at = (now - timedelta(seconds=200)).isoformat()
+        stale_progress = (now - timedelta(seconds=1200)).isoformat()
+        state_dict = {
+            "filetype": "flac",
+            "enqueued_at": enqueued_at,
+            "last_progress_at": stale_progress,
+            "files": [
+                {"username": "user1", "filename": "user1\\Music\\01.flac",
+                 "file_dir": "user1\\Music", "size": 30000000},
+            ],
+        }
+        row = self._make_downloading_row(state_dict=state_dict)
+        ctx, mock_db = self._make_poll_ctx(downloading_rows=[row])
+        cfg = cast(Any, ctx.cfg)
+        cfg.remote_queue_timeout = 3600
+        cfg.stalled_timeout = 120
+
+        def mock_status(downloads, ctx_arg):
+            for f in downloads:
+                f.status = {"state": "Queued, Remotely"}
+            return True
+
+        with patch("lib.download.slskd_download_status", side_effect=mock_status):
+            with patch("lib.download.cancel_and_delete"):
+                poll_active_downloads(ctx)
+
+        mock_db.log_download.assert_not_called()
+
     @patch("lib.download.process_completed_album")
     def test_poll_transfer_vanished_partial(self, mock_process):
         """7/12 files vanish → treated as errors, not complete."""

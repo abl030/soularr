@@ -132,6 +132,16 @@ def downloads_all_done(downloads: list[Any]) -> tuple[bool, list[Any] | None, in
     return all_done, error_list if error_list else None, remote_queue
 
 
+def _all_files_remotely_queued(downloads: list[Any], remote_queue_count: int) -> bool:
+    """Return True when every tracked file is still queued on the remote peer.
+
+    This is intentionally separate from stalled transfer detection: a file that has
+    never started uploading should be governed by the remote queue timeout, not the
+    no-progress timeout used for active transfers.
+    """
+    return bool(downloads) and remote_queue_count == len(downloads)
+
+
 # === Spectral context gathering ===
 
 def _gather_spectral_context(album_data: GrabListEntry, import_folder: str,
@@ -836,8 +846,12 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
         statusful_files = [f for f in entry.files if f.status is not None]
         state_changed = _capture_download_progress(statusful_files, state, now)
 
-        # Remote queue timeout: all files stuck in remote queue
-        if queued == len(entry.files) and elapsed_seconds >= ctx.cfg.remote_queue_timeout:
+        all_remote_queued = _all_files_remotely_queued(entry.files, queued)
+
+        # Remote queue timeout: all files are still waiting on the peer's queue.
+        # Do not apply stalled_timeout to this state; that policy is only for
+        # transfers that have actually started and then stopped making progress.
+        if all_remote_queued and elapsed_seconds >= ctx.cfg.remote_queue_timeout:
             _timeout_album(entry, request_id,
                           f"remote_queue_timeout {ctx.cfg.remote_queue_timeout}s exceeded "
                           f"(all {queued} files queued remotely)", ctx)
@@ -903,19 +917,20 @@ def poll_active_downloads(ctx: SoularrContext) -> None:
             if refreshed and refreshed["status"] != "downloading":
                 continue
 
-        progress_at = state.last_progress_at or state.enqueued_at
-        idle_seconds = (
-            now - datetime.fromisoformat(progress_at)
-        ).total_seconds()
-        if idle_seconds >= ctx.cfg.stalled_timeout:
-            _timeout_album(
-                entry,
-                request_id,
-                f"no download progress for {idle_seconds:.0f}s "
-                f"(stalled_timeout {ctx.cfg.stalled_timeout}s)",
-                ctx,
-            )
-            continue
+        if not all_remote_queued:
+            progress_at = state.last_progress_at or state.enqueued_at
+            idle_seconds = (
+                now - datetime.fromisoformat(progress_at)
+            ).total_seconds()
+            if idle_seconds >= ctx.cfg.stalled_timeout:
+                _timeout_album(
+                    entry,
+                    request_id,
+                    f"no download progress for {idle_seconds:.0f}s "
+                    f"(stalled_timeout {ctx.cfg.stalled_timeout}s)",
+                    ctx,
+                )
+                continue
 
         refreshed = db.get_request(request_id)
         if refreshed and refreshed["status"] != "downloading":
