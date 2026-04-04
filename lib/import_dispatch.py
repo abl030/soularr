@@ -91,7 +91,7 @@ def _build_download_info(album_data: GrabListEntry) -> DownloadInfo:
     )
 
 
-def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
+def _check_quality_gate(album_data: GrabListEntry, request_id: int,
                         ctx: "SoularrContext") -> None:
     """Post-import quality gate: if min track bitrate is below V0, queue for upgrade."""
     from lib.quality import quality_gate_decision, AudioQualityMeasurement
@@ -99,8 +99,6 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
 
     mb_id = album_data.mb_release_id
     if not mb_id or not ctx.cfg.pipeline_db_enabled or ctx.pipeline_db_source is None:
-        return
-    if request_id is None:
         return
     try:
         with BeetsDB() as beets:
@@ -112,17 +110,16 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int | None,
 
         spectral_br: int | None = None
         req = None
-        if request_id:
-            try:
-                req = ctx.pipeline_db_source._get_db().get_request(request_id)
-                raw_br = req.get("spectral_bitrate") if req else None
-                spectral_br = raw_br if isinstance(raw_br, int) else None
-                effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
-                if effective is not None and effective < min_br_kbps:
-                    logger.info(f"QUALITY GATE: using spectral_bitrate={spectral_br}kbps "
-                                f"(lower than beets min_bitrate={min_br_kbps}kbps)")
-            except Exception:
-                logger.debug("QUALITY GATE: DB lookup failed for spectral override")
+        try:
+            req = ctx.pipeline_db_source._get_db().get_request(request_id)
+            raw_br = req.get("spectral_bitrate") if req else None
+            spectral_br = raw_br if isinstance(raw_br, int) else None
+            effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
+            if effective is not None and effective < min_br_kbps:
+                logger.info(f"QUALITY GATE: using spectral_bitrate={spectral_br}kbps "
+                            f"(lower than beets min_bitrate={min_br_kbps}kbps)")
+        except Exception:
+            logger.debug("QUALITY GATE: DB lookup failed for spectral override")
         verified_lossless = bool(req.get("verified_lossless")) if req else False
 
         current = AudioQualityMeasurement(
@@ -198,7 +195,7 @@ def trigger_plex_scan(ctx: "SoularrContext", imported_path: str | None = None) -
 
 
 def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest: str,
-                    dl_info: DownloadInfo, request_id: int | None,
+                    dl_info: DownloadInfo, request_id: int,
                     ctx: "SoularrContext") -> None:
     """Auto-import decision tree: run import_one.py and dispatch on result.
 
@@ -212,18 +209,17 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
     logger.info(f"AUTO-IMPORT: {label} "
                 f"(source=request, dist={bv_result.distance:.4f})")
     try:
-        cmd = [sys.executable, import_script, dest, mb_id]
-        if request_id:
-            cmd.extend(["--request-id", str(request_id)])
-            try:
-                req = ctx.pipeline_db_source._get_db().get_request(request_id)
-                if req:
-                    effective_br = compute_effective_override_bitrate(
-                        req.get("min_bitrate"), req.get("on_disk_spectral_bitrate"))
-                    if effective_br is not None:
-                        cmd.extend(["--override-min-bitrate", str(effective_br)])
-            except Exception:
-                logger.debug("DB lookup failed for override-min-bitrate")
+        cmd = [sys.executable, import_script, dest, mb_id,
+               "--request-id", str(request_id)]
+        try:
+            req = ctx.pipeline_db_source._get_db().get_request(request_id)
+            if req:
+                effective_br = compute_effective_override_bitrate(
+                    req.get("min_bitrate"), req.get("on_disk_spectral_bitrate"))
+                if effective_br is not None:
+                    cmd.extend(["--override-min-bitrate", str(effective_br)])
+        except Exception:
+            logger.debug("DB lookup failed for override-min-bitrate")
         import_env = {**os.environ, "HOME": "/home/abl030"}
         result = sp.run(cmd, capture_output=True, text=True,
                         timeout=1800, env=import_env)
@@ -259,7 +255,7 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                 ctx.pipeline_db_source.mark_done(
                     album_data, bv_result, dest_path=dest, download_info=dl_info)
                 if decision in ("import", "preflight_existing"):
-                    if request_id and (prev_br is not None or new_br is not None):
+                    if prev_br is not None or new_br is not None:
                         try:
                             db = ctx.pipeline_db_source._get_db()
                             apply_transition(db, request_id, "imported",
@@ -307,7 +303,7 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                     db.add_denylist(request_id, username, reason)
                 logger.info(f"  Denylisted {usernames} for request {request_id}")
 
-            if action.requeue and request_id is not None:
+            if action.requeue:
                 db = ctx.pipeline_db_source._get_db()
                 apply_transition(
                     db, request_id, "wanted",

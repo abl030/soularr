@@ -14,6 +14,7 @@ from lib.quality import (DownloadInfo, ImportResult, ConversionInfo,
                          AudioQualityMeasurement, PostflightInfo,
                          QUALITY_UPGRADE_TIERS,
                          QualityIntent, intent_to_quality_override)
+from tests.helpers import make_request_row
 
 
 def _make_import_result(decision="import", new_min_bitrate=245,
@@ -64,7 +65,7 @@ def _make_ctx():
     ctx.cfg.beets_distance_threshold = 0.15
     ctx.pipeline_db_source = MagicMock()
     db_mock = MagicMock()
-    db_mock.get_request.return_value = {"status": "downloading", "min_bitrate": None, "on_disk_spectral_bitrate": None, "spectral_bitrate": None, "verified_lossless": False}
+    db_mock.get_request.return_value = make_request_row(status="downloading")
     ctx.pipeline_db_source._get_db.return_value = db_mock
     return ctx
 
@@ -301,34 +302,26 @@ class TestOverrideMinBitrate(unittest.TestCase):
 
     def test_uses_spectral_when_lower(self):
         """Container says 320, spectral says 128 — should pass 128."""
-        val = self._get_override_value({
-            "min_bitrate": 320,
-            "on_disk_spectral_bitrate": 128,
-        })
+        val = self._get_override_value(
+            make_request_row(min_bitrate=320, on_disk_spectral_bitrate=128))
         self.assertEqual(val, 128)
 
     def test_uses_container_when_no_spectral(self):
         """No spectral data — should pass container bitrate."""
-        val = self._get_override_value({
-            "min_bitrate": 320,
-            "on_disk_spectral_bitrate": None,
-        })
+        val = self._get_override_value(
+            make_request_row(min_bitrate=320, on_disk_spectral_bitrate=None))
         self.assertEqual(val, 320)
 
     def test_uses_container_when_spectral_higher(self):
         """Spectral is higher than container — use container (more conservative)."""
-        val = self._get_override_value({
-            "min_bitrate": 192,
-            "on_disk_spectral_bitrate": 256,
-        })
+        val = self._get_override_value(
+            make_request_row(min_bitrate=192, on_disk_spectral_bitrate=256))
         self.assertEqual(val, 192)
 
     def test_no_override_when_no_bitrate(self):
         """No min_bitrate and no spectral — no override passed."""
-        val = self._get_override_value({
-            "min_bitrate": None,
-            "on_disk_spectral_bitrate": None,
-        })
+        val = self._get_override_value(
+            make_request_row(min_bitrate=None, on_disk_spectral_bitrate=None))
         self.assertIsNone(val)
 
 
@@ -341,9 +334,8 @@ class TestQualityGateUsesIntent(unittest.TestCase):
         album_data = _make_album_data()
         ctx = _make_ctx()
         db = ctx.pipeline_db_source._get_db.return_value
-        req_fields = {"spectral_bitrate": None, "verified_lossless": False,
-                      **extra_req_fields}
-        db.get_request.return_value = req_fields
+        db.get_request.return_value = make_request_row(
+            spectral_bitrate=None, verified_lossless=False, **extra_req_fields)
 
         with patch("lib.beets_db.BeetsDB") as mock_beets_cls, \
              patch("lib.quality.quality_gate_decision",

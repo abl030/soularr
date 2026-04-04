@@ -388,6 +388,7 @@ def _handle_valid_result(album_data: GrabListEntry, bv_result: ValidationResult,
     request_id = album_data.db_request_id
     dist = bv_result.distance if bv_result.distance is not None else 1.0
     if source_type == "request" and dist <= ctx.cfg.beets_distance_threshold:
+        assert request_id is not None, "pipeline request must have db_request_id"
         dispatch_import(album_data, bv_result, dest, dl_info, request_id, ctx)
     else:
         ctx.pipeline_db_source.mark_done(album_data, bv_result, dest_path=dest,
