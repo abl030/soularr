@@ -1,9 +1,16 @@
 """Manual import route handlers — scan and import."""
 
-import json, os, re, sys
+import os, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from lib.import_service import run_import, log_and_update_import  # type: ignore[import-not-found]
+from lib.manual_import import (  # type: ignore[import-not-found]
+    scan_complete_folder,
+    match_folders_to_requests,
+    ImportRequest,
+)
 
 
 def _server():
@@ -12,12 +19,6 @@ def _server():
 
 
 def get_manual_import_scan(h, params: dict[str, list[str]]) -> None:
-    from lib.manual_import import (
-        scan_complete_folder,
-        match_folders_to_requests,
-        ImportRequest,
-        import_result_log_fields,
-    )
 
     complete_dir = params.get("dir", ["/mnt/data/Media/Temp/Music/Complete"])[0]
     folders = scan_complete_folder(complete_dir)
@@ -62,8 +63,6 @@ def get_manual_import_scan(h, params: dict[str, list[str]]) -> None:
 
 
 def post_manual_import(h, body: dict) -> None:
-    from lib.manual_import import run_manual_import, import_result_log_fields
-
     srv = _server()
     request_id = body.get("request_id")
     path = body.get("path")
@@ -83,41 +82,20 @@ def post_manual_import(h, body: dict) -> None:
     import_one_path = os.path.join(
         os.path.dirname(__file__), "..", "..", "harness", "import_one.py")
 
-    result = run_manual_import(
+    outcome = run_import(
+        path, mbid,
         request_id=int(request_id),
-        mb_release_id=mbid,
-        path=path,
         import_one_path=import_one_path,
         override_min_bitrate=req.get("min_bitrate"),
     )
-
-    # Log to download_log
-    log_fields = import_result_log_fields(result.import_result_json)
-    srv._db().log_download(
-        request_id=int(request_id),
-        outcome="manual_import" if result.success else "failed",
-        import_result=result.import_result_json,
-        staged_path=path,
-        error_message=None if result.success else result.message,
-        **log_fields,
-    )
-
-    # Update status on success
-    if result.success:
-        update_fields: dict[str, object] = {}
-        if result.import_result_json:
-            try:
-                update_fields = srv._extract_import_fields(json.loads(result.import_result_json))
-            except (json.JSONDecodeError, TypeError):
-                pass
-        from lib.transitions import apply_transition
-        apply_transition(srv._db(), int(request_id), "imported",
-                         **update_fields)
+    log_and_update_import(srv._db(), int(request_id), outcome,
+                          outcome_label="manual_import",
+                          staged_path=path)
 
     h._json({
-        "status": "ok" if result.success else "error",
-        "message": result.message,
-        "exit_code": result.exit_code,
+        "status": "ok" if outcome.success else "error",
+        "message": outcome.message,
+        "exit_code": outcome.exit_code,
         "request_id": request_id,
         "artist": req["artist_name"],
         "album": req["album_title"],

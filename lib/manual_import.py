@@ -6,19 +6,15 @@ Subprocess wrapper for running import_one.py.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import subprocess
-import sys
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 # Audio file extensions we expect in a download folder
 from lib.quality import AUDIO_EXTENSIONS_DOTTED as _AUDIO_EXTS
-from lib.quality import ImportResult
 
 # Patterns for stripping noise from folder names
 _YEAR_PAREN_RE = re.compile(r"\s*[\(\[]\s*\d{4}\s*[\)\]]")  # (2022) or [2012]
@@ -56,103 +52,6 @@ class FolderMatch:
     folder: FolderInfo
     request: ImportRequest
     score: float  # 0.0–1.0
-
-
-@dataclass(frozen=True)
-class ImportResultInfo:
-    """Parsed ImportResult from import_one.py stdout."""
-
-    decision: str
-    exit_code: int
-    raw_json: str
-
-
-@dataclass(frozen=True)
-class ManualImportResult:
-    """Result of a manual import attempt."""
-
-    success: bool
-    exit_code: int
-    message: str
-    import_result_json: str | None = None
-
-
-def import_result_log_fields(import_result_json: str | None) -> dict[str, object]:
-    """Extract best-effort download_log fields from ImportResult JSON."""
-    if not import_result_json:
-        return {}
-    try:
-        ir = ImportResult.from_json(import_result_json)
-    except (json.JSONDecodeError, TypeError, KeyError):
-        return {}
-
-    fields: dict[str, object] = {}
-    conv = ir.conversion
-    new_m = ir.new_measurement
-    existing_m = ir.existing_measurement
-
-    if conv.was_converted:
-        fields["was_converted"] = True
-        fields["original_filetype"] = conv.original_filetype
-        fields["filetype"] = conv.target_filetype
-        fields["is_vbr"] = True
-        fields["slskd_filetype"] = conv.original_filetype
-        fields["actual_filetype"] = conv.target_filetype
-
-    if new_m is not None:
-        if new_m.min_bitrate_kbps is not None:
-            fields["bitrate"] = new_m.min_bitrate_kbps * 1000
-            fields["actual_min_bitrate"] = new_m.min_bitrate_kbps
-        if new_m.spectral_grade is not None:
-            fields["spectral_grade"] = new_m.spectral_grade
-        if new_m.spectral_bitrate_kbps is not None:
-            fields["spectral_bitrate"] = new_m.spectral_bitrate_kbps
-
-    if existing_m is not None:
-        if existing_m.min_bitrate_kbps is not None:
-            fields["existing_min_bitrate"] = existing_m.min_bitrate_kbps
-        if existing_m.spectral_bitrate_kbps is not None:
-            fields["existing_spectral_bitrate"] = existing_m.spectral_bitrate_kbps
-
-    return fields
-
-
-def import_result_failure_message(import_result_json: str | None, returncode: int) -> str:
-    """Build a readable failure message from ImportResult JSON."""
-    generic = f"import_one.py exited with code {returncode}"
-    if not import_result_json:
-        return generic
-    try:
-        ir = ImportResult.from_json(import_result_json)
-    except (json.JSONDecodeError, TypeError, KeyError):
-        return generic
-
-    new_m = ir.new_measurement
-    existing_m = ir.existing_measurement
-    new_kbps = new_m.min_bitrate_kbps if new_m is not None else None
-    old_kbps = None
-    if existing_m is not None:
-        old_kbps = (existing_m.min_bitrate_kbps
-                    if existing_m.min_bitrate_kbps is not None
-                    else existing_m.spectral_bitrate_kbps)
-
-    if ir.decision == "downgrade":
-        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
-        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
-        return f"{new_s} is not better than existing {old_s}"
-
-    if ir.decision == "transcode_downgrade":
-        new_s = f"{new_kbps}kbps" if new_kbps is not None else "unknown"
-        old_s = f"{old_kbps}kbps" if old_kbps is not None else "unknown"
-        return f"Transcode at {new_s} - not better than existing {old_s}"
-
-    if ir.error:
-        return ir.error
-
-    if ir.decision:
-        return ir.decision.replace("_", " ")
-
-    return generic
 
 
 def parse_folder_name(name: str) -> FolderInfo:
@@ -259,23 +158,6 @@ def match_folders_to_requests(
     return sorted(results, key=lambda m: m.score, reverse=True)
 
 
-def parse_import_result_stdout(stdout: str) -> ImportResultInfo | None:
-    """Extract ImportResult JSON from import_one.py stdout sentinel line."""
-    for line in stdout.splitlines():
-        if "__IMPORT_RESULT__" in line:
-            try:
-                raw = line.split("__IMPORT_RESULT__")[1].strip()
-                data = json.loads(raw)
-                return ImportResultInfo(
-                    decision=data.get("decision", "unknown"),
-                    exit_code=data.get("exit_code", -1),
-                    raw_json=raw,
-                )
-            except (IndexError, json.JSONDecodeError):
-                return None
-    return None
-
-
 def scan_complete_folder(base_path: str) -> list[FolderInfo]:
     """Scan a directory for album folders. Returns FolderInfo with file counts."""
     if not os.path.isdir(base_path):
@@ -304,71 +186,3 @@ def scan_complete_folder(base_path: str) -> list[FolderInfo]:
             file_count=audio_count,
         ))
     return results
-
-
-def run_manual_import(
-    request_id: int,
-    mb_release_id: str,
-    path: str,
-    import_one_path: str,
-    *,
-    override_min_bitrate: int | None = None,
-) -> ManualImportResult:
-    """Run import_one.py for a manual import. Returns result.
-
-    This is I/O — calls subprocess. Pure logic is in the parsing functions above.
-    """
-    if not os.path.isdir(path):
-        return ManualImportResult(
-            success=False, exit_code=3,
-            message=f"Path not found: {path}",
-        )
-
-    cmd = [
-        sys.executable, import_one_path,
-        path, mb_release_id,
-        "--request-id", str(request_id),
-    ]
-    if override_min_bitrate is not None:
-        cmd.extend(["--override-min-bitrate", str(override_min_bitrate)])
-
-    # Importing into the beets SQLite library needs write access to the
-    # database directory for journal/WAL files. Local admin CLI usage often
-    # runs as a non-root user, while the deployed services run as root.
-    if os.geteuid() != 0:
-        cmd = ["sudo", "-n", *cmd]
-
-    logger.info("MANUAL-IMPORT: running %s", " ".join(cmd))
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800,
-            env={**os.environ, "HOME": "/home/abl030"},
-        )
-    except subprocess.TimeoutExpired:
-        return ManualImportResult(
-            success=False, exit_code=-1,
-            message="import_one.py timed out after 30 minutes",
-        )
-
-    # Log stderr
-    if result.stderr:
-        for line in result.stderr.strip().splitlines():
-            logger.info("  [import] %s", line)
-
-    # Parse ImportResult
-    ir = parse_import_result_stdout(result.stdout or "")
-    import_result_json = ir.raw_json if ir else None
-
-    if result.returncode == 0:
-        return ManualImportResult(
-            success=True, exit_code=0,
-            message=f"Import successful (decision={ir.decision if ir else 'unknown'})",
-            import_result_json=import_result_json,
-        )
-    else:
-        return ManualImportResult(
-            success=False, exit_code=result.returncode,
-            message=import_result_failure_message(import_result_json, result.returncode),
-            import_result_json=import_result_json,
-        )
