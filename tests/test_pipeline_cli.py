@@ -9,10 +9,12 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.dirname(__file__))
 import conftest  # noqa: F401
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 _scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
 sys.path.insert(0, os.path.abspath(_scripts_dir))
 import pipeline_cli
+from tests.helpers import make_request_row
 
 TEST_DSN = os.environ.get("TEST_DB_DSN")
 
@@ -152,14 +154,10 @@ class TestCmdManualImport(unittest.TestCase):
     def test_failed_manual_import_logs_error_message(self, _mock_print):
         from lib.import_service import ImportOutcome
         db = MagicMock()
-        db.get_request.return_value = {
-            "id": 123,
-            "status": "manual",
-            "artist_name": "Artist",
-            "album_title": "Album",
-            "mb_release_id": "mbid-123",
-            "min_bitrate": 320,
-        }
+        db.get_request.return_value = make_request_row(
+            id=123, status="manual", min_bitrate=320,
+            mb_release_id="mbid-123", artist_name="Artist", album_title="Album",
+        )
 
         mock_outcome = ImportOutcome(
             success=False, exit_code=5,
@@ -220,10 +218,9 @@ class TestCmdSetIntent(unittest.TestCase):
     @patch("builtins.print")
     def test_set_intent_on_wanted(self, _mock_print):
         db = MagicMock()
-        db.get_request.return_value = {
-            "id": 1, "status": "wanted", "artist_name": "A",
-            "album_title": "B", "quality_override": None, "min_bitrate": None,
-        }
+        db.get_request.return_value = make_request_row(
+            id=1, status="wanted", artist_name="A", album_title="B",
+        )
         args = MagicMock(id=1, intent="flac_only")
         pipeline_cli.cmd_set_intent(db, args)
         db._execute.assert_called_once()
@@ -234,10 +231,10 @@ class TestCmdSetIntent(unittest.TestCase):
     @patch("builtins.print")
     def test_set_intent_on_imported_requeues(self, _mock_print):
         db = MagicMock()
-        db.get_request.return_value = {
-            "id": 2, "status": "imported", "artist_name": "A",
-            "album_title": "B", "quality_override": None, "min_bitrate": 245,
-        }
+        db.get_request.return_value = make_request_row(
+            id=2, status="imported", artist_name="A", album_title="B",
+            min_bitrate=245,
+        )
         args = MagicMock(id=2, intent="flac_preferred")
         pipeline_cli.cmd_set_intent(db, args)
         db.reset_to_wanted.assert_called_once()
@@ -247,10 +244,9 @@ class TestCmdSetIntent(unittest.TestCase):
     @patch("builtins.print")
     def test_set_intent_refuses_downloading(self, _mock_print):
         db = MagicMock()
-        db.get_request.return_value = {
-            "id": 3, "status": "downloading", "artist_name": "A",
-            "album_title": "B",
-        }
+        db.get_request.return_value = make_request_row(
+            id=3, status="downloading", artist_name="A", album_title="B",
+        )
         args = MagicMock(id=3, intent="flac_only")
         pipeline_cli.cmd_set_intent(db, args)
         db.reset_to_wanted.assert_not_called()

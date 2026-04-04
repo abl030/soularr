@@ -19,16 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "web"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
-_MOCK_PIPELINE_REQUEST = {
-    "id": 100, "album_title": "Test Album", "artist_name": "Test Artist",
-    "mb_release_id": "abc-123", "status": "imported",
-    "imported_path": "/mnt/virtio/Music/Beets/Test",
-    "reasoning": None, "min_bitrate": 320, "spectral_grade": None,
-    "spectral_bitrate": None, "on_disk_spectral_grade": None,
-    "on_disk_spectral_bitrate": None, "verified_lossless": False,
-    "created_at": "2026-03-30T12:00:00+00:00",
-    "updated_at": "2026-03-30T12:00:00+00:00",
-}
+from tests.helpers import make_request_row
+
+_MOCK_PIPELINE_REQUEST = make_request_row(
+    id=100, status="imported", min_bitrate=320,
+    imported_path="/mnt/virtio/Music/Beets/Test",
+)
 
 
 def _make_server():
