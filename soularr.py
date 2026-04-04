@@ -334,24 +334,77 @@ def rank_candidate_dirs(
     return sorted(file_dirs, key=_score, reverse=True)
 
 
+def _browse_one(username: str, file_dir: str) -> tuple[str, Any | None]:
+    """Browse a single directory from slskd. Returns (file_dir, result_or_None)."""
+    version_check = _get_version_check()
+    try:
+        if version_check:
+            directory = slskd.users.directory(username=username, directory=file_dir)[0]
+        else:
+            directory = slskd.users.directory(username=username, directory=file_dir)
+        return file_dir, directory
+    except Exception:
+        logger.exception(f'Error getting directory from user: "{username}"')
+        return file_dir, None
+
+
+def _browse_directories(
+    dirs_to_browse: list[str], username: str, max_workers: int = 4
+) -> dict[str, Any]:
+    """Browse multiple directories in parallel. Returns {file_dir: directory}.
+
+    Failed browses are omitted from the result dict.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not dirs_to_browse:
+        return {}
+
+    # Pre-warm version check on main thread to avoid races in workers
+    _get_version_check()
+
+    # Single dir — don't bother with thread pool
+    if len(dirs_to_browse) == 1:
+        file_dir, result = _browse_one(username, dirs_to_browse[0])
+        return {file_dir: result} if result is not None else {}
+
+    results: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_browse_one, username, d): d
+            for d in dirs_to_browse
+        }
+        for future in as_completed(futures):
+            file_dir, result = future.result()
+            if result is not None:
+                results[file_dir] = result
+
+    return results
+
+
 def check_for_match(tracks, allowed_filetype, file_dirs, username):
     """
     Does the actual match checking on a single disk/album.
+
+    Phase 1: Filter dirs (negative cache, pre-filter by audio count).
+    Phase 2: Browse uncached dirs in parallel.
+    Phase 3: Match serially (early exit on first match).
     """
     logger.debug(f"Current broken users {broken_user}")
     if username in broken_user:
         return False, {}, ""
     track_num = len(tracks)
-    # Rank dirs so we try the most promising ones first
     album_info = get_album_by_id(tracks[0]["albumId"])
     ranked_dirs = rank_candidate_dirs(file_dirs, album_info.title, album_info.artist_name)
+
+    # Phase 1: Filter — determine which dirs need browsing
+    dirs_to_try: list[str] = []
     for file_dir in ranked_dirs:
         neg_key = (username, file_dir, track_num, allowed_filetype)
         if neg_key in _negative_matches:
             logger.debug(f"Negative cache hit: {username} {file_dir} ({track_num} tracks, {allowed_filetype})")
             continue
 
-        # Pre-filter: skip dirs where search metadata shows wrong audio file count
         user_counts = search_dir_audio_count.get(username)
         if user_counts and file_dir in user_counts:
             search_count = user_counts[file_dir]
@@ -363,31 +416,40 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                 _negative_matches.add(neg_key)
                 continue
 
-        if username not in folder_cache:
-            logger.debug(f"Add user to cache: {username}")
-            folder_cache[username] = {}
+        dirs_to_try.append(file_dir)
 
+    if not dirs_to_try:
+        return False, {}, ""
+
+    # Phase 2: Browse uncached dirs in parallel
+    if username not in folder_cache:
+        folder_cache[username] = {}
+
+    uncached = [d for d in dirs_to_try if d not in folder_cache[username]]
+    if uncached:
+        logger.info(
+            f"Browsing {len(uncached)} dirs from {username} "
+            f"(parallelism={cfg.browse_parallelism})"
+        )
+        browsed = _browse_directories(uncached, username, cfg.browse_parallelism)
+        for d, result in browsed.items():
+            folder_cache[username][d] = result
+
+        # If ALL browses failed, mark user as broken
+        if not browsed and len(uncached) == len(dirs_to_try):
+            broken_user.append(username)
+            logger.debug(f"All browses failed for {username}, marked as broken")
+            return False, {}, ""
+
+    # Phase 3: Match serially — early exit on first match
+    for file_dir in dirs_to_try:
         if file_dir not in folder_cache[username]:
-            logger.info(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
-            version_check = _get_version_check()
-
-            try:
-                directory: Any
-                if version_check:
-                    directory = slskd.users.directory(username=username, directory=file_dir)[0]
-                else:
-                    directory = slskd.users.directory(username=username, directory=file_dir)
-            except Exception:
-                logger.exception(f'Error getting directory from user: "{username}"')
-                broken_user.append(username)
-                logger.debug(f"Updated broken users {broken_user}")
-                return False, {}, ""
-            folder_cache[username][file_dir] = directory
-        else:
-            logger.info(f"User: {username} Folder: {file_dir} in cache. Using cached value")
+            # Browse failed for this dir
+            continue
 
         directory = folder_cache[username][file_dir]
         tracks_info = album_track_num(directory)
+        neg_key = (username, file_dir, track_num, allowed_filetype)
 
         if tracks_info["count"] == track_num and tracks_info["filetype"] != "":
             if album_match(tracks, directory["files"], username, allowed_filetype):

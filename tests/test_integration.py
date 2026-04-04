@@ -414,6 +414,7 @@ class TestVersionCheckCaching(unittest.TestCase):
         mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
         mock_cfg.minimum_match_ratio = 0.5
         mock_cfg.ignored_users = ()
+        mock_cfg.browse_parallelism = 4
         soularr.cfg = mock_cfg
 
         self.mock_slskd = MagicMock()
@@ -429,6 +430,7 @@ class TestVersionCheckCaching(unittest.TestCase):
         soularr.folder_cache = {}
         soularr.broken_user = []
         soularr._current_album_cache = {}
+        soularr.search_dir_audio_count = {}
         # Reset the cached version check
         soularr._slskd_version_gt_0_22_2 = None
 
@@ -507,11 +509,13 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
         mock_cfg.minimum_match_ratio = 0.5
         mock_cfg.ignored_users = ()
         mock_cfg.download_filtering = False
+        mock_cfg.browse_parallelism = 4
         soularr.cfg = mock_cfg
 
         soularr.folder_cache = {}
         soularr.broken_user = []
         soularr._current_album_cache = {}
+        soularr.search_dir_audio_count = {}
         soularr._slskd_version_gt_0_22_2 = None
 
         mock_slskd = MagicMock()
@@ -585,6 +589,7 @@ class TestDeepcopyDeferredToMatch(unittest.TestCase):
         mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
         mock_cfg.minimum_match_ratio = 0.5
         mock_cfg.ignored_users = ()
+        mock_cfg.browse_parallelism = 4
         mock_cfg.download_filtering = True
         mock_cfg.use_extension_whitelist = True
         mock_cfg.extensions_whitelist = ("jpg",)
@@ -681,12 +686,14 @@ class TestNegativeMatchCache(unittest.TestCase):
         mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
         mock_cfg.minimum_match_ratio = 0.5
         mock_cfg.ignored_users = ()
+        mock_cfg.browse_parallelism = 4
         soularr.cfg = mock_cfg
 
         soularr.folder_cache = {}
         soularr.broken_user = []
         soularr._current_album_cache = {}
         soularr._negative_matches = set()
+        soularr.search_dir_audio_count = {}
         soularr._slskd_version_gt_0_22_2 = True
 
     def tearDown(self):
@@ -782,6 +789,7 @@ class TestSearchResultPreFiltering(unittest.TestCase):
         mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
         mock_cfg.minimum_match_ratio = 0.5
         mock_cfg.ignored_users = ()
+        mock_cfg.browse_parallelism = 4
         soularr.cfg = mock_cfg
 
         self.mock_slskd = MagicMock()
@@ -909,6 +917,101 @@ class TestRankCandidateDirs(unittest.TestCase):
         dirs = ["Music\\Dir1", "Music\\Dir2", "Music\\Dir3"]
         ranked = soularr.rank_candidate_dirs(dirs, "Unrelated", "Nobody")
         self.assertEqual(ranked, dirs)
+
+
+class TestParallelDirectoryBrowsing(unittest.TestCase):
+    """Verify parallel directory browsing populates folder_cache correctly."""
+
+    def setUp(self):
+        from lib.quality import parse_filetype_config
+        self._orig_cfg = soularr.cfg
+        self._orig_slskd = soularr.slskd
+        self._orig_folder_cache = soularr.folder_cache
+        self._orig_broken_user = soularr.broken_user
+        self._orig_album_cache = soularr._current_album_cache
+        self._orig_neg_cache = soularr._negative_matches
+        self._orig_dir_counts = soularr.search_dir_audio_count
+
+        mock_cfg = MagicMock()
+        mock_cfg.allowed_filetypes = ("flac",)
+        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
+        mock_cfg.minimum_match_ratio = 0.5
+        mock_cfg.ignored_users = ()
+        mock_cfg.browse_parallelism = 4
+        soularr.cfg = mock_cfg
+
+        self.mock_slskd = MagicMock()
+        soularr.slskd = self.mock_slskd
+
+        soularr.folder_cache = {}
+        soularr.broken_user = []
+        soularr._current_album_cache = {}
+        soularr._negative_matches = set()
+        soularr.search_dir_audio_count = {}
+        soularr._slskd_version_gt_0_22_2 = True
+
+    def tearDown(self):
+        soularr.cfg = self._orig_cfg
+        soularr.slskd = self._orig_slskd
+        soularr.folder_cache = self._orig_folder_cache
+        soularr.broken_user = self._orig_broken_user
+        soularr._current_album_cache = self._orig_album_cache
+        soularr._negative_matches = self._orig_neg_cache
+        soularr.search_dir_audio_count = self._orig_dir_counts
+        soularr._slskd_version_gt_0_22_2 = None
+
+    def test_parallel_browse_populates_cache(self):
+        """_browse_directories should populate folder_cache for all dirs."""
+        def mock_directory(username, directory):
+            return [make_directory(directory, [
+                {"filename": "01 - Track.flac", "size": 100}
+            ])]
+
+        self.mock_slskd.users.directory.side_effect = mock_directory
+
+        dirs_to_browse = ["Music\\Dir1", "Music\\Dir2", "Music\\Dir3"]
+        results = soularr._browse_directories(dirs_to_browse, "user1", max_workers=2)
+
+        self.assertEqual(len(results), 3)
+        self.assertIn("Music\\Dir1", results)
+        self.assertIn("Music\\Dir2", results)
+        self.assertIn("Music\\Dir3", results)
+
+    def test_parallel_browse_handles_failures(self):
+        """Failed browses should be collected, not crash."""
+        call_count = [0]
+
+        def mock_directory(username, directory):
+            call_count[0] += 1
+            if "Dir2" in directory:
+                raise Exception("Peer offline")
+            return [make_directory(directory, [
+                {"filename": "01 - Track.flac", "size": 100}
+            ])]
+
+        self.mock_slskd.users.directory.side_effect = mock_directory
+
+        dirs_to_browse = ["Music\\Dir1", "Music\\Dir2", "Music\\Dir3"]
+        results = soularr._browse_directories(dirs_to_browse, "user1", max_workers=2)
+
+        # Dir1 and Dir3 should succeed, Dir2 should fail
+        self.assertEqual(len(results), 2)
+        self.assertIn("Music\\Dir1", results)
+        self.assertNotIn("Music\\Dir2", results)
+        self.assertIn("Music\\Dir3", results)
+
+    def test_browse_all_fail_marks_broken(self):
+        """If all browses for a user fail, they should be marked broken."""
+        self.mock_slskd.users.directory.side_effect = Exception("Peer gone")
+
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+        tracks = [{"albumId": 1, "title": "Track One", "mediumNumber": 1}]
+
+        found, _, _ = soularr.check_for_match(
+            tracks, "flac", ["Music\\Dir1", "Music\\Dir2"], "user1"
+        )
+        self.assertFalse(found)
+        self.assertIn("user1", soularr.broken_user)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,17 @@ class TestConfigFromIni(unittest.TestCase):
     def test_parallel_searches_default(self):
         self.assertEqual(self.cfg.parallel_searches, 8)
 
+    def test_browse_parallelism_default(self):
+        self.assertEqual(self.cfg.browse_parallelism, 4)
+
+    def test_browse_parallelism_capped_at_8(self):
+        """Values > 8 should be clamped to 8."""
+        from lib.config import SoularrConfig
+        ini = configparser.ConfigParser()
+        ini.read_string("[Search Settings]\nbrowse_parallelism = 20\n")
+        cfg = SoularrConfig.from_ini(ini)
+        self.assertEqual(cfg.browse_parallelism, 8)
+
     # --- Release ---
     def test_use_most_common_tracknum(self):
         self.assertTrue(self.cfg.use_most_common_tracknum)
