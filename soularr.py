@@ -52,6 +52,7 @@ search_cache = {}
 folder_cache = {}
 user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
+search_dir_audio_count: dict[str, dict[str, int]] = {}  # username → {dir → audio file count}
 _slskd_version_gt_0_22_2: bool | None = None  # cached per-run
 _negative_matches: set[tuple[str, str, int, str]] = set()  # (username, file_dir, track_count, filetype)
 
@@ -313,6 +314,18 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
             logger.debug(f"Negative cache hit: {username} {file_dir} ({track_num} tracks, {allowed_filetype})")
             continue
 
+        # Pre-filter: skip dirs where search metadata shows wrong audio file count
+        user_counts = search_dir_audio_count.get(username)
+        if user_counts and file_dir in user_counts:
+            search_count = user_counts[file_dir]
+            if abs(search_count - track_num) > 2:
+                logger.debug(
+                    f"Pre-filter skip: {username} {file_dir} has {search_count} "
+                    f"audio files, need {track_num} tracks"
+                )
+                _negative_matches.add(neg_key)
+                continue
+
         if username not in folder_cache:
             logger.debug(f"Add user to cache: {username}")
             folder_cache[username] = {}
@@ -449,15 +462,22 @@ def search_for_album(album):
         from lib.quality import file_identity, filetype_matches
         filter_specs = list(zip(cfg.allowed_filetypes, cfg.allowed_specs))
         # Search the returned files and only cache files that are of the allowed_filetypes
+        if username not in search_dir_audio_count:
+            search_dir_audio_count[username] = {}
+        user_dir_counts = search_dir_audio_count[username]
         for file in init_files:
             file_dir = file["filename"].rsplit("\\", 1)[0]  # split dir/filenames on \
             identity = file_identity(file)
+            matched = False
             for allowed_filetype, spec in filter_specs:
                 if filetype_matches(identity, spec):
+                    matched = True
                     if allowed_filetype not in search_cache[album_id][username]:
                         search_cache[album_id][username][allowed_filetype] = []
                     if file_dir not in search_cache[album_id][username][allowed_filetype]:
                         search_cache[album_id][username][allowed_filetype].append(file_dir)
+            if matched:
+                user_dir_counts[file_dir] = user_dir_counts.get(file_dir, 0) + 1
     return True
 
 
@@ -557,9 +577,10 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
         return SearchResult(album_id=album_id, success=False, query=query,
                             result_count=0, elapsed_s=elapsed)
 
-    # Build cache entries and upload speeds
+    # Build cache entries, upload speeds, and per-dir audio file counts
     cache_entries: dict[str, dict[str, list[str]]] = {}
     upload_speeds: dict[str, int] = {}
+    dir_audio_counts: dict[str, dict[str, int]] = {}
 
     from lib.quality import file_identity, filetype_matches
     par_filter_specs = list(zip(search_cfg.allowed_filetypes, search_cfg.allowed_specs))
@@ -567,24 +588,32 @@ def _collect_search_results(search_id, query, album_id, search_cfg, slskd_client
         username = result["username"]
         if username not in cache_entries:
             cache_entries[username] = {}
+        if username not in dir_audio_counts:
+            dir_audio_counts[username] = {}
+        user_dir_counts = dir_audio_counts[username]
         speed = result.get("uploadSpeed", 0)
         if speed and (username not in upload_speeds or speed > upload_speeds[username]):
             upload_speeds[username] = speed
         for file in result["files"]:
             file_dir = file["filename"].rsplit("\\", 1)[0]
             identity = file_identity(file)
+            matched = False
             for allowed_filetype, spec in par_filter_specs:
                 if filetype_matches(identity, spec):
+                    matched = True
                     if allowed_filetype not in cache_entries[username]:
                         cache_entries[username][allowed_filetype] = []
                     if file_dir not in cache_entries[username][allowed_filetype]:
                         cache_entries[username][allowed_filetype].append(file_dir)
+            if matched:
+                user_dir_counts[file_dir] = user_dir_counts.get(file_dir, 0) + 1
 
     return SearchResult(
         album_id=album_id,
         success=True,
         cache_entries=cache_entries,
         upload_speeds=upload_speeds,
+        dir_audio_counts=dir_audio_counts,
         query=query,
         result_count=len(search_results),
         elapsed_s=elapsed,
@@ -625,6 +654,14 @@ def _merge_search_result(result):
     for username, speed in result.upload_speeds.items():
         if username not in user_upload_speed or speed > user_upload_speed[username]:
             user_upload_speed[username] = speed
+
+    for username, dir_counts in result.dir_audio_counts.items():
+        if username not in search_dir_audio_count:
+            search_dir_audio_count[username] = {}
+        for d, count in dir_counts.items():
+            # Take max — same dir may appear in multiple search results
+            existing = search_dir_audio_count[username].get(d, 0)
+            search_dir_audio_count[username][d] = max(existing, count)
 
 
 def _get_denied_users(album_id):
@@ -1055,7 +1092,8 @@ def main():
         user_upload_speed, \
         broken_user, \
         _slskd_version_gt_0_22_2, \
-        _negative_matches
+        _negative_matches, \
+        search_dir_audio_count
 
     # Let's allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soularr downloads wanted albums from Soulseek via slskd""")
@@ -1151,6 +1189,7 @@ def main():
         broken_user = []
         _slskd_version_gt_0_22_2 = None
         _negative_matches = set()
+        search_dir_audio_count = {}
 
         slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
 

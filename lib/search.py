@@ -32,6 +32,8 @@ class SearchResult:
     cache_entries: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     # username -> upload speed
     upload_speeds: dict[str, int] = field(default_factory=dict)
+    # username -> dir -> audio file count (for pre-filtering before browse)
+    dir_audio_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     query: str = ""
     result_count: int = 0
     elapsed_s: float = 0.0

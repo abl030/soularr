@@ -764,5 +764,94 @@ class TestNegativeMatchCache(unittest.TestCase):
         self.assertTrue(found)  # 1 file matches 1 track
 
 
+class TestSearchResultPreFiltering(unittest.TestCase):
+    """Verify directories with wrong audio file count are skipped before browsing."""
+
+    def setUp(self):
+        from lib.quality import parse_filetype_config
+        self._orig_cfg = soularr.cfg
+        self._orig_slskd = soularr.slskd
+        self._orig_folder_cache = soularr.folder_cache
+        self._orig_broken_user = soularr.broken_user
+        self._orig_album_cache = soularr._current_album_cache
+        self._orig_neg_cache = soularr._negative_matches
+        self._orig_dir_counts = soularr.search_dir_audio_count
+
+        mock_cfg = MagicMock()
+        mock_cfg.allowed_filetypes = ("flac",)
+        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
+        mock_cfg.minimum_match_ratio = 0.5
+        mock_cfg.ignored_users = ()
+        soularr.cfg = mock_cfg
+
+        self.mock_slskd = MagicMock()
+        self.mock_slskd.application.version.return_value = "0.23.0"
+        soularr.slskd = self.mock_slskd
+
+        soularr.folder_cache = {}
+        soularr.broken_user = []
+        soularr._current_album_cache = {}
+        soularr._negative_matches = set()
+        soularr.search_dir_audio_count = {}
+        soularr._slskd_version_gt_0_22_2 = True
+
+    def tearDown(self):
+        soularr.cfg = self._orig_cfg
+        soularr.slskd = self._orig_slskd
+        soularr.folder_cache = self._orig_folder_cache
+        soularr.broken_user = self._orig_broken_user
+        soularr._current_album_cache = self._orig_album_cache
+        soularr._negative_matches = self._orig_neg_cache
+        soularr.search_dir_audio_count = self._orig_dir_counts
+        soularr._slskd_version_gt_0_22_2 = None
+
+    def test_dir_with_wrong_count_skipped_before_browse(self):
+        """Directory with 3 audio files should be skipped when we need 12 tracks."""
+        # Search metadata says this dir has 3 audio files
+        soularr.search_dir_audio_count = {
+            "user1": {"Music\\Album": 3}
+        }
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+
+        tracks = [{"albumId": 1, "title": f"Track {i}", "mediumNumber": 1} for i in range(12)]
+        soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+
+        # Should NOT have called slskd.users.directory — skipped before browse
+        self.mock_slskd.users.directory.assert_not_called()
+
+    def test_dir_with_close_count_not_skipped(self):
+        """Directory with 13 audio files should NOT be skipped for 12 tracks (tolerance +-2)."""
+        soularr.search_dir_audio_count = {
+            "user1": {"Music\\Album": 13}
+        }
+        # Set up directory return for when it does browse
+        self.mock_slskd.users.directory.return_value = [
+            make_directory("Music\\Album", [
+                {"filename": f"0{i} - Track.flac", "size": 100} for i in range(13)
+            ])
+        ]
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+
+        tracks = [{"albumId": 1, "title": f"Track {i}", "mediumNumber": 1} for i in range(12)]
+        soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+
+        # SHOULD have browsed — count is close enough
+        self.mock_slskd.users.directory.assert_called_once()
+
+    def test_dir_without_metadata_not_skipped(self):
+        """Directory with no search metadata should still be browsed."""
+        soularr.search_dir_audio_count = {}  # no data
+        self.mock_slskd.users.directory.return_value = [
+            make_directory("Music\\Album", [{"filename": "01.flac", "size": 100}])
+        ]
+        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+
+        tracks = [{"albumId": 1, "title": f"Track {i}", "mediumNumber": 1} for i in range(12)]
+        soularr.check_for_match(tracks, "flac", ["Music\\Album"], "user1")
+
+        # Should browse — no metadata to pre-filter
+        self.mock_slskd.users.directory.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
