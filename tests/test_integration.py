@@ -398,98 +398,6 @@ class TestAlbumRecordAttrAccess(unittest.TestCase):
         self.assertEqual(result, [])
 
 
-class TestVersionCheckCaching(unittest.TestCase):
-    """Verify slskd.application.version() is called once, not per-browse."""
-
-    def setUp(self):
-        from lib.quality import parse_filetype_config
-        self._orig_cfg = soularr.cfg
-        self._orig_slskd = soularr.slskd
-        self._orig_folder_cache = soularr.folder_cache
-        self._orig_broken_user = soularr.broken_user
-        self._orig_album_cache = soularr._current_album_cache
-
-        mock_cfg = MagicMock()
-        mock_cfg.allowed_filetypes = ("flac",)
-        mock_cfg.allowed_specs = tuple(parse_filetype_config(s) for s in mock_cfg.allowed_filetypes)
-        mock_cfg.minimum_match_ratio = 0.5
-        mock_cfg.ignored_users = ()
-        mock_cfg.browse_parallelism = 4
-        soularr.cfg = mock_cfg
-
-        self.mock_slskd = MagicMock()
-        self.mock_slskd.application.version.return_value = "0.23.0"
-        # Return a directory with no matching audio files (won't match)
-        self.mock_slskd.users.directory.return_value = [
-            make_directory("Music\\Album", [
-                {"filename": "01 - Track.flac", "size": 100},
-            ])
-        ]
-        soularr.slskd = self.mock_slskd
-
-        soularr.folder_cache = {}
-        soularr.broken_user = []
-        soularr._current_album_cache = {}
-        soularr.search_dir_audio_count = {}
-        # Reset the cached version check
-        soularr._slskd_version_gt_0_22_2 = None
-
-    def tearDown(self):
-        soularr.cfg = self._orig_cfg
-        soularr.slskd = self._orig_slskd
-        soularr.folder_cache = self._orig_folder_cache
-        soularr.broken_user = self._orig_broken_user
-        soularr._current_album_cache = self._orig_album_cache
-        soularr._slskd_version_gt_0_22_2 = None
-
-    def test_version_called_once_across_multiple_dirs(self):
-        """slskd.application.version() should be called once, not per directory."""
-        # 3 tracks expected, but each dir has 1 file — no match, forces browsing all dirs
-        tracks = [
-            {"albumId": 1, "title": "Track One", "mediumNumber": 1},
-            {"albumId": 1, "title": "Track Two", "mediumNumber": 1},
-            {"albumId": 1, "title": "Track Three", "mediumNumber": 1},
-        ]
-        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
-
-        file_dirs = ["Music\\Dir1", "Music\\Dir2", "Music\\Dir3"]
-        soularr.check_for_match(tracks, "flac", file_dirs, "testuser")
-
-        # version() should be called exactly once, not 3 times
-        self.assertEqual(self.mock_slskd.application.version.call_count, 1)
-        # But directory() should be called 3 times (one per dir)
-        self.assertEqual(self.mock_slskd.users.directory.call_count, 3)
-
-    def test_version_cached_across_check_for_match_calls(self):
-        """Version check should persist across separate check_for_match calls."""
-        tracks = [
-            {"albumId": 1, "title": "Track One", "mediumNumber": 1},
-        ]
-        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
-
-        soularr.check_for_match(tracks, "flac", ["Music\\Dir1"], "user1")
-        soularr.check_for_match(tracks, "flac", ["Music\\Dir2"], "user2")
-
-        # Still only 1 version call total
-        self.assertEqual(self.mock_slskd.application.version.call_count, 1)
-
-    def test_old_version_cached_as_false(self):
-        """Old slskd version (≤ 0.22.2) should be cached as False."""
-        self.mock_slskd.application.version.return_value = "0.20.0"
-        # Old slskd returns dict directly, not list
-        self.mock_slskd.users.directory.return_value = make_directory(
-            "Music\\Album", [{"filename": "01 - Track.flac", "size": 100}]
-        )
-        tracks = [
-            {"albumId": 1, "title": "Track One", "mediumNumber": 1},
-        ]
-        soularr._current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
-
-        soularr.check_for_match(tracks, "flac", ["Music\\Dir1", "Music\\Dir2"], "user1")
-
-        self.assertEqual(self.mock_slskd.application.version.call_count, 1)
-        self.assertFalse(soularr._slskd_version_gt_0_22_2)
-
 
 class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
     """Verify try_multi_enqueue works without deepcopy on results."""
@@ -516,10 +424,8 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
         soularr.broken_user = []
         soularr._current_album_cache = {}
         soularr.search_dir_audio_count = {}
-        soularr._slskd_version_gt_0_22_2 = None
 
         mock_slskd = MagicMock()
-        mock_slskd.application.version.return_value = "0.23.0"
         # Return dirs with 1 file each — won't match multi-disc tracks
         mock_slskd.users.directory.return_value = [
             make_directory("Music\\Disc1", [
@@ -540,7 +446,6 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
         soularr.broken_user = self._orig_broken_user
         soularr._current_album_cache = self._orig_album_cache
         soularr.pipeline_db_source = self._orig_pdb
-        soularr._slskd_version_gt_0_22_2 = None
 
     def test_results_dict_not_mutated(self):
         """try_multi_enqueue should not mutate the results dict."""
@@ -598,7 +503,7 @@ class TestDeepcopyDeferredToMatch(unittest.TestCase):
         soularr.folder_cache = {}
         soularr.broken_user = []
         soularr._current_album_cache = {}
-        soularr._slskd_version_gt_0_22_2 = True
+
 
     def tearDown(self):
         soularr.cfg = self._orig_cfg
@@ -606,7 +511,7 @@ class TestDeepcopyDeferredToMatch(unittest.TestCase):
         soularr.folder_cache = self._orig_folder_cache
         soularr.broken_user = self._orig_broken_user
         soularr._current_album_cache = self._orig_album_cache
-        soularr._slskd_version_gt_0_22_2 = None
+
 
     def test_folder_cache_not_corrupted_after_download_filter(self):
         """download_filter mutates directory['files'], but folder_cache should be intact."""
@@ -694,7 +599,7 @@ class TestNegativeMatchCache(unittest.TestCase):
         soularr._current_album_cache = {}
         soularr._negative_matches = set()
         soularr.search_dir_audio_count = {}
-        soularr._slskd_version_gt_0_22_2 = True
+
 
     def tearDown(self):
         soularr.cfg = self._orig_cfg
@@ -703,7 +608,7 @@ class TestNegativeMatchCache(unittest.TestCase):
         soularr.broken_user = self._orig_broken_user
         soularr._current_album_cache = self._orig_album_cache
         soularr._negative_matches = self._orig_neg_cache
-        soularr._slskd_version_gt_0_22_2 = None
+
 
     def test_same_dir_same_track_count_skipped(self):
         """A dir that failed matching should be skipped on retry with same track count."""
@@ -793,7 +698,6 @@ class TestSearchResultPreFiltering(unittest.TestCase):
         soularr.cfg = mock_cfg
 
         self.mock_slskd = MagicMock()
-        self.mock_slskd.application.version.return_value = "0.23.0"
         soularr.slskd = self.mock_slskd
 
         soularr.folder_cache = {}
@@ -801,7 +705,7 @@ class TestSearchResultPreFiltering(unittest.TestCase):
         soularr._current_album_cache = {}
         soularr._negative_matches = set()
         soularr.search_dir_audio_count = {}
-        soularr._slskd_version_gt_0_22_2 = True
+
 
     def tearDown(self):
         soularr.cfg = self._orig_cfg
@@ -811,7 +715,7 @@ class TestSearchResultPreFiltering(unittest.TestCase):
         soularr._current_album_cache = self._orig_album_cache
         soularr._negative_matches = self._orig_neg_cache
         soularr.search_dir_audio_count = self._orig_dir_counts
-        soularr._slskd_version_gt_0_22_2 = None
+
 
     def test_dir_with_wrong_count_skipped_before_browse(self):
         """Directory with 3 audio files should be skipped when we need 12 tracks."""
@@ -948,7 +852,7 @@ class TestParallelDirectoryBrowsing(unittest.TestCase):
         soularr._current_album_cache = {}
         soularr._negative_matches = set()
         soularr.search_dir_audio_count = {}
-        soularr._slskd_version_gt_0_22_2 = True
+
 
     def tearDown(self):
         soularr.cfg = self._orig_cfg
@@ -958,7 +862,7 @@ class TestParallelDirectoryBrowsing(unittest.TestCase):
         soularr._current_album_cache = self._orig_album_cache
         soularr._negative_matches = self._orig_neg_cache
         soularr.search_dir_audio_count = self._orig_dir_counts
-        soularr._slskd_version_gt_0_22_2 = None
+
 
     def test_parallel_browse_populates_cache(self):
         """_browse_directories should populate folder_cache for all dirs."""

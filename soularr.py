@@ -53,7 +53,6 @@ folder_cache = {}
 user_upload_speed = {}  # username → upload speed in bytes/sec (from search results)
 broken_user = []
 search_dir_audio_count: dict[str, dict[str, int]] = {}  # username → {dir → audio file count}
-_slskd_version_gt_0_22_2: bool | None = None  # cached per-run
 _negative_matches: set[tuple[str, str, int, str]] = set()  # (username, file_dir, track_count, filetype)
 
 
@@ -286,19 +285,6 @@ def download_filter(allowed_filetype, directory: Any):
     return directory  # If we didn't find unwanted files or we aren't filtering just return the original list
 
 
-def _get_version_check() -> bool:
-    """Return whether slskd version > 0.22.2. Cached per-run."""
-    global _slskd_version_gt_0_22_2
-    if _slskd_version_gt_0_22_2 is None:
-        version = slskd.application.version()
-        _slskd_version_gt_0_22_2 = slskd_version_check(version)
-        if not _slskd_version_gt_0_22_2:
-            logger.info(
-                f"slskd version {version} is ≤ 0.22.2. "
-                f"Consider updating slskd for best results."
-            )
-    return _slskd_version_gt_0_22_2
-
 
 _PENALTY_KEYWORDS = (
     "archive", "best of", "greatest hits", "magazine", "compilation",
@@ -336,12 +322,8 @@ def rank_candidate_dirs(
 
 def _browse_one(username: str, file_dir: str) -> tuple[str, Any | None]:
     """Browse a single directory from slskd. Returns (file_dir, result_or_None)."""
-    version_check = _get_version_check()
     try:
-        if version_check:
-            directory = slskd.users.directory(username=username, directory=file_dir)[0]
-        else:
-            directory = slskd.users.directory(username=username, directory=file_dir)
+        directory = slskd.users.directory(username=username, directory=file_dir)[0]
         return file_dir, directory
     except Exception:
         logger.exception(f'Error getting directory from user: "{username}"')
@@ -359,9 +341,6 @@ def _browse_directories(
 
     if not dirs_to_browse:
         return {}
-
-    # Pre-warm version check on main thread to avoid races in workers
-    _get_version_check()
 
     # Single dir — don't bother with thread pool
     if len(dirs_to_browse) == 1:
@@ -1176,7 +1155,7 @@ def grab_most_wanted(albums):
     return _grab_most_wanted_impl(albums, search_and_queue, _make_ctx())
 
 
-from lib.util import (_track_titles_cross_check, slskd_version_check,
+from lib.util import (_track_titles_cross_check,
                       is_docker, setup_logging)
 
 
@@ -1190,7 +1169,6 @@ def main():
         folder_cache, \
         user_upload_speed, \
         broken_user, \
-        _slskd_version_gt_0_22_2, \
         _negative_matches, \
         search_dir_audio_count
 
@@ -1286,7 +1264,6 @@ def main():
         folder_cache = {}
         user_upload_speed = {}
         broken_user = []
-        _slskd_version_gt_0_22_2 = None
         _negative_matches = set()
         search_dir_audio_count = {}
 

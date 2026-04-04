@@ -419,11 +419,6 @@ def is_docker() -> bool:
     return os.getenv("IN_DOCKER") is not None
 
 
-def slskd_version_check(version: str, target: str = "0.22.2") -> bool:
-    version_tuple = tuple(map(int, version.split(".")[:3]))
-    target_tuple = tuple(map(int, target.split(".")[:3]))
-    return version_tuple > target_tuple
-
 
 def setup_logging(config: Any) -> None:
     DEFAULT_LOGGING_CONF = {
