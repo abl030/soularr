@@ -994,24 +994,16 @@ def rejection_backfill_override(
     albums with decent quality on disk keep downloading the same tier forever
     because the quality gate only fires after successful imports.
 
-    Two rules (mirrors quality_gate_decision):
-    - CBR above threshold: always flac (CBR is unverifiable regardless of spectral)
-    - VBR above threshold: flac only when spectral is genuine (need to trust quality)
-
     Returns QUALITY_FLAC_ONLY when the on-disk state is good enough that only
     a verified lossless source would be an upgrade. Returns None otherwise.
     """
     if verified_lossless:
         return None
+    if spectral_grade != "genuine":
+        return None
     if min_bitrate_kbps is None:
         return None
-    if min_bitrate_kbps < QUALITY_MIN_BITRATE_KBPS:
-        return None
-    # CBR is always unverifiable — search FLAC regardless of spectral
-    if is_cbr:
-        return QUALITY_FLAC_ONLY
-    # VBR: only narrow to FLAC when spectral confirms genuine
-    if spectral_grade == "genuine":
+    if min_bitrate_kbps >= QUALITY_MIN_BITRATE_KBPS:
         return QUALITY_FLAC_ONLY
     return None
 

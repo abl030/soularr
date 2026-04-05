@@ -936,7 +936,7 @@ class TestRejectionBackfillOverride(unittest.TestCase):
     - VBR above threshold: flac ONLY when spectral is genuine (need to trust quality)
     """
 
-    # --- CBR: always flac regardless of spectral ---
+    # --- Genuine spectral: flac for both CBR and VBR ---
 
     def test_cbr_320_genuine_returns_flac(self):
         from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
@@ -945,45 +945,12 @@ class TestRejectionBackfillOverride(unittest.TestCase):
             spectral_grade="genuine", verified_lossless=False)
         self.assertEqual(result, QUALITY_FLAC_ONLY)
 
-    def test_cbr_320_no_spectral_returns_flac(self):
-        """The user's exact scenario: CBR 320 on disk, never spectral-checked."""
-        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
-        result = rejection_backfill_override(
-            is_cbr=True, min_bitrate_kbps=320,
-            spectral_grade=None, verified_lossless=False)
-        self.assertEqual(result, QUALITY_FLAC_ONLY)
-
-    def test_cbr_320_suspect_returns_flac(self):
-        """Suspect CBR needs FLAC even more — don't leave override open."""
-        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
-        result = rejection_backfill_override(
-            is_cbr=True, min_bitrate_kbps=320,
-            spectral_grade="suspect", verified_lossless=False)
-        self.assertEqual(result, QUALITY_FLAC_ONLY)
-
-    def test_cbr_320_marginal_returns_flac(self):
-        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
-        result = rejection_backfill_override(
-            is_cbr=True, min_bitrate_kbps=320,
-            spectral_grade="marginal", verified_lossless=False)
-        self.assertEqual(result, QUALITY_FLAC_ONLY)
-
-    def test_cbr_256_returns_flac(self):
+    def test_cbr_256_genuine_returns_flac(self):
         from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
         result = rejection_backfill_override(
             is_cbr=True, min_bitrate_kbps=256,
             spectral_grade="genuine", verified_lossless=False)
         self.assertEqual(result, QUALITY_FLAC_ONLY)
-
-    def test_cbr_192_below_threshold_returns_none(self):
-        """Low CBR: keep all tiers open, any source would be an upgrade."""
-        from lib.quality import rejection_backfill_override
-        result = rejection_backfill_override(
-            is_cbr=True, min_bitrate_kbps=192,
-            spectral_grade="genuine", verified_lossless=False)
-        self.assertIsNone(result)
-
-    # --- VBR: needs genuine spectral ---
 
     def test_vbr_240_genuine_returns_flac(self):
         from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
@@ -999,6 +966,47 @@ class TestRejectionBackfillOverride(unittest.TestCase):
             spectral_grade="genuine", verified_lossless=False)
         self.assertEqual(result, QUALITY_FLAC_ONLY)
 
+    # --- Not genuine: never backfill (spectral is the whole point) ---
+
+    def test_cbr_320_suspect_returns_none(self):
+        """Suspect 320: keep searching all tiers, might find genuine source."""
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="suspect", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_cbr_320_marginal_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="marginal", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_cbr_320_no_spectral_returns_none(self):
+        """No spectral data: can't make the decision, keep all tiers."""
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade=None, verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_vbr_suspect_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=False, min_bitrate_kbps=240,
+            spectral_grade="suspect", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_vbr_no_spectral_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=False, min_bitrate_kbps=240,
+            spectral_grade=None, verified_lossless=False)
+        self.assertIsNone(result)
+
+    # --- Below threshold: never backfill ---
+
     def test_vbr_below_threshold_returns_none(self):
         from lib.quality import rejection_backfill_override
         result = rejection_backfill_override(
@@ -1006,30 +1014,14 @@ class TestRejectionBackfillOverride(unittest.TestCase):
             spectral_grade="genuine", verified_lossless=False)
         self.assertIsNone(result)
 
-    def test_vbr_suspect_returns_none(self):
-        """VBR with suspect spectral: might need any better source."""
+    def test_cbr_192_below_threshold_returns_none(self):
         from lib.quality import rejection_backfill_override
         result = rejection_backfill_override(
-            is_cbr=False, min_bitrate_kbps=240,
-            spectral_grade="suspect", verified_lossless=False)
+            is_cbr=True, min_bitrate_kbps=192,
+            spectral_grade="genuine", verified_lossless=False)
         self.assertIsNone(result)
 
-    def test_vbr_marginal_returns_none(self):
-        from lib.quality import rejection_backfill_override
-        result = rejection_backfill_override(
-            is_cbr=False, min_bitrate_kbps=240,
-            spectral_grade="marginal", verified_lossless=False)
-        self.assertIsNone(result)
-
-    def test_vbr_no_spectral_returns_none(self):
-        """VBR with no spectral: can't trust quality, keep all tiers."""
-        from lib.quality import rejection_backfill_override
-        result = rejection_backfill_override(
-            is_cbr=False, min_bitrate_kbps=240,
-            spectral_grade=None, verified_lossless=False)
-        self.assertIsNone(result)
-
-    # --- Common guards ---
+    # --- Guards ---
 
     def test_verified_lossless_returns_none(self):
         from lib.quality import rejection_backfill_override
@@ -1048,7 +1040,7 @@ class TestRejectionBackfillOverride(unittest.TestCase):
     # --- Named scenarios ---
 
     def test_stars_of_the_lid_scenario(self):
-        """Stars of the Lid: CBR 320 genuine on disk, no override. Backfill fires."""
+        """Stars of the Lid: CBR 320 genuine on disk. Backfill fires."""
         from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
         result = rejection_backfill_override(
             is_cbr=True, min_bitrate_kbps=320,
@@ -1056,12 +1048,30 @@ class TestRejectionBackfillOverride(unittest.TestCase):
         self.assertEqual(result, QUALITY_FLAC_ONLY)
 
     def test_upgrade_button_no_spectral_scenario(self):
-        """User hits upgrade on CBR 320 with no spectral. Backfill still fires."""
-        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        """CBR 320, no spectral on disk. Backfill does NOT fire yet —
+        needs spectral propagation from download first."""
+        from lib.quality import rejection_backfill_override
         result = rejection_backfill_override(
             is_cbr=True, min_bitrate_kbps=320,
             spectral_grade=None, verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_upgrade_button_after_genuine_download(self):
+        """CBR 320, spectral propagated from genuine download. NOW backfill fires."""
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="genuine", verified_lossless=False)
         self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+    def test_upgrade_button_after_suspect_download(self):
+        """CBR 320, spectral propagated from suspect download. Backfill does NOT
+        fire — keep searching all tiers, might find genuine source."""
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="suspect", verified_lossless=False)
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

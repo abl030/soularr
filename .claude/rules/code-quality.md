@@ -34,6 +34,13 @@
 - No decision logic inline in soularr.py — call the pure function, branch on result
 - Every pure function must have direct unit tests (not just tested through integration)
 
+## Pipeline Decision Debugging — Simulator-First TDD
+- When debugging or changing import pipeline behavior (quality gate, backfill, spectral propagation, search tier selection), **always start with the CLI simulator** (`pipeline-cli quality <id>`).
+- Add scenarios to the simulator FIRST that expose the bug or show the expected behavior. The simulator is the test suite for pipeline decisions — if you can't see the problem in the simulator output, you don't understand it yet.
+- Only edit production code once the simulator scenarios clearly show what's wrong and what "right" looks like. The scenarios tell you what code to change.
+- Run the simulator against real albums in the live DB (not mocked state) to verify. Pick albums that represent the edge case: e.g. CBR 320 with no spectral, verified lossless lo-fi, suspect FLAC transcodes.
+- The simulator must show the full rejection cycle: import/reject decision → spectral propagation → backfill decision → next search tiers. Not just the import decision in isolation.
+
 ## Frontend (JavaScript)
 - ES6 modules in `web/js/` — no inline `<script>` in HTML
 - `// @ts-check` + JSDoc types on all exported functions

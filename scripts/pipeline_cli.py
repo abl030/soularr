@@ -632,16 +632,30 @@ def cmd_quality(db, args):
         if decision_chain:
             print(f"      chain: {decision_chain}")
 
-        # For rejections that keep searching: show backfill + next search
+        # For rejections that keep searching: simulate what happens after
         if not result["imported"] and result["keep_searching"]:
-            if backfill and not q_override:
-                tiers, _ = search_tiers(backfill, [])
-                print(f"      backfill → override='{backfill}' (next: {', '.join(tiers)})")
-            elif q_override:
+            if q_override:
                 tiers, _ = search_tiers(q_override, [])
                 print(f"      next search: {', '.join(tiers)}")
             else:
-                print(f"      ** LOOP RISK ** no backfill, quality_override=NULL")
+                # Simulate spectral propagation: on downgrade rejection,
+                # the download's spectral would be written to on-disk state.
+                # Use the download's spectral_grade to compute the backfill.
+                dl_spectral = params.get("spectral_grade")
+                propagated = rejection_backfill_override(
+                    is_cbr=is_cbr,
+                    min_bitrate_kbps=min_br,
+                    spectral_grade=dl_spectral if dl_spectral else spectral_grade,
+                    verified_lossless=verified,
+                )
+                if propagated:
+                    tiers, _ = search_tiers(propagated, [])
+                    print(f"      backfill → override='{propagated}'"
+                          f" (next: {', '.join(tiers)})")
+                else:
+                    print(f"      no backfill"
+                          f" (spectral={dl_spectral or spectral_grade or 'none'},"
+                          f" keep all tiers)")
 
 
 IMPORT_ONE = os.path.join(os.path.dirname(__file__), "..", "harness", "import_one.py")

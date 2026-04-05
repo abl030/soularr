@@ -343,16 +343,27 @@ def _apply_spectral_decision(album_data: GrabListEntry, bv_result: ValidationRes
         spec_ctx.existing_spectral_grade, spec_ctx.existing_spectral_bitrate)
     album_data.current_min_bitrate = spec_ctx.existing_min_bitrate
 
-    # Write on-disk spectral data back to album_requests
+    # Write on-disk spectral data back to album_requests.
+    # When on-disk spectral is NULL and the download has spectral, propagate
+    # the download's spectral as on-disk — on a downgrade (same tier), the
+    # download's spectral characterizes the same quality tier as what's on disk.
     request_id = album_data.db_request_id
     if request_id and ctx.pipeline_db_source:
         try:
-            if album_data.current_spectral is not None:
+            spectral_to_write = album_data.current_spectral
+            if spectral_to_write is None and album_data.download_spectral is not None:
+                spectral_to_write = album_data.download_spectral
+                album_data.current_spectral = spectral_to_write
+                logger.info(
+                    f"SPECTRAL PROPAGATE: {album_data.artist} - {album_data.title}"
+                    f" on-disk spectral=NULL, adopting download spectral"
+                    f" grade={spectral_to_write.grade}")
+            if spectral_to_write is not None:
                 db = ctx.pipeline_db_source._get_db()
                 db.update_spectral_state(
                     request_id,
                     RequestSpectralStateUpdate(
-                        current=album_data.current_spectral,
+                        current=spectral_to_write,
                     ),
                 )
         except Exception:
