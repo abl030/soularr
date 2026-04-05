@@ -9,6 +9,8 @@ from lib.quality import (
     intent_allows_catch_all,
     derive_intent,
     intent_to_quality_override,
+    ResolvedIntent,
+    resolve_search_intent,
 )
 
 
@@ -60,30 +62,6 @@ class TestSearchFiletypes(unittest.TestCase):
 
     def test_upgrade_matches_constant(self):
         result = search_filetypes(QualityIntent.upgrade, [])
-        self.assertEqual(result, ["flac", "mp3 v0", "mp3 320"])
-
-    def test_upgrade_with_narrowed_override(self):
-        """Narrowed CSV is used literally, not expanded to full tiers."""
-        result = search_filetypes(QualityIntent.upgrade, ["flac", "mp3"],
-                                  quality_override="flac,mp3 v0")
-        self.assertEqual(result, ["flac", "mp3 v0"])
-
-    def test_upgrade_with_full_override(self):
-        """Full CSV override produces same result as default."""
-        result = search_filetypes(QualityIntent.upgrade, [],
-                                  quality_override="flac,mp3 v0,mp3 320")
-        self.assertEqual(result, ["flac", "mp3 v0", "mp3 320"])
-
-    def test_upgrade_with_literal_intent_name(self):
-        """Literal 'upgrade' string (not CSV) falls through to default."""
-        result = search_filetypes(QualityIntent.upgrade, [],
-                                  quality_override="upgrade")
-        self.assertEqual(result, ["flac", "mp3 v0", "mp3 320"])
-
-    def test_upgrade_with_none_override(self):
-        """None override falls through to default."""
-        result = search_filetypes(QualityIntent.upgrade, [],
-                                  quality_override=None)
         self.assertEqual(result, ["flac", "mp3 v0", "mp3 320"])
 
 
@@ -190,28 +168,115 @@ class TestRoundTrip(unittest.TestCase):
         self.assertEqual(intent, QualityIntent.flac_preferred)
 
 
+class TestResolveSearchIntent(unittest.TestCase):
+    """resolve_search_intent combines derive + search + catch_all in one call."""
+
+    def test_best_effort_returns_config_with_catch_all(self):
+        r = resolve_search_intent(None, ["flac", "mp3"])
+        self.assertEqual(r.intent, QualityIntent.best_effort)
+        self.assertEqual(r.search_tiers, ["flac", "mp3"])
+        self.assertTrue(r.catch_all)
+
+    def test_best_effort_empty_string(self):
+        r = resolve_search_intent("", ["flac", "mp3"])
+        self.assertEqual(r.intent, QualityIntent.best_effort)
+        self.assertTrue(r.catch_all)
+
+    def test_flac_only(self):
+        r = resolve_search_intent("flac", ["flac", "mp3"])
+        self.assertEqual(r.intent, QualityIntent.flac_only)
+        self.assertEqual(r.search_tiers, ["flac"])
+        self.assertFalse(r.catch_all)
+
+    def test_flac_only_literal_intent(self):
+        r = resolve_search_intent("flac_only", ["mp3"])
+        self.assertEqual(r.search_tiers, ["flac"])
+        self.assertFalse(r.catch_all)
+
+    def test_flac_preferred(self):
+        r = resolve_search_intent("flac_preferred", ["mp3"])
+        self.assertEqual(r.intent, QualityIntent.flac_preferred)
+        self.assertEqual(r.search_tiers, ["flac", "mp3 v0", "mp3 320"])
+        self.assertFalse(r.catch_all)
+
+    def test_upgrade_full_csv(self):
+        r = resolve_search_intent("flac,mp3 v0,mp3 320", [])
+        self.assertEqual(r.intent, QualityIntent.upgrade)
+        self.assertEqual(r.search_tiers, ["flac", "mp3 v0", "mp3 320"])
+        self.assertFalse(r.catch_all)
+
+    def test_upgrade_narrowed_csv(self):
+        """Narrowed CSV is used literally — the core fix."""
+        r = resolve_search_intent("flac,mp3 v0", ["flac", "mp3"])
+        self.assertEqual(r.intent, QualityIntent.upgrade)
+        self.assertEqual(r.search_tiers, ["flac", "mp3 v0"])
+        self.assertFalse(r.catch_all)
+
+    def test_upgrade_literal_intent_name(self):
+        """Literal 'upgrade' (no comma) falls through to default tiers."""
+        r = resolve_search_intent("upgrade", [])
+        self.assertEqual(r.search_tiers, ["flac", "mp3 v0", "mp3 320"])
+
+    def test_upgrade_none_is_best_effort(self):
+        r = resolve_search_intent(None, ["flac"])
+        self.assertEqual(r.intent, QualityIntent.best_effort)
+
+    def test_catch_all_matches_intent(self):
+        """catch_all is True only for best_effort."""
+        cases = [
+            (None, True),
+            ("flac", False),
+            ("flac_preferred", False),
+            ("flac,mp3 v0,mp3 320", False),
+        ]
+        for override, expected in cases:
+            r = resolve_search_intent(override, ["flac", "mp3"])
+            self.assertEqual(r.catch_all, expected,
+                             f"catch_all wrong for override={override!r}")
+
+    def test_frozen(self):
+        r = resolve_search_intent(None, ["flac"])
+        with self.assertRaises(AttributeError):
+            r.catch_all = False  # type: ignore[misc]
+
+
 class TestNarrowOverrideSearchContract(unittest.TestCase):
-    """Contract: narrowed override → derive_intent → search_filetypes excludes removed tier."""
+    """Contract tests: verify overrides are honored across subsystem boundaries."""
 
     def test_narrowed_320_excluded_from_search(self):
-        """After narrow_override_on_downgrade removes mp3 320, search must not include it."""
+        """After narrow_override_on_downgrade removes mp3 320, search excludes it."""
         from lib.quality import narrow_override_on_downgrade, DownloadInfo
         dl = DownloadInfo(slskd_filetype="mp3", is_vbr=False, bitrate=320000)
         narrowed = narrow_override_on_downgrade("flac,mp3 v0,mp3 320", dl)
         self.assertEqual(narrowed, "flac,mp3 v0")
 
-        intent = derive_intent(narrowed)
-        filetypes = search_filetypes(intent, ["flac", "mp3 v0", "mp3 320"],
-                                     quality_override=narrowed)
-        self.assertNotIn("mp3 320", filetypes)
-        self.assertEqual(filetypes, ["flac", "mp3 v0"])
+        resolved = resolve_search_intent(narrowed, ["flac", "mp3 v0", "mp3 320"])
+        self.assertNotIn("mp3 320", resolved.search_tiers)
+        self.assertEqual(resolved.search_tiers, ["flac", "mp3 v0"])
+        self.assertFalse(resolved.catch_all)
 
     def test_full_override_still_includes_all_tiers(self):
-        """Non-narrowed override still searches all upgrade tiers."""
-        intent = derive_intent("flac,mp3 v0,mp3 320")
-        filetypes = search_filetypes(intent, [],
-                                     quality_override="flac,mp3 v0,mp3 320")
-        self.assertEqual(filetypes, ["flac", "mp3 v0", "mp3 320"])
+        resolved = resolve_search_intent("flac,mp3 v0,mp3 320", [])
+        self.assertEqual(resolved.search_tiers, ["flac", "mp3 v0", "mp3 320"])
+
+    def test_import_genuine_320_quality_gate_narrows_to_flac(self):
+        """After importing genuine CBR 320, quality gate → requeue_flac → search excludes mp3 320."""
+        from lib.quality import quality_gate_decision, AudioQualityMeasurement
+        # CBR 320, not verified lossless → quality gate says requeue_flac
+        measurement = AudioQualityMeasurement(
+            min_bitrate_kbps=320, is_cbr=True, verified_lossless=False)
+        decision = quality_gate_decision(measurement)
+        self.assertEqual(decision, "requeue_flac")
+
+        # requeue_flac writes override = "flac"
+        flac_override = intent_to_quality_override(QualityIntent.flac_only)
+        self.assertEqual(flac_override, "flac")
+
+        # Next search must exclude mp3 320
+        resolved = resolve_search_intent(flac_override, ["flac", "mp3 v0", "mp3 320"])
+        self.assertNotIn("mp3 320", resolved.search_tiers)
+        self.assertNotIn("mp3 v0", resolved.search_tiers)
+        self.assertEqual(resolved.search_tiers, ["flac"])
 
 
 if __name__ == "__main__":

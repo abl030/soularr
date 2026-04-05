@@ -25,16 +25,14 @@ class QualityIntent(enum.Enum):
     upgrade = "upgrade"
 
 
-def search_filetypes(intent: QualityIntent, config_allowed: list[str],
-                     quality_override: str | None = None) -> list[str]:
+def search_filetypes(intent: QualityIntent, config_allowed: list[str]) -> list[str]:
     """Map a quality intent to the ordered list of filetypes to search.
 
     Pure function — no I/O. The returned list is tried in order by the search
     loop in soularr.py; the first match wins.
 
-    When *quality_override* is a CSV (contains a comma) and intent is upgrade,
-    the literal tiers are used instead of the default QUALITY_UPGRADE_TIERS.
-    This allows narrow_override_on_downgrade() to remove rejected tiers.
+    Prefer resolve_search_intent() for new call sites — it handles narrowed
+    CSV overrides correctly and returns catch_all in one call.
     """
     if intent == QualityIntent.best_effort:
         return list(config_allowed)
@@ -42,9 +40,7 @@ def search_filetypes(intent: QualityIntent, config_allowed: list[str],
         return ["flac"]
     if intent == QualityIntent.flac_preferred:
         return list(_QUALITY_UPGRADE_LIST)
-    # upgrade — use literal CSV if available (narrowed overrides), else default
-    if quality_override and "," in quality_override:
-        return [t.strip() for t in quality_override.split(",")]
+    # upgrade
     return list(_QUALITY_UPGRADE_LIST)
 
 
@@ -103,6 +99,44 @@ def intent_to_quality_override(intent: QualityIntent) -> str | None:
         return "flac_preferred"
     # upgrade — keep the CSV for backward compat with existing DB rows
     return QUALITY_UPGRADE_TIERS
+
+
+@dataclass(frozen=True)
+class ResolvedIntent:
+    """Complete search plan resolved from quality_override + config.
+
+    Replaces the lossy derive_intent() → search_filetypes() → intent_allows_catch_all()
+    three-call pattern. Carries the literal tier list so narrowed CSV overrides
+    (e.g. "flac,mp3 v0" after removing mp3 320) are honored without information loss.
+    """
+    intent: QualityIntent
+    search_tiers: list[str]
+    catch_all: bool
+
+
+def resolve_search_intent(quality_override: str | None,
+                          config_allowed: list[str]) -> ResolvedIntent:
+    """Resolve quality_override + config into a complete search plan.
+
+    Single entry point for the search-time read path. Handles narrowed CSV
+    overrides correctly — "flac,mp3 v0" produces ["flac", "mp3 v0"], not the
+    full QUALITY_UPGRADE_TIERS.
+    """
+    intent = derive_intent(quality_override)
+    if intent == QualityIntent.best_effort:
+        return ResolvedIntent(intent, list(config_allowed), catch_all=True)
+    if intent == QualityIntent.flac_only:
+        return ResolvedIntent(intent, ["flac"], catch_all=False)
+    if intent == QualityIntent.flac_preferred:
+        return ResolvedIntent(intent, list(_QUALITY_UPGRADE_LIST), catch_all=False)
+    # upgrade — use literal CSV if available (narrowed overrides), else default
+    if quality_override and "," in quality_override:
+        tiers = [t.strip() for t in quality_override.split(",")]
+    else:
+        tiers = list(_QUALITY_UPGRADE_LIST)
+    return ResolvedIntent(intent, tiers, catch_all=False)
+
+
 QUALITY_MIN_BITRATE_KBPS = 210  # V0 floor — below this triggers upgrade
 TRANSCODE_MIN_BITRATE_KBPS = 210  # V0 from genuine lossless is always >= this
 
