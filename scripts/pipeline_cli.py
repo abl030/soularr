@@ -605,6 +605,97 @@ def cmd_manual_import(db, args):
         print(f"  [FAIL] {outcome.message}")
 
 
+def cmd_repair_spectral(db, args):
+    """Find and repair albums stuck by stale on_disk_spectral_bitrate.
+
+    Identifies wanted albums where on_disk_spectral_grade is genuine but
+    on_disk_spectral_bitrate still holds a stale transcode estimate,
+    causing the quality gate to requeue indefinitely (issue #18).
+    """
+    from quality import AudioQualityMeasurement, quality_gate_decision
+
+    # Find candidates: genuine on disk but spectral bitrate < min_bitrate
+    # (genuine files should have no spectral cliff → bitrate should be NULL)
+    cur = db._execute("""
+        SELECT id, artist_name, album_title, min_bitrate,
+               on_disk_spectral_bitrate, on_disk_spectral_grade,
+               spectral_bitrate, spectral_grade, verified_lossless
+        FROM album_requests
+        WHERE status = 'wanted'
+          AND on_disk_spectral_grade = 'genuine'
+          AND on_disk_spectral_bitrate IS NOT NULL
+    """)
+    candidates = [dict(r) for r in cur.fetchall()]
+
+    if not candidates:
+        print("No stuck albums found.")
+        return
+
+    print(f"Found {len(candidates)} album(s) with stale spectral data:\n")
+
+    repaired = 0
+    for req in candidates:
+        rid = req["id"]
+        label = f"{req['artist_name']} - {req['album_title']}"
+        min_br = req["min_bitrate"]
+        stale_br = req["on_disk_spectral_bitrate"]
+        print(f"  [{rid:>4}] {label}")
+        print(f"         min_bitrate={min_br}kbps, stale on_disk_spectral={stale_br}kbps")
+
+        # Check what quality gate would decide after clearing stale data
+        measurement = AudioQualityMeasurement(
+            min_bitrate_kbps=min_br or 0,
+            is_cbr=False,  # if they're genuine, they're VBR V0
+            verified_lossless=bool(req.get("verified_lossless")),
+            spectral_bitrate_kbps=None,  # cleared
+        )
+        decision = quality_gate_decision(measurement)
+        print(f"         after repair: quality_gate_decision → {decision}")
+
+        if args.dry_run:
+            print(f"         [DRY RUN] would clear spectral + remove stale denylists")
+            continue
+
+        # Clear stale spectral fields
+        db._execute("""
+            UPDATE album_requests
+            SET spectral_bitrate = NULL,
+                on_disk_spectral_bitrate = NULL,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (rid,))
+
+        # Remove denylist entries caused by stale spectral
+        del_cur = db._execute("""
+            DELETE FROM source_denylist
+            WHERE request_id = %s
+              AND (reason LIKE 'quality gate: spectral%%'
+                   OR reason LIKE 'spectral:%%')
+            RETURNING username, reason
+        """, (rid,))
+        removed = del_cur.fetchall()
+        for entry in removed:
+            print(f"         un-denylisted: {entry['username']} ({entry['reason']})")
+
+        # If quality gate would accept, transition to imported
+        if decision == "accept" and min_br:
+            db._execute("""
+                UPDATE album_requests
+                SET status = 'imported',
+                    min_bitrate = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (min_br, rid))
+            print(f"         → transitioned to imported")
+        else:
+            print(f"         → remains wanted (gate says {decision})")
+
+        repaired += 1
+
+    print(f"\nRepaired {repaired} album(s)." if not args.dry_run
+          else f"\n[DRY RUN] Would repair {len(candidates)} album(s).")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Pipeline CLI — manage download pipeline DB")
     parser.add_argument("--dsn", default=DEFAULT_DSN, help="PostgreSQL connection string")
@@ -659,6 +750,12 @@ def main():
     p_manual.add_argument("id", type=int, help="Pipeline request ID")
     p_manual.add_argument("path", help="Path to album folder")
 
+    # repair-spectral
+    p_repair = sub.add_parser("repair-spectral",
+                              help="Fix albums stuck by stale on_disk_spectral_bitrate (#18)")
+    p_repair.add_argument("--dry-run", action="store_true",
+                          help="Show what would be repaired without changing anything")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -678,6 +775,7 @@ def main():
         "quality": cmd_quality,
         "force-import": cmd_force_import,
         "manual-import": cmd_manual_import,
+        "repair-spectral": cmd_repair_spectral,
     }
     commands[args.command](db, args)
     db.close()
