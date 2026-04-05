@@ -116,12 +116,19 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int,
         req = None
         try:
             req = ctx.pipeline_db_source._get_db().get_request(request_id)
+            spectral_grade = req.get("current_spectral_grade") if req else None
             raw_br = req.get("current_spectral_bitrate") if req else None
-            spectral_br = raw_br if isinstance(raw_br, int) else None
-            effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
-            if effective is not None and effective < min_br_kbps:
-                logger.info(f"QUALITY GATE: using current_spectral={spectral_br}kbps "
-                            f"(lower than beets min_bitrate={min_br_kbps}kbps)")
+            # Only use spectral bitrate to override when grade is suspect —
+            # genuine files can have low spectral bitrate due to quiet/sparse
+            # music, not bad source quality (e.g. ambient at genuine 320kbps
+            # shows ~160kbps spectral estimate because the music has no HF)
+            if spectral_grade == "suspect":
+                spectral_br = raw_br if isinstance(raw_br, int) else None
+            if spectral_br is not None:
+                effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
+                if effective is not None and effective < min_br_kbps:
+                    logger.info(f"QUALITY GATE: using current_spectral={spectral_br}kbps "
+                                f"(lower than beets min_bitrate={min_br_kbps}kbps)")
         except Exception:
             logger.debug("QUALITY GATE: DB lookup failed for spectral override")
         verified_lossless = bool(req.get("verified_lossless")) if req else False
