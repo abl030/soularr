@@ -372,40 +372,37 @@ class PipelineDB:
         """Write spectral state pairs together, including explicit NULLs."""
         self.update_request_fields(request_id, **update.as_update_fields())
 
-    def reset_to_wanted(self, request_id, quality_override=None, min_bitrate=None):
+    def reset_to_wanted(self, request_id: int, **fields: Any) -> None:
+        """Reset to wanted, clearing retry counters.
+
+        Only fields explicitly passed are updated — omitted fields are
+        preserved.  Pass ``quality_override=None`` to clear the column;
+        omitting it leaves the existing value untouched.
+        """
         now = datetime.now(timezone.utc)
-        if min_bitrate is not None:
-            # Upgrading: save current as prev, set new
-            self._execute("""
-                UPDATE album_requests
-                SET status = 'wanted',
-                    search_attempts = 0,
-                    download_attempts = 0,
-                    validation_attempts = 0,
-                    next_retry_after = NULL,
-                    last_attempt_at = NULL,
-                    active_download_state = NULL,
-                    quality_override = %s,
-                    prev_min_bitrate = COALESCE(min_bitrate, prev_min_bitrate),
-                    min_bitrate = %s,
-                    updated_at = %s
-                WHERE id = %s
-            """, (quality_override, min_bitrate, now, request_id))
-        else:
-            # No new bitrate info — keep existing values
-            self._execute("""
-                UPDATE album_requests
-                SET status = 'wanted',
-                    search_attempts = 0,
-                    download_attempts = 0,
-                    validation_attempts = 0,
-                    next_retry_after = NULL,
-                    last_attempt_at = NULL,
-                    active_download_state = NULL,
-                    quality_override = %s,
-                    updated_at = %s
-                WHERE id = %s
-            """, (quality_override, now, request_id))
+        sets = [
+            "status = 'wanted'",
+            "search_attempts = 0",
+            "download_attempts = 0",
+            "validation_attempts = 0",
+            "next_retry_after = NULL",
+            "last_attempt_at = NULL",
+            "active_download_state = NULL",
+            "updated_at = %s",
+        ]
+        params: list[object] = [now]
+        if "quality_override" in fields:
+            sets.append("quality_override = %s")
+            params.append(fields["quality_override"])
+        if "min_bitrate" in fields:
+            sets.append("prev_min_bitrate = COALESCE(min_bitrate, prev_min_bitrate)")
+            sets.append("min_bitrate = %s")
+            params.append(fields["min_bitrate"])
+        params.append(request_id)
+        self._execute(
+            f"UPDATE album_requests SET {', '.join(sets)} WHERE id = %s",
+            params,
+        )
         self.conn.commit()
 
     # --- Downloading state ---

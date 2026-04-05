@@ -288,14 +288,14 @@ class DatabaseSource:
 
         db = self._get_db()
         dl = download_info if isinstance(download_info, DownloadInfo) else DownloadInfo()
-        if quality_override is None:
-            req = db.get_request(request_id)
-            quality_override = req.get("quality_override") if req else None
         from lib.transitions import apply_transition
-        apply_transition(db, request_id, "wanted",
-                         beets_distance=bv_result.distance,
-                         beets_scenario=bv_result.scenario,
-                         quality_override=quality_override)
+        transition_kwargs: dict[str, object] = dict(
+            beets_distance=bv_result.distance,
+            beets_scenario=bv_result.scenario,
+        )
+        if quality_override is not None:
+            transition_kwargs["quality_override"] = quality_override
+        apply_transition(db, request_id, "wanted", **transition_kwargs)
         db.record_attempt(request_id, "validation")
 
         db.log_download(

@@ -339,10 +339,12 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
 
             if action.requeue:
                 db = ctx.pipeline_db_source._get_db()
-                apply_transition(
-                    db, request_id, "wanted",
-                    quality_override=intent_to_quality_override(QualityIntent.upgrade),
-                    min_bitrate=new_br if action.mark_done else None)
+                requeue_fields: dict[str, object] = {
+                    "quality_override": intent_to_quality_override(QualityIntent.upgrade),
+                }
+                if action.mark_done and new_br is not None:
+                    requeue_fields["min_bitrate"] = new_br
+                apply_transition(db, request_id, "wanted", **requeue_fields)
 
             if action.run_quality_gate:
                 _check_quality_gate(album_data, request_id, ctx)

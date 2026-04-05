@@ -461,14 +461,18 @@ class TestResetToWanted(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def test_reset_to_wanted(self):
+    def _make_request(self, suffix: str = "") -> int:
         req_id = self.db.add_request(
-            mb_release_id="reset-uuid",
+            mb_release_id=f"reset-{suffix}-uuid",
             artist_name="A",
             album_title="B",
             source="request",
         )
         self.db.update_status(req_id, "imported")
+        return req_id
+
+    def test_reset_to_wanted(self):
+        req_id = self._make_request("basic")
         self.db.reset_to_wanted(req_id)
         req = self.db.get_request(req_id)
         assert req is not None
@@ -477,6 +481,99 @@ class TestResetToWanted(unittest.TestCase):
         self.assertEqual(req["search_attempts"], 0)
         self.assertEqual(req["download_attempts"], 0)
         self.assertEqual(req["validation_attempts"], 0)
+
+    def test_preserves_quality_override_when_omitted(self):
+        req_id = self._make_request("preserve-qo")
+        self.db.update_request_fields(req_id, quality_override="flac,mp3 v0")
+        self.db.reset_to_wanted(req_id)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["quality_override"], "flac,mp3 v0")
+
+    def test_sets_quality_override_when_passed(self):
+        req_id = self._make_request("set-qo")
+        self.db.update_request_fields(req_id, quality_override="flac,mp3 v0,mp3 320")
+        self.db.reset_to_wanted(req_id, quality_override="flac,mp3 v0")
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["quality_override"], "flac,mp3 v0")
+
+    def test_clears_quality_override_when_none(self):
+        req_id = self._make_request("clear-qo")
+        self.db.update_request_fields(req_id, quality_override="flac")
+        self.db.reset_to_wanted(req_id, quality_override=None)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertIsNone(req["quality_override"])
+
+    def test_preserves_min_bitrate_when_omitted(self):
+        req_id = self._make_request("preserve-br")
+        self.db.update_request_fields(req_id, min_bitrate=320)
+        self.db.reset_to_wanted(req_id)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["min_bitrate"], 320)
+
+    def test_sets_min_bitrate_when_passed(self):
+        req_id = self._make_request("set-br")
+        self.db.update_request_fields(req_id, min_bitrate=192)
+        self.db.reset_to_wanted(req_id, min_bitrate=320)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["min_bitrate"], 320)
+        self.assertEqual(req["prev_min_bitrate"], 192)
+
+
+@requires_postgres
+class TestApplyTransitionDB(unittest.TestCase):
+    """DB-backed contract tests for apply_transition preserve semantics."""
+
+    def setUp(self):
+        self.db = make_db()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _make_request(self, suffix: str = "", **extra: object) -> int:
+        from lib.transitions import apply_transition
+        req_id = self.db.add_request(
+            mb_release_id=f"transition-{suffix}-uuid",
+            artist_name="A",
+            album_title="B",
+            source="request",
+        )
+        if extra:
+            self.db.update_request_fields(req_id, **extra)
+        # Move to imported so we can transition to wanted
+        apply_transition(self.db, req_id, "imported", from_status="wanted")
+        return req_id
+
+    def test_transition_to_wanted_preserves_override(self):
+        from lib.transitions import apply_transition
+        req_id = self._make_request("preserve", quality_override="flac,mp3 v0")
+        apply_transition(self.db, req_id, "wanted", from_status="imported")
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["quality_override"], "flac,mp3 v0")
+
+    def test_transition_to_wanted_with_narrowed_override(self):
+        from lib.transitions import apply_transition
+        req_id = self._make_request("narrow", quality_override="flac,mp3 v0,mp3 320")
+        apply_transition(self.db, req_id, "wanted", from_status="imported",
+                         quality_override="flac,mp3 v0")
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertEqual(req["quality_override"], "flac,mp3 v0")
+
+    def test_transition_to_imported_clears_override(self):
+        from lib.transitions import apply_transition
+        req_id = self._make_request("clear", quality_override="flac")
+        apply_transition(self.db, req_id, "wanted", from_status="imported")
+        apply_transition(self.db, req_id, "imported", from_status="wanted",
+                         quality_override=None)
+        req = self.db.get_request(req_id)
+        assert req is not None
+        self.assertIsNone(req["quality_override"])
 
 
 @requires_postgres

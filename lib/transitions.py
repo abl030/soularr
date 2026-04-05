@@ -100,8 +100,12 @@ def apply_transition(
     from_status = extra.pop("from_status", None)
     if from_status is not None:
         from_status = str(from_status)
-    quality_override = extra.pop("quality_override", None)
-    min_bitrate = extra.pop("min_bitrate", None)
+    # Presence-based: only fields explicitly passed get written.
+    # Omitted fields are preserved by reset_to_wanted / update_status.
+    transition_fields: dict[str, object] = {}
+    for _key in ("quality_override", "min_bitrate", "prev_min_bitrate"):
+        if _key in extra:
+            transition_fields[_key] = extra.pop(_key)
     state_json = extra.pop("state_json", None)
     attempt_type = extra.pop("attempt_type", None)
     if from_status is None:
@@ -130,27 +134,19 @@ def apply_transition(
 
     # → wanted with counter reset: use reset_to_wanted
     if to_status == "wanted" and fx.clear_retry_counters:
-        db.reset_to_wanted(request_id,
-                           quality_override=quality_override,
-                           min_bitrate=min_bitrate)
+        db.reset_to_wanted(request_id, **transition_fields)
         if fx.record_attempt and attempt_type:
             db.record_attempt(request_id, attempt_type)
         return
 
     # downloading → wanted: reset + record attempt
     if from_status == "downloading" and to_status == "wanted":
-        db.reset_to_wanted(request_id,
-                           quality_override=quality_override,
-                           min_bitrate=min_bitrate)
+        db.reset_to_wanted(request_id, **transition_fields)
         if attempt_type:
             db.record_attempt(request_id, attempt_type)
         return
 
     # All other transitions: use update_status
-    # Forward named params as extra fields when not consumed by reset_to_wanted
     all_extra: dict[str, object] = dict(extra)
-    if min_bitrate is not None:
-        all_extra["min_bitrate"] = min_bitrate
-    if quality_override is not None:
-        all_extra["quality_override"] = quality_override
+    all_extra.update(transition_fields)
     db.update_status(request_id, to_status, **all_extra)
