@@ -304,6 +304,41 @@ class TestDatabaseSource(unittest.TestCase):
         assert req is not None
         self.assertTrue(req.get("verified_lossless", False))
 
+    def test_mark_done_genuine_clears_stale_spectral_bitrate(self):
+        """When genuine files (no spectral cliff) replace a transcode,
+        stale on_disk_spectral_bitrate and spectral_bitrate must be cleared.
+        Regression test for issue #18."""
+        from lib.quality import DownloadInfo
+        source, db = self._make_source()
+        req_id = db.add_request(
+            mb_release_id="stale-spectral-uuid", artist_name="Brand New",
+            album_title="Daisy", source="request")
+        # Simulate prior transcode import leaving stale spectral data
+        db._execute(
+            "UPDATE album_requests SET spectral_bitrate = %s, "
+            "on_disk_spectral_bitrate = %s, on_disk_spectral_grade = %s, "
+            "spectral_grade = %s WHERE id = %s",
+            (192, 192, "likely_transcode", "likely_transcode", req_id))
+
+        # New import: genuine MP3 V0 (no cliff → spectral_bitrate is None)
+        record = _make_record(db_request_id=req_id, db_source="request")
+        bv_result = ValidationResult(valid=True, distance=0.0, scenario="strong_match")
+        dl = DownloadInfo()
+        dl.spectral_grade = "genuine"
+        dl.spectral_bitrate = None  # genuine files have no cliff
+        source.mark_done(record, bv_result, dest_path="/Incoming/Brand New/Daisy",
+                         download_info=dl)
+
+        req = db.get_request(req_id)
+        assert req is not None
+        # Stale values must be cleared, not left at 192
+        self.assertIsNone(req["on_disk_spectral_bitrate"],
+                          "on_disk_spectral_bitrate should be cleared for genuine import")
+        self.assertIsNone(req["spectral_bitrate"],
+                          "spectral_bitrate should be cleared for genuine import")
+        self.assertEqual(req["on_disk_spectral_grade"], "genuine")
+        self.assertEqual(req["spectral_grade"], "genuine")
+
     def test_get_denylisted_users(self):
         source, db = self._make_source()
         req_id = db.add_request(

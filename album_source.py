@@ -215,10 +215,11 @@ class DatabaseSource:
             beets_scenario=bv_result.scenario,
             imported_path=dest_path,
         )
-        if dl.spectral_bitrate is not None:
-            update_fields["spectral_bitrate"] = dl.spectral_bitrate
         if dl.spectral_grade:
             update_fields["spectral_grade"] = dl.spectral_grade
+            # Always update spectral_bitrate when spectral ran — including
+            # clearing stale values when genuine files have no cliff (None).
+            update_fields["spectral_bitrate"] = dl.spectral_bitrate
         if dl.verified_lossless_override is not None:
             # import_one.py computed this — trust it over re-derivation
             if dl.verified_lossless_override:
@@ -233,7 +234,9 @@ class DatabaseSource:
             # Verified lossless: V0 bitrate is the real quality fingerprint,
             # not the spectral cliff estimate (which can miscalibrate)
             update_fields["on_disk_spectral_bitrate"] = dl.bitrate // 1000
-        elif dl.spectral_bitrate is not None:
+        elif dl.spectral_grade:
+            # Spectral ran: update on_disk to match, including clearing stale
+            # values when genuine files have no cliff (spectral_bitrate=None).
             update_fields["on_disk_spectral_bitrate"] = dl.spectral_bitrate
         if dl.final_format:
             update_fields["final_format"] = dl.final_format
