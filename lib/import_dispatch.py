@@ -19,7 +19,8 @@ from lib.quality import (parse_import_result, DownloadInfo, ImportResult,
                          QUALITY_MIN_BITRATE_KBPS,
                          QUALITY_UPGRADE_TIERS, QUALITY_FLAC_ONLY,
                          dispatch_action, compute_effective_override_bitrate,
-                         extract_usernames, narrow_override_on_downgrade)
+                         extract_usernames, narrow_override_on_downgrade,
+                         rejection_backfill_override)
 from lib.transitions import apply_transition
 from lib.util import cleanup_disambiguation_orphans, trigger_meelo_clean
 
@@ -315,6 +316,28 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                         current_override = req_row.get("quality_override") if req_row else None
                         narrowed_override = narrow_override_on_downgrade(
                             current_override, dl_info)
+                        # Backfill: if no override exists yet, check if on-disk
+                        # state warrants one (breaks CBR 320 loops)
+                        if narrowed_override is None and current_override is None and req_row:
+                            from lib.beets_db import BeetsDB
+                            with BeetsDB() as beets:
+                                beets_info = beets.get_album_info(
+                                    album_data.mb_release_id)
+                            if beets_info:
+                                narrowed_override = rejection_backfill_override(
+                                    is_cbr=beets_info.is_cbr,
+                                    min_bitrate_kbps=beets_info.min_bitrate_kbps,
+                                    spectral_grade=req_row.get(
+                                        "current_spectral_grade"),
+                                    verified_lossless=bool(
+                                        req_row.get("verified_lossless")),
+                                )
+                                if narrowed_override:
+                                    logger.info(
+                                        f"BACKFILL: {label} quality_override=NULL"
+                                        f" → '{narrowed_override}' on downgrade"
+                                        f" ({beets_info.min_bitrate_kbps}kbps,"
+                                        f" cbr={beets_info.is_cbr})")
                     except Exception:
                         logger.debug(
                             "Failed to inspect quality_override before downgrade reset")
