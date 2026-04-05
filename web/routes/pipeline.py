@@ -310,9 +310,12 @@ def post_pipeline_update(h, body: dict) -> None:
             if b.album_exists(mbid):
                 quality = intent_to_quality_override(QualityIntent.upgrade)
                 min_br = b.get_min_bitrate(mbid)
-        apply_transition(s._db(), int(req_id), "wanted",
-                         from_status=req["status"],
-                         quality_override=quality, min_bitrate=min_br)
+        kwargs: dict[str, object] = {"from_status": req["status"]}
+        if quality is not None:
+            kwargs["quality_override"] = quality
+        if min_br is not None:
+            kwargs["min_bitrate"] = min_br
+        apply_transition(s._db(), int(req_id), "wanted", **kwargs)
     else:
         apply_transition(s._db(), int(req_id), new_status,
                          from_status=req["status"])
@@ -512,9 +515,12 @@ def post_pipeline_ban_source(h, body: dict) -> None:
     if req:
         quality = req.get("quality_override") or intent_to_quality_override(QualityIntent.upgrade)
         min_br = req.get("min_bitrate")
-        apply_transition(s._db(), int(req_id), "wanted",
-                         from_status=req["status"],
-                         quality_override=quality, min_bitrate=min_br)
+        ban_kwargs: dict[str, object] = {"from_status": req["status"]}
+        if quality is not None:
+            ban_kwargs["quality_override"] = quality
+        if min_br is not None:
+            ban_kwargs["min_bitrate"] = min_br
+        apply_transition(s._db(), int(req_id), "wanted", **ban_kwargs)
 
     h._json({
         "status": "ok",
