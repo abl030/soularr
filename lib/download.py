@@ -21,7 +21,8 @@ from lib.pipeline_db import RequestSpectralStateUpdate
 from lib.quality import (spectral_import_decision, SpectralContext,
                          SpectralMeasurement,
                          ActiveDownloadState, ActiveDownloadFileState,
-                         DownloadDecision, decide_download_action)
+                         DownloadDecision, decide_download_action,
+                         rejection_backfill_override)
 from lib.import_dispatch import (_build_download_info, dispatch_import)
 from lib.transitions import apply_transition
 from lib.util import (sanitize_folder_name, move_failed_import, stage_to_ai,
@@ -450,13 +451,58 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
         dl_info.existing_min_bitrate = album_data.current_min_bitrate
         dl_info.slskd_filetype = dl_info.filetype
         dl_info.actual_filetype = dl_info.filetype
+
+    # Backfill quality_override for pre-quality-gate albums stuck in loops
+    backfill_override = _compute_rejection_backfill(album_data, ctx)
+
     ctx.pipeline_db_source.mark_failed(album_data, bv_result, usernames=usernames,
-                                       download_info=dl_info)
+                                       download_info=dl_info,
+                                       quality_override=backfill_override)
     logger.warning(f"REJECTED: {album_data.artist} - {album_data.title} "
                    f"(scenario={bv_result.scenario}, "
                    f"distance={bv_result.distance}, "
                    f"detail={bv_result.detail}) "
                    f"| denylisted users: {', '.join(usernames)}")
+
+
+def _compute_rejection_backfill(album_data: GrabListEntry,
+                                ctx: SoularrContext) -> str | None:
+    """Check if quality_override should be backfilled on rejection.
+
+    Only fires when quality_override is currently NULL and the on-disk state
+    is genuine + decent quality + not verified lossless.
+    """
+    request_id = album_data.db_request_id
+    if not request_id or not ctx.pipeline_db_source:
+        return None
+    if album_data.db_quality_override:
+        return None
+    try:
+        db = ctx.pipeline_db_source._get_db()
+        req = db.get_request(request_id)
+        if not req or req.get("quality_override"):
+            return None
+        from lib.beets_db import BeetsDB
+        with BeetsDB() as beets:
+            info = beets.get_album_info(album_data.mb_release_id)
+        if not info:
+            return None
+        override = rejection_backfill_override(
+            is_cbr=info.is_cbr,
+            min_bitrate_kbps=info.min_bitrate_kbps,
+            spectral_grade=req.get("current_spectral_grade"),
+            verified_lossless=bool(req.get("verified_lossless")),
+        )
+        if override:
+            logger.info(
+                f"BACKFILL: {album_data.artist} - {album_data.title} "
+                f"quality_override=NULL → '{override}' "
+                f"(on-disk: {info.min_bitrate_kbps}kbps, cbr={info.is_cbr}, "
+                f"spectral={req.get('current_spectral_grade')})")
+        return override
+    except Exception:
+        logger.debug("BACKFILL: failed to check on-disk state", exc_info=True)
+        return None
 
 
 # === ActiveDownloadState building ===

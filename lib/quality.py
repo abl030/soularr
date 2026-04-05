@@ -981,6 +981,33 @@ def narrow_override_on_downgrade(quality_override: str | None,
     return ",".join(narrowed)
 
 
+def rejection_backfill_override(
+    *,
+    is_cbr: bool,
+    min_bitrate_kbps: int | None,
+    spectral_grade: str | None,
+    verified_lossless: bool,
+) -> str | None:
+    """Backfill quality_override for pre-quality-gate albums stuck in download loops.
+
+    When a download is rejected (e.g. downgrade) and quality_override is NULL,
+    albums with decent quality on disk keep downloading the same tier forever
+    because the quality gate only fires after successful imports.
+
+    Returns QUALITY_FLAC_ONLY when the on-disk state is good enough that only
+    a verified lossless source would be an upgrade. Returns None otherwise.
+    """
+    if verified_lossless:
+        return None
+    if spectral_grade != "genuine":
+        return None
+    if min_bitrate_kbps is None:
+        return None
+    if min_bitrate_kbps >= QUALITY_MIN_BITRATE_KBPS:
+        return QUALITY_FLAC_ONLY
+    return None
+
+
 # ---------------------------------------------------------------------------
 # AudioFileSpec — single source of truth for filetype identity
 # ---------------------------------------------------------------------------

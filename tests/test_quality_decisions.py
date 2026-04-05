@@ -928,5 +928,94 @@ class TestNarrowOverrideOnDowngrade(unittest.TestCase):
         self.assertEqual(result, "flac,mp3 v0")
 
 
+class TestRejectionBackfillOverride(unittest.TestCase):
+    """Tests for rejection_backfill_override — breaks CBR 320 download loops."""
+
+    def test_cbr_320_genuine_not_verified_returns_flac(self):
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+    def test_cbr_256_genuine_not_verified_returns_flac(self):
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=256,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+    def test_vbr_240_genuine_not_verified_returns_flac(self):
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=False, min_bitrate_kbps=240,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+    def test_vbr_at_threshold_returns_flac(self):
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=False, min_bitrate_kbps=210,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+    def test_vbr_below_threshold_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=False, min_bitrate_kbps=200,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_cbr_192_below_threshold_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=192,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_verified_lossless_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="genuine", verified_lossless=True)
+        self.assertIsNone(result)
+
+    def test_suspect_spectral_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="suspect", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_marginal_spectral_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="marginal", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_no_spectral_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade=None, verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_none_bitrate_returns_none(self):
+        from lib.quality import rejection_backfill_override
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=None,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertIsNone(result)
+
+    def test_stars_of_the_lid_scenario(self):
+        """The exact stuck-loop scenario: CBR 320 genuine, not verified, no override."""
+        from lib.quality import rejection_backfill_override, QUALITY_FLAC_ONLY
+        result = rejection_backfill_override(
+            is_cbr=True, min_bitrate_kbps=320,
+            spectral_grade="genuine", verified_lossless=False)
+        self.assertEqual(result, QUALITY_FLAC_ONLY)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -485,7 +485,9 @@ def cmd_show(db, args):
 
 def cmd_quality(db, args):
     """Show quality state and simulate decisions for common download scenarios."""
-    from quality import full_pipeline_decision, quality_gate_decision, AudioQualityMeasurement
+    from quality import (full_pipeline_decision, quality_gate_decision,
+                         AudioQualityMeasurement, rejection_backfill_override,
+                         search_tiers)
 
     req = db.get_request(args.id)
     if not req:
@@ -497,16 +499,17 @@ def cmd_quality(db, args):
     verified = bool(req.get("verified_lossless"))
     current_br = req.get("current_spectral_bitrate")
     q_override = req.get("quality_override")
+    spectral_grade = req.get("current_spectral_grade")
 
     print(f"  {label}")
     print(f"  Status: {req['status']}")
     print()
 
     # --- Current quality gate ---
+    is_cbr = False
     if min_br is not None:
         from beets_db import BeetsDB
         mbid = req.get("mb_release_id")
-        is_cbr = False
         if mbid:
             try:
                 with BeetsDB() as beets:
@@ -527,10 +530,23 @@ def cmd_quality(db, args):
               f"is_cbr={is_cbr}")
         if current_br:
             print(f"    current_spectral_bitrate={current_br}kbps")
+        if spectral_grade:
+            print(f"    current_spectral_grade={spectral_grade}")
         if q_override:
             print(f"    searching: {q_override}")
     else:
         print(f"  Quality gate:  NO DATA (not yet imported)")
+
+    # --- Rejection backfill status ---
+    backfill = rejection_backfill_override(
+        is_cbr=is_cbr, min_bitrate_kbps=min_br,
+        spectral_grade=spectral_grade, verified_lossless=verified)
+    if backfill and not q_override:
+        print(f"  Backfill:      would set quality_override='{backfill}' on next rejection")
+    elif q_override:
+        print(f"  Backfill:      not needed (quality_override already set)")
+    else:
+        print(f"  Backfill:      won't fire (conditions not met)")
 
     # --- Simulate common scenarios ---
     effective_existing = min_br
@@ -538,18 +554,57 @@ def cmd_quality(db, args):
         effective_existing = current_br
 
     scenarios = [
-        ("Genuine FLAC → V0", dict(
+        # --- FLAC downloads ---
+        ("Genuine FLAC → V0 (high bitrate)", dict(
             is_flac=True, min_bitrate=245, is_cbr=False,
             spectral_grade="genuine", converted_count=12,
             post_conversion_min_bitrate=245)),
-        ("MP3 V0 (240kbps)", dict(
-            is_flac=False, min_bitrate=240, is_cbr=False)),
-        ("MP3 CBR 320", dict(
-            is_flac=False, min_bitrate=320, is_cbr=True)),
-        ("Suspect FLAC (transcode)", dict(
+        ("Genuine FLAC → V0 (lo-fi, 207kbps)", dict(
+            is_flac=True, min_bitrate=207, is_cbr=False,
+            spectral_grade="genuine", converted_count=12,
+            post_conversion_min_bitrate=207)),
+        ("Marginal FLAC → V0", dict(
+            is_flac=True, min_bitrate=240, is_cbr=False,
+            spectral_grade="marginal", converted_count=12,
+            post_conversion_min_bitrate=240)),
+        ("Suspect FLAC (transcode, 190kbps)", dict(
             is_flac=True, min_bitrate=190, is_cbr=False,
             spectral_grade="suspect", converted_count=12,
             post_conversion_min_bitrate=190)),
+        ("Suspect FLAC (transcode, 245kbps)", dict(
+            is_flac=True, min_bitrate=245, is_cbr=False,
+            spectral_grade="suspect", converted_count=12,
+            post_conversion_min_bitrate=245)),
+        # --- MP3 VBR downloads ---
+        ("MP3 V0 (240kbps)", dict(
+            is_flac=False, min_bitrate=240, is_cbr=False)),
+        ("MP3 V0 (low, 205kbps)", dict(
+            is_flac=False, min_bitrate=205, is_cbr=False)),
+        ("MP3 V2 (190kbps)", dict(
+            is_flac=False, min_bitrate=190, is_cbr=False)),
+        # --- MP3 CBR downloads (no spectral) ---
+        ("CBR 320 (no spectral)", dict(
+            is_flac=False, min_bitrate=320, is_cbr=True)),
+        ("CBR 256 (no spectral)", dict(
+            is_flac=False, min_bitrate=256, is_cbr=True)),
+        ("CBR 192 (no spectral)", dict(
+            is_flac=False, min_bitrate=192, is_cbr=True)),
+        # --- MP3 CBR downloads (with spectral) ---
+        ("CBR 320 genuine", dict(
+            is_flac=False, min_bitrate=320, is_cbr=True,
+            spectral_grade="genuine")),
+        ("CBR 320 suspect (~128kbps)", dict(
+            is_flac=False, min_bitrate=320, is_cbr=True,
+            spectral_grade="suspect", spectral_bitrate=128)),
+        ("CBR 320 suspect (~192kbps)", dict(
+            is_flac=False, min_bitrate=320, is_cbr=True,
+            spectral_grade="suspect", spectral_bitrate=192)),
+        ("CBR 256 genuine", dict(
+            is_flac=False, min_bitrate=256, is_cbr=True,
+            spectral_grade="genuine")),
+        ("CBR 192 genuine", dict(
+            is_flac=False, min_bitrate=192, is_cbr=True,
+            spectral_grade="genuine")),
     ]
 
     print(f"\n  What would happen if we downloaded:")
@@ -576,6 +631,17 @@ def cmd_quality(db, args):
         print(f"      → {', '.join(parts)} (final: {final})")
         if decision_chain:
             print(f"      chain: {decision_chain}")
+
+        # For rejections that keep searching: show backfill + next search
+        if not result["imported"] and result["keep_searching"]:
+            if backfill and not q_override:
+                tiers, _ = search_tiers(backfill, [])
+                print(f"      backfill → override='{backfill}' (next: {', '.join(tiers)})")
+            elif q_override:
+                tiers, _ = search_tiers(q_override, [])
+                print(f"      next search: {', '.join(tiers)}")
+            else:
+                print(f"      ** LOOP RISK ** no backfill, quality_override=NULL")
 
 
 IMPORT_ONE = os.path.join(os.path.dirname(__file__), "..", "harness", "import_one.py")
