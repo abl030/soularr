@@ -194,7 +194,7 @@ class TestCmdQuery(unittest.TestCase):
         self.assertIsNone(rc)
         self.assertEqual(
             db._execute.call_args_list[0][0][0],
-            "SET default_transaction_read_only = on",
+            "SET SESSION default_transaction_read_only = on",
         )
         self.assertEqual(
             db._execute.call_args_list[1][0][0],
@@ -202,7 +202,7 @@ class TestCmdQuery(unittest.TestCase):
         )
         self.assertEqual(
             db._execute.call_args_list[2][0][0],
-            "SET default_transaction_read_only = off",
+            "SET SESSION default_transaction_read_only = off",
         )
         output = stdout.getvalue()
         self.assertIn("id | artist_name", output)
@@ -263,8 +263,35 @@ class TestCmdQuery(unittest.TestCase):
         self.assertIn("syntax error", stderr.getvalue())
         self.assertEqual(
             db._execute.call_args_list[2][0][0],
-            "SET default_transaction_read_only = off",
+            "SET SESSION default_transaction_read_only = off",
         )
+
+
+@unittest.skipUnless(TEST_DSN, "TEST_DB_DSN not set")
+class TestCmdQueryIntegration(unittest.TestCase):
+    """Integration test: read-only session rejects writes against real DB."""
+
+    def setUp(self):
+        self.db = make_db()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_query_rejects_writes(self):
+        args = MagicMock(sql="DELETE FROM album_requests", json=False)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            rc = pipeline_cli.cmd_query(self.db, args)
+        self.assertEqual(rc, 1)
+        self.assertIn("read-only", stderr.getvalue().lower())
+
+    def test_query_allows_reads(self):
+        args = MagicMock(sql="SELECT count(*) AS n FROM album_requests", json=False)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = pipeline_cli.cmd_query(self.db, args)
+        self.assertIsNone(rc)
+        self.assertIn("n", stdout.getvalue())
 
 
 @unittest.skipUnless(TEST_DSN, "TEST_DB_DSN not set")

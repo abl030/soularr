@@ -318,7 +318,7 @@ def cmd_query(db, args):
         print(f"  [ERROR] {exc}", file=sys.stderr)
         return 1
 
-    db._execute("SET default_transaction_read_only = on")
+    db._execute("SET SESSION default_transaction_read_only = on")
     try:
         cur = db._execute(sql)
         columns = [desc[0] for desc in cur.description] if cur.description else []
@@ -328,7 +328,7 @@ def cmd_query(db, args):
         print(f"  [ERROR] {message.strip()}", file=sys.stderr)
         return 1
     finally:
-        db._execute("SET default_transaction_read_only = off")
+        db._execute("SET SESSION default_transaction_read_only = off")
 
     if args.json:
         print(json.dumps(rows, indent=2, default=_json_default))
