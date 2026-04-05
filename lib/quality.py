@@ -25,11 +25,16 @@ class QualityIntent(enum.Enum):
     upgrade = "upgrade"
 
 
-def search_filetypes(intent: QualityIntent, config_allowed: list[str]) -> list[str]:
+def search_filetypes(intent: QualityIntent, config_allowed: list[str],
+                     quality_override: str | None = None) -> list[str]:
     """Map a quality intent to the ordered list of filetypes to search.
 
     Pure function — no I/O. The returned list is tried in order by the search
     loop in soularr.py; the first match wins.
+
+    When *quality_override* is a CSV (contains a comma) and intent is upgrade,
+    the literal tiers are used instead of the default QUALITY_UPGRADE_TIERS.
+    This allows narrow_override_on_downgrade() to remove rejected tiers.
     """
     if intent == QualityIntent.best_effort:
         return list(config_allowed)
@@ -37,7 +42,9 @@ def search_filetypes(intent: QualityIntent, config_allowed: list[str]) -> list[s
         return ["flac"]
     if intent == QualityIntent.flac_preferred:
         return list(_QUALITY_UPGRADE_LIST)
-    # upgrade
+    # upgrade — use literal CSV if available (narrowed overrides), else default
+    if quality_override and "," in quality_override:
+        return [t.strip() for t in quality_override.split(",")]
     return list(_QUALITY_UPGRADE_LIST)
 
 

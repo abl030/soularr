@@ -387,7 +387,8 @@ def find_download(
     from lib.quality import derive_intent, intent_allows_catch_all, search_filetypes
 
     intent = derive_intent(album.db_quality_override)
-    filetypes_to_try = search_filetypes(intent, list(ctx.cfg.allowed_filetypes))
+    filetypes_to_try = search_filetypes(intent, list(ctx.cfg.allowed_filetypes),
+                                        quality_override=album.db_quality_override)
 
     if album.db_quality_override:
         logger.info(
