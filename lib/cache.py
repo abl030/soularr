@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("soularr")
 
 CACHE_FILENAME = "soularr_cache.json"
-FOLDER_CACHE_TTL_SECONDS = 600  # 10 minutes
+FOLDER_CACHE_TTL_SECONDS = 86400  # 24 hours
 
 
 def cache_path(var_dir: str) -> str:
