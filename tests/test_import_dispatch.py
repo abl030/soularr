@@ -334,7 +334,7 @@ class TestQualityGateUsesIntent(unittest.TestCase):
         album_data = _make_album_data()
         ctx = _make_ctx()
         db = ctx.pipeline_db_source._get_db.return_value
-        merged = {"spectral_bitrate": None, "verified_lossless": False}
+        merged = {"on_disk_spectral_bitrate": None, "verified_lossless": False}
         merged.update(extra_req_fields)
         db.get_request.return_value = make_request_row(**merged)
 

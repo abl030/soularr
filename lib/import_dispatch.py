@@ -118,7 +118,7 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int,
             spectral_br = raw_br if isinstance(raw_br, int) else None
             effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
             if effective is not None and effective < min_br_kbps:
-                logger.info(f"QUALITY GATE: using spectral_bitrate={spectral_br}kbps "
+                logger.info(f"QUALITY GATE: using on_disk_spectral={spectral_br}kbps "
                             f"(lower than beets min_bitrate={min_br_kbps}kbps)")
         except Exception:
             logger.debug("QUALITY GATE: DB lookup failed for spectral override")
