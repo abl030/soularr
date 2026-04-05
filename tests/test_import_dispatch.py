@@ -377,6 +377,44 @@ class TestQualityGateUsesIntent(unittest.TestCase):
             intent_to_quality_override(QualityIntent.flac_only),
         )
 
+    def test_quality_gate_reads_on_disk_spectral_not_download(self):
+        """Quality gate must use on_disk_spectral_bitrate (what's on disk),
+        not spectral_bitrate (stale from a previous download). Issue #18."""
+        from lib.import_dispatch import _check_quality_gate
+        from lib.quality import AudioQualityMeasurement
+        album_data = _make_album_data()
+        ctx = _make_ctx()
+        db = ctx.pipeline_db_source._get_db.return_value
+        # on_disk is None (genuine, no cliff) but spectral_bitrate is stale 192
+        db.get_request.return_value = make_request_row(
+            spectral_bitrate=192,           # stale from old download
+            on_disk_spectral_bitrate=None,  # genuine files, cleared by mark_done
+            verified_lossless=False)
+
+        captured_measurement = {}
+
+        def capture_decision(measurement):
+            captured_measurement["m"] = measurement
+            return "accept"  # would be accept with no spectral drag
+
+        with patch("lib.beets_db.BeetsDB") as mock_beets_cls, \
+             patch("lib.quality.quality_gate_decision",
+                   side_effect=capture_decision):
+            mock_beets = MagicMock()
+            mock_beets.__enter__ = MagicMock(return_value=mock_beets)
+            mock_beets.__exit__ = MagicMock(return_value=False)
+            mock_beets.get_album_info.return_value = MagicMock(
+                min_bitrate_kbps=226, is_cbr=False)
+            mock_beets_cls.return_value = mock_beets
+            _check_quality_gate(album_data, 42, ctx)
+
+        m = captured_measurement["m"]
+        # spectral_bitrate_kbps on the measurement should be None (from on_disk),
+        # NOT 192 (from stale download spectral)
+        self.assertIsNone(m.spectral_bitrate_kbps,
+                          "quality gate should use on_disk_spectral_bitrate, "
+                          "not stale spectral_bitrate from download")
+
     def test_dispatch_requeue_uses_intent(self):
         """dispatch_import requeue path should use intent_to_quality_override."""
         ir = _make_import_result(decision="transcode_upgrade",

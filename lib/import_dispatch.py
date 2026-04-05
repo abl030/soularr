@@ -114,7 +114,7 @@ def _check_quality_gate(album_data: GrabListEntry, request_id: int,
         req = None
         try:
             req = ctx.pipeline_db_source._get_db().get_request(request_id)
-            raw_br = req.get("spectral_bitrate") if req else None
+            raw_br = req.get("on_disk_spectral_bitrate") if req else None
             spectral_br = raw_br if isinstance(raw_br, int) else None
             effective = compute_effective_override_bitrate(min_br_kbps, spectral_br)
             if effective is not None and effective < min_br_kbps:
