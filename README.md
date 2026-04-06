@@ -108,14 +108,14 @@ pipeline-cli query --json "SELECT id, outcome, import_result FROM download_log O
 - **PostgreSQL pipeline DB** replaces Lidarr as the source of truth
 - **Web UI** (`music.ablz.au`) for browsing MusicBrainz and adding albums
 - **Beets validation** -- every download validated against target MusicBrainz release ID
-- **Auto-import** with FLAC->V0 conversion, spectral analysis, quality gating
+- **Auto-import** with FLAC->V0 conversion (or keep FLAC on disk via `target_format`), spectral analysis, quality gating
 - **Async downloads** -- non-blocking: enqueue downloads, persist state to DB, poll on next run. Downloads span multiple 5-minute cycles. No more blocking `while True` loop.
 - **Parallel Soulseek searches** -- `ThreadPoolExecutor` fires all searches concurrently, ~2x speedup (see `docs/parallel-search.md`)
 - **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout
 - **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
 - **Force-import** -- manually import rejected downloads via CLI (`force-import <id>`) or web API
-- **920+ tests** including spectral analysis with real audio fixtures and live slskd integration tests
+- **Comprehensive test suite** (`nix-shell --run "bash scripts/run_tests.sh"`)
 
 ## MusicBrainz mirror
 

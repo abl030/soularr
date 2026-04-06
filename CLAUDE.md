@@ -59,6 +59,7 @@ lib/
                            - spectral_import_decision(), import_quality_decision()
                            - transcode_detection(), quality_gate_decision()
                            - is_verified_lossless(), parse_import_result()
+                           - effective_search_tiers() (merges search_filetype_override + target_format)
                            Dispatch functions:
                            - dispatch_action() → DispatchAction (mark_done/failed/denylist/requeue flags)
                            - compute_effective_override_bitrate(), extract_usernames()
@@ -88,51 +89,15 @@ harness/
   run_beets_harness.sh  — Shell wrapper to bootstrap Nix beets Python environment
   import_one.py         — One-shot beets import: emits ImportResult JSON on stdout.
                            Pure stage decisions: StageResult, preflight_decision(),
-                           conversion_decision(), quality_decision_stage(), final_exit_decision().
-                           Flags: --force, --override-min-bitrate, --request-id, --dry-run
+                           conversion_decision(), quality_decision_stage(), final_exit_decision(),
+                           should_convert_lossless() (target_format="flac" skips conversion).
+                           Flags: --force, --override-min-bitrate, --request-id, --target-format, --dry-run
 scripts/
   pipeline_cli.py       — CLI: list, add, status, retry, cancel, show, quality, query,
                            force-import, manual-import, set-intent, repair-spectral
   populate_tracks.py    — Populate tracks from MusicBrainz API
   run_tests.sh          — Test runner: saves output to /tmp/soularr-test-output.txt
-tests/                     1238 tests total
-  test_album_source.py      — 17 tests for AlbumSource (incl. verified_lossless, stale spectral clear)
-  test_artist_releases.py    — 25 tests for artist release queries
-  test_audio_file_spec.py    — 93 tests for audio file spec matching
-  test_beets_db.py           — 45 tests for BeetsDB queries
-  test_beets_validation.py   — 19 tests for beets validation
-  test_cache.py              — 10 tests for caching
-  test_config.py             — 49 tests for SoularrConfig
-  test_context.py            — 2 tests for SoularrContext dataclass
-  test_disambiguation.py     — 8 tests for beets disambiguation (import_one path resolution)
-  test_download.py           — 77 tests for lib/download.py (poll_active_downloads, transfer helpers,
-                                 spectral, grab_most_wanted, reconstruction, retry)
-  test_download_reducer.py   — 13 tests for download state reducer
-  test_force_import.py       — 12 tests for force-import (CLI, DB, --force flag, path resolution)
-  test_grab_list.py          — 27 tests for GrabListEntry/DownloadFile dataclasses
-  test_import_dispatch.py    — 27 tests for import dispatch (incl. quality gate contract tests)
-  test_import_one_stages.py  — 32 tests for import_one.py pure stage decisions
-  test_import_result.py      — 45 tests for ImportResult, DownloadInfo, ActiveDownloadState, JSON parsing
-  test_import_service.py     — 15 tests for force-import/manual-import service layer
-  test_integration.py        — 49 tests for full search→enqueue→download flow (mocked slskd)
-  test_manual_import.py      — 14 tests for manual import
-  test_pipeline_cli.py       — 20 tests for CLI (incl. query command, downloading status)
-  test_pipeline_db.py        — 52 tests for PipelineDB (incl. spectral state, downloading status)
-  test_quality_classification.py — 38 tests for quality classification (real audio fixtures)
-  test_quality_decisions.py  — 113 tests for pure decision functions + pipeline contract tests
-  test_simulator_scenarios.py — 46 tests for full pipeline simulator (13 album states × 16 download
-                                 scenarios, named regressions, backfill propagation, invariants)
-  test_quality_intent.py     — 33 tests for quality intent/override system
-  test_repair.py             — 15 tests for repair-spectral command
-  test_search.py             — 32 tests for search query building
-  test_slskd_live.py         — 14 tests for live slskd integration (ephemeral Docker)
-  test_spectral_check.py     — 39 tests for spectral analysis
-  test_transitions.py        — 38 tests for state transitions
-  test_util.py               — 35 tests for lib/util.py (move_failed_import, sanitize, etc.)
-  test_validation_result.py  — 28 tests for ValidationResult, CandidateSummary, harness types
-  test_verify_filetype.py    — 7 tests for verify_filetype (direct import from lib/quality)
-  test_web_recents.py        — 78 tests for recents tab classification (LogEntry, ClassifiedEntry)
-  test_web_server.py         — 32 tests for HTTP endpoints + downloading status contracts
+tests/                  — Comprehensive test suite. Run: nix-shell --run "bash scripts/run_tests.sh"
 test_soularr.py         — Legacy verify_filetype tests (imports from lib/quality)
 .claude/
   commands/beets-docs.md — Skill: look up beets RST docs from nix store
@@ -348,7 +313,7 @@ After every import, the quality gate decides what to do next. It checks these co
 1. Spectral check runs in `process_completed_album()` (soularr.py) — detects upsampled garbage via cliff detection
 2. If spectral says SUSPECT → reject, denylist user
 3. If spectral says genuine or marginal → import (something is better than nothing)
-4. Quality gate sees CBR + not verified_lossless → re-queues with `quality_override="flac"` to find lossless source
+4. Quality gate sees CBR + not verified_lossless → re-queues with `search_filetype_override="flac"` to find lossless source
 
 ### Spectral Analysis (`lib/spectral_check.py`)
 
@@ -388,6 +353,7 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 - `--override-min-bitrate` arg: `dispatch_import()` passes `min(min_bitrate, current_spectral_bitrate)` from the pipeline DB. When spectral says the existing files are 128kbps but the container says 320kbps (fake CBR), the spectral truth is used so genuine upgrades aren't blocked.
 - `mark_done()` respects `verified_lossless_override` from import_one.py instead of re-deriving via `is_verified_lossless()`. When verified lossless, `current_spectral_bitrate` is set to the actual V0 min bitrate (not the spectral cliff estimate, which can miscalibrate on genuine files).
 - Spectral state writes always go through `RequestSpectralStateUpdate` — grade and bitrate are always written together (including explicit NULLs for genuine files with no cliff). This prevents stale spectral data from persisting after an upgrade.
+- `--target-format` flag: when `target_format="flac"`, skips FLAC→V0/Opus conversion and keeps FLAC on disk as-is. Genuine FLAC on disk is marked `verified_lossless`. Passed from `dispatch_import()` when `album_data.db_target_format` is set.
 - `--force` flag: skips the distance check (`MAX_DISTANCE=999`) for force-importing rejected albums. Used by `pipeline_cli.py force-import` and `POST /api/pipeline/force-import`.
 - Exit codes: 0=imported, 1=conversion failed, 2=beets failed, 3=path not found, 5=downgrade, 6=transcode (may or may not have imported as upgrade)
 
