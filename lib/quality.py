@@ -1583,7 +1583,7 @@ def full_pipeline_decision(
                       else existing_min_bitrate)
                   if existing_min_bitrate is not None else None)
 
-    if is_flac and target_format == "flac":
+    if is_flac and target_format in ("flac", "lossless"):
         # FLAC kept on disk (no conversion) — use raw FLAC bitrate.
         # Don't set verified_lossless on new_m for comparison — that would
         # auto-win over existing FLAC at the same bitrate. Use plain bitrate
