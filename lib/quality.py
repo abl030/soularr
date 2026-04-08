@@ -839,25 +839,43 @@ def transcode_detection(converted_count, post_conversion_min_bitrate,
 # Verified lossless derivation (post-import, used by album_source.py)
 # ---------------------------------------------------------------------------
 
+_LOSSLESS_EXTS = {"flac", "m4a", "wav", "alac"}
+
+
+def determine_verified_lossless(
+    target_format: Optional[str],
+    spectral_grade: Optional[str],
+    converted_count: int,
+    is_transcode: bool,
+) -> bool:
+    """Single source of truth for verified lossless status (pure).
+
+    Two paths:
+    1. target_format="flac" (FLAC kept on disk): verified if spectral says
+       genuine or marginal, or if no spectral ran (None). The FLAC IS the
+       lossless source — no conversion needed to prove it.
+    2. Default (FLAC→V0/target): verified if we actually converted lossless
+       files AND spectral didn't flag them as transcodes.
+    """
+    if target_format == "flac":
+        return spectral_grade in ("genuine", "marginal", None)
+    return converted_count > 0 and not is_transcode
+
+
 def is_verified_lossless(was_converted: bool, original_filetype: Optional[str],
                          spectral_grade: Optional[str]) -> bool:
-    """Determine if an import should be marked as verified lossless.
+    """Legacy derivation for album_source.py fallback path.
 
-    True when we converted a genuine lossless source to V0 — the gold standard.
-    Accepts any lossless format: flac, m4a (ALAC), wav.
+    Used when import_one.py didn't set verified_lossless_override
+    (old download_log rows). Delegates to determine_verified_lossless
+    for the standard (non-FLAC-on-disk) case.
 
-    Inputs:
-        was_converted:     True if lossless files were converted to MP3 V0
-        original_filetype: filetype before conversion (e.g. "flac", "m4a", "wav")
-        spectral_grade:    spectral analysis grade of the source files
+    Stricter than determine_verified_lossless: requires spectral_grade="genuine"
+    exactly, and validates the original filetype was lossless.
     """
     if not was_converted or original_filetype is None or spectral_grade != "genuine":
         return False
-    ext = original_filetype.lower()
-    # Extensions that are lossless — includes m4a (ALAC) since the pipeline
-    # only converts m4a files that were downloaded as ALAC
-    lossless_exts = {"flac", "m4a", "wav", "alac"}
-    return ext in lossless_exts
+    return original_filetype.lower() in _LOSSLESS_EXTS
 
 
 # ---------------------------------------------------------------------------
