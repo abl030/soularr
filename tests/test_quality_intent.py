@@ -1,11 +1,10 @@
-"""Tests for search_tiers, INTENT_NAMES, and quality override narrowing contracts."""
+"""Tests for search_tiers and quality override narrowing contracts."""
 
 import unittest
 
 from lib.quality import (
     QUALITY_UPGRADE_TIERS,
     QUALITY_FLAC_ONLY,
-    INTENT_NAMES,
     search_tiers,
     narrow_override_on_downgrade,
     DownloadInfo,
@@ -47,27 +46,6 @@ class TestSearchTiers(unittest.TestCase):
     def test_config_order_preserved(self):
         tiers, _ = search_tiers(None, ["mp3", "flac"])
         self.assertEqual(tiers, ["mp3", "flac"])
-
-
-class TestIntentNames(unittest.TestCase):
-    """INTENT_NAMES maps friendly CLI/web names to DB values."""
-
-    def test_best_effort_is_none(self):
-        self.assertIsNone(INTENT_NAMES["best_effort"])
-
-    def test_flac_only(self):
-        self.assertEqual(INTENT_NAMES["flac_only"], QUALITY_FLAC_ONLY)
-
-    def test_flac_alias(self):
-        self.assertEqual(INTENT_NAMES["flac"], QUALITY_FLAC_ONLY)
-
-    def test_upgrade(self):
-        self.assertEqual(INTENT_NAMES["upgrade"], QUALITY_UPGRADE_TIERS)
-
-    def test_all_values_are_string_or_none(self):
-        for name, val in INTENT_NAMES.items():
-            self.assertTrue(val is None or isinstance(val, str),
-                            f"{name!r} has value {val!r}")
 
 
 class TestEffectiveSearchTiers(unittest.TestCase):

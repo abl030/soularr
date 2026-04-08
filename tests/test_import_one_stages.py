@@ -240,12 +240,12 @@ class TestConversionTarget(unittest.TestCase):
         """No target configured, not verified → None (keep V0)."""
         self.assertIsNone(self._target())
 
-    def test_target_format_flac_keeps_flac(self):
-        self.assertEqual(self._target(target_format="flac"), "flac")
+    def test_target_format_flac_keeps_lossless(self):
+        self.assertEqual(self._target(target_format="flac"), "lossless")
 
     def test_target_format_flac_overrides_target(self):
         self.assertEqual(self._target(target_format="flac", verified=True,
-                                      vl_target="opus 128"), "flac")
+                                      vl_target="opus 128"), "lossless")
 
     def test_verified_with_target_returns_target(self):
         self.assertEqual(self._target(verified=True, vl_target="opus 128"),

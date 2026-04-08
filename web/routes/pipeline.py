@@ -10,7 +10,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from classify import classify_log_entry, LogEntry  # type: ignore[import-not-found]
 from lib.import_service import run_import, log_and_update_import  # type: ignore[import-not-found]
-from lib.quality import QUALITY_UPGRADE_TIERS, QUALITY_FLAC_ONLY, INTENT_NAMES  # type: ignore[import-not-found]
+from lib.quality import QUALITY_UPGRADE_TIERS, QUALITY_FLAC_ONLY, QUALITY_LOSSLESS  # type: ignore[import-not-found]
+
+# Simplified intent mapping: "lossless" → search lossless only, "default" → clear
+_INTENT_MAP: dict[str, str | None] = {
+    "lossless": QUALITY_LOSSLESS,
+    "flac": QUALITY_LOSSLESS,       # backward compat alias
+    "flac_only": QUALITY_LOSSLESS,  # backward compat alias
+    "upgrade": QUALITY_UPGRADE_TIERS,
+    "best_effort": None,
+    "default": None,
+}
 from lib.transitions import apply_transition  # type: ignore[import-not-found]
 from quality import get_decision_tree, full_pipeline_decision  # type: ignore[import-not-found]
 from spectral_check import (HF_DEFICIT_SUSPECT, HF_DEFICIT_MARGINAL,  # type: ignore[import-not-found]
@@ -440,8 +450,8 @@ def post_pipeline_set_intent(h, body: dict) -> None:
         h._error("Missing id")
         return
 
-    if intent_str not in INTENT_NAMES:
-        h._error(f"Invalid intent: {intent_str!r}. Valid: {list(INTENT_NAMES)}")
+    if intent_str not in _INTENT_MAP:
+        h._error(f"Invalid intent: {intent_str!r}. Valid: {list(_INTENT_MAP)}")
         return
 
     req = s._db().get_request(int(req_id))
@@ -449,7 +459,7 @@ def post_pipeline_set_intent(h, body: dict) -> None:
         h._error("Not found", 404)
         return
 
-    target_format = INTENT_NAMES[intent_str]
+    target_format = _INTENT_MAP[intent_str]
 
     if req["status"] == "downloading":
         h._error("Cannot set intent while album is downloading")

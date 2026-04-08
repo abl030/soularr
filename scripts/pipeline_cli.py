@@ -199,8 +199,18 @@ def cmd_set(db, args):
 
 def cmd_set_intent(db, args):
     """Set quality intent for a request."""
-    from lib.quality import INTENT_NAMES
+    from lib.quality import QUALITY_LOSSLESS, QUALITY_UPGRADE_TIERS
     from lib.transitions import apply_transition
+
+    _INTENT_MAP: dict[str, str | None] = {
+        "lossless": QUALITY_LOSSLESS,
+        "flac": QUALITY_LOSSLESS,       # backward compat alias
+        "flac_only": QUALITY_LOSSLESS,  # backward compat alias
+        "upgrade": QUALITY_UPGRADE_TIERS,
+        "best_effort": None,
+        "default": None,
+    }
+
     req = db.get_request(args.id)
     if not req:
         print(f"  Request {args.id} not found.")
@@ -208,7 +218,7 @@ def cmd_set_intent(db, args):
     if req["status"] == "downloading":
         print(f"  Cannot set intent while album is downloading.")
         return
-    target_format = INTENT_NAMES[args.intent]
+    target_format = _INTENT_MAP[args.intent]
     old_target = req.get("target_format")
 
     if req["status"] == "imported":
@@ -529,7 +539,7 @@ def cmd_quality(db, args):
             spectral_bitrate_kbps=current_br)
         gate = quality_gate_decision(current)
         gate_label = {"accept": "DONE", "requeue_upgrade": "NEEDS UPGRADE",
-                      "requeue_flac": "NEEDS FLAC"}[gate]
+                      "requeue_lossless": "NEEDS LOSSLESS"}[gate]
         print(f"  Quality gate:  {gate_label}")
         print(f"    min_bitrate={_fmt_br(min_br)}, verified_lossless={verified}, "
               f"is_cbr={is_cbr}")

@@ -9,16 +9,11 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
-QUALITY_UPGRADE_TIERS = "flac,mp3 v0,mp3 320"
-QUALITY_FLAC_ONLY = "flac"
+QUALITY_UPGRADE_TIERS = "lossless,mp3 v0,mp3 320"
+QUALITY_LOSSLESS = "lossless"
 
-# Friendly names for CLI/web UI → search_filetype_override DB values
-INTENT_NAMES: dict[str, str | None] = {
-    "best_effort": None,
-    "flac_only": QUALITY_FLAC_ONLY,
-    "flac": QUALITY_FLAC_ONLY,
-    "upgrade": QUALITY_UPGRADE_TIERS,
-}
+# Deprecated aliases — keep for old code that references them
+QUALITY_FLAC_ONLY = QUALITY_LOSSLESS
 
 
 def search_tiers(search_filetype_override: str | None,
@@ -851,13 +846,13 @@ def determine_verified_lossless(
     """Single source of truth for verified lossless status (pure).
 
     Two paths:
-    1. target_format="flac" (FLAC kept on disk): verified if spectral says
-       genuine or marginal, or if no spectral ran (None). The FLAC IS the
-       lossless source — no conversion needed to prove it.
-    2. Default (FLAC→V0/target): verified if we actually converted lossless
-       files AND spectral didn't flag them as transcodes.
+    1. target_format="lossless"/"flac" (lossless kept on disk): verified if
+       spectral says genuine or marginal, or if no spectral ran (None).
+       The lossless source IS on disk — no conversion needed to prove it.
+    2. Default (lossless→V0/target): verified if we actually converted
+       lossless files AND spectral didn't flag them as transcodes.
     """
-    if target_format == "flac":
+    if target_format in ("flac", "lossless"):
         return spectral_grade in ("genuine", "marginal", None)
     return converted_count > 0 and not is_transcode
 
@@ -885,7 +880,7 @@ def is_verified_lossless(was_converted: bool, original_filetype: Optional[str],
 def quality_gate_decision(current: AudioQualityMeasurement) -> str:
     """Pure decision logic for the post-import quality gate.
 
-    Returns one of: "accept", "requeue_upgrade", "requeue_flac".
+    Returns one of: "accept", "requeue_upgrade", "requeue_lossless".
 
     Input:
         current: measurement of the files now on disk (from beets DB + spectral)
@@ -905,7 +900,7 @@ def quality_gate_decision(current: AudioQualityMeasurement) -> str:
     if gate_br < QUALITY_MIN_BITRATE_KBPS:
         return "requeue_upgrade"
     elif not current.verified_lossless and current.is_cbr:
-        return "requeue_flac"
+        return "requeue_lossless"
     else:
         return "accept"
 
@@ -978,8 +973,8 @@ def rejected_download_tier(dl_info: "DownloadInfo") -> str | None:
     CSV (e.g. "flac", "mp3 v0", "mp3 320").
     """
     slskd_ft = (dl_info.slskd_filetype or dl_info.filetype or "").lower().strip()
-    if slskd_ft == "flac" or dl_info.was_converted:
-        return "flac"
+    if slskd_ft in LOSSLESS_CODECS or dl_info.was_converted:
+        return "lossless"
     if "mp3" in slskd_ft:
         if dl_info.is_vbr:
             return "mp3 v0"
@@ -1028,7 +1023,7 @@ def rejection_backfill_override(
     albums with decent quality on disk keep downloading the same tier forever
     because the quality gate only fires after successful imports.
 
-    Returns QUALITY_FLAC_ONLY when the on-disk state is good enough that only
+    Returns QUALITY_LOSSLESS when the on-disk state is good enough that only
     a verified lossless source would be an upgrade. Returns None otherwise.
     """
     if verified_lossless:
@@ -1038,7 +1033,7 @@ def rejection_backfill_override(
     if min_bitrate_kbps is None:
         return None
     if min_bitrate_kbps >= QUALITY_MIN_BITRATE_KBPS:
-        return QUALITY_FLAC_ONLY
+        return QUALITY_LOSSLESS
     return None
 
 
@@ -1156,12 +1151,15 @@ def parse_filetype_config(config_str: str) -> AudioFileSpec:
 
     This is the FILTER form — quality is set, audio metadata is not.
     Use '*' or 'any' for catch-all mode (matches any audio file).
+    Use 'lossless' to match any lossless codec (flac, alac, wav).
     """
     parts = config_str.strip().split(" ", 1)
     name = parts[0].lower()
 
     if name in ("*", "any"):
         return CATCH_ALL_SPEC
+    if name == "lossless":
+        return AudioFileSpec(codec="lossless", extension="*")
 
     quality = parts[1].strip() if len(parts) > 1 else None
     codec, extension = _CONFIG_NAME_TO_CODEC.get(name, (name, name))
@@ -1203,6 +1201,10 @@ def filetype_matches(identity: AudioFileSpec, filter_spec: AudioFileSpec) -> boo
     """
     if filter_spec.codec == "*":
         return True
+
+    # "lossless" virtual tier — matches any lossless codec
+    if filter_spec.codec == "lossless":
+        return identity.codec in LOSSLESS_CODECS
 
     if identity.codec != filter_spec.codec:
         return False
@@ -1467,13 +1469,13 @@ def get_decision_tree() -> dict[str, Any]:
                      "result": "requeue_upgrade", "color": "amber",
                      "effect": f"search {QUALITY_UPGRADE_TIERS}"},
                     {"condition": "current.is_cbr AND NOT current.verified_lossless",
-                     "result": "requeue_flac", "color": "amber",
-                     "effect": "search flac only"},
+                     "result": "requeue_lossless", "color": "amber",
+                     "effect": "search lossless only"},
                     {"condition": "else",
                      "result": "accept", "color": "green",
                      "effect": "done"},
                 ],
-                "outcomes": ["accept", "requeue_upgrade", "requeue_flac"],
+                "outcomes": ["accept", "requeue_upgrade", "requeue_lossless"],
             },
             {
                 "id": "dispatch",
@@ -1668,7 +1670,7 @@ def full_pipeline_decision(
         result["final_status"] = "wanted"
         result["denylisted"] = True
         result["keep_searching"] = True
-    elif result["stage3_quality_gate"] == "requeue_flac":
+    elif result["stage3_quality_gate"] == "requeue_lossless":
         result["final_status"] = "wanted"
         result["keep_searching"] = True
 
