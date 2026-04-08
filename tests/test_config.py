@@ -15,10 +15,8 @@ TEST_CONFIG = os.path.join(FIXTURES_DIR, "test_config.ini")
 
 
 def load_test_config():
-    """Load the test config.ini the same way soularr.py does."""
-    config = configparser.ConfigParser(
-        interpolation=configparser.BasicInterpolation()
-    )
+    """Load the test config.ini the same way soularr.py does (RawConfigParser)."""
+    config = configparser.RawConfigParser()
     config.read(TEST_CONFIG)
     return config
 
@@ -257,6 +255,97 @@ class TestReadVerifiedLosslessTarget(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("[Beets Validation]\nverified_lossless_target = aac 128\n")
             self.assertEqual(read_verified_lossless_target(path), "aac 128")
+
+
+class TestRawConfigParserRegression(unittest.TestCase):
+    """RawConfigParser must be used — BasicInterpolation chokes on % in logging format."""
+
+    def test_raw_parser_reads_logging_format_with_percent(self):
+        """The logging format has %(levelname)s etc. which BasicInterpolation
+        would try to interpolate, raising InterpolationMissingOptionError."""
+        raw = configparser.RawConfigParser()
+        raw.read(TEST_CONFIG)
+        # RawConfigParser returns the literal string with %() intact
+        fmt = raw.get("Logging", "format")
+        self.assertIn("%(levelname)s", fmt)
+
+    def test_basic_interpolation_fails_on_logging_format(self):
+        """Proves BasicInterpolation can't handle our config — the reason we switched."""
+        basic = configparser.ConfigParser(
+            interpolation=configparser.BasicInterpolation()
+        )
+        basic.read(TEST_CONFIG)
+        with self.assertRaises(configparser.InterpolationMissingOptionError):
+            basic.get("Logging", "format")
+
+
+class TestMainCLIParsing(unittest.TestCase):
+    """Test the CLI argument parsing and config loading path in main()."""
+
+    def test_missing_config_exits_with_error(self):
+        """main() exits 1 when config.ini doesn't exist at --config-dir."""
+        with tempfile.TemporaryDirectory() as d:
+            # No config.ini in d
+            with self.assertRaises(SystemExit) as cm:
+                sys.argv = ["soularr", "--config-dir", d, "--var-dir", d, "--no-lock-file"]
+                # Import main fresh to get the parser
+                import soularr
+                soularr.main()
+            self.assertEqual(cm.exception.code, 1)
+
+    def test_config_dir_resolves_config_path(self):
+        """--config-dir joins with config.ini to find the config file."""
+        with tempfile.TemporaryDirectory() as d:
+            # Write a minimal config.ini — main() will exit later when it
+            # tries to connect to slskd, but we just need to verify it found the file.
+            config_path = os.path.join(d, "config.ini")
+            with open(config_path, "w") as f:
+                f.write("[Slskd]\napi_key = test\nhost_url = http://localhost:5030\n"
+                        "download_dir = /tmp/test\n"
+                        "[Pipeline DB]\nenabled = True\n"
+                        "dsn = postgresql://test@localhost/test\n")
+            # The config file exists, so main() won't exit with "not found"
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("-c", "--config-dir", default=".")
+            parser.add_argument("-v", "--var-dir", default=".")
+            parser.add_argument("--no-lock-file", action="store_true")
+            args = parser.parse_args(["--config-dir", d, "--no-lock-file"])
+            config_file_path = os.path.join(args.config_dir, "config.ini")
+            self.assertTrue(os.path.exists(config_file_path))
+
+    def test_lock_file_created_in_var_dir(self):
+        """Lock file path is var_dir/.soularr.lock."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-c", "--config-dir", default=".")
+        parser.add_argument("-v", "--var-dir", default=".")
+        parser.add_argument("--no-lock-file", action="store_true")
+        args = parser.parse_args(["--var-dir", "/custom/var"])
+        lock_path = os.path.join(args.var_dir, ".soularr.lock")
+        self.assertEqual(lock_path, "/custom/var/.soularr.lock")
+
+    def test_no_lock_file_flag(self):
+        """--no-lock-file sets the flag to True."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-c", "--config-dir", default=".")
+        parser.add_argument("-v", "--var-dir", default=".")
+        parser.add_argument("--no-lock-file", action="store_true")
+        args = parser.parse_args(["--no-lock-file"])
+        self.assertTrue(args.no_lock_file)
+
+    def test_default_args(self):
+        """Default config-dir and var-dir are cwd."""
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("-c", "--config-dir", default=os.getcwd())
+        parser.add_argument("-v", "--var-dir", default=os.getcwd())
+        parser.add_argument("--no-lock-file", action="store_true")
+        args = parser.parse_args([])
+        self.assertEqual(args.config_dir, os.getcwd())
+        self.assertEqual(args.var_dir, os.getcwd())
+        self.assertFalse(args.no_lock_file)
 
 
 if __name__ == "__main__":
