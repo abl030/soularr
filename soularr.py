@@ -374,8 +374,8 @@ def _log_search_result(album, result, ctx) -> None:
     db.log_search(
         request_id=request_id,
         query=result.query or None,
-        result_count=result.result_count if result.result_count else None,
-        elapsed_s=result.elapsed_s if result.elapsed_s else None,
+        result_count=result.result_count,
+        elapsed_s=result.elapsed_s or None,
         outcome=result.outcome or "error",
     )
     # Increment search_attempts + backoff for any non-found outcome

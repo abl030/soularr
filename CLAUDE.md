@@ -53,6 +53,7 @@ lib/
                            Quality gate.
   import_service.py     — Force-import/manual-import service layer, ImportOutcome dataclass
   pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema, get_download_log_entry)
+                           Search logging: log_search(), get_search_history(), get_search_history_batch()
                            RequestSpectralStateUpdate (typed spectral state writes)
   quality.py            — Pure decision functions + typed dataclasses:
                            Decision functions:
@@ -78,7 +79,7 @@ lib/
                            - SpectralMeasurement (grade + bitrate pair, frozen dataclass)
                            Other:
                            - DownloadInfo, SpectralContext, DispatchAction
-  search.py             — Search query building and normalization
+  search.py             — Search query building, normalization, SearchResult dataclass (with outcome)
   spectral_check.py     — Spectral analysis (sox-based transcode detection)
   util.py               — Pure utilities: sanitize_folder_name, move_failed_import,
                            audio validation, track title cross-check, beets/meelo
@@ -225,6 +226,12 @@ POST /api/pipeline/force-import {"download_log_id": N}
 ### download_log outcomes
 
 6 valid values: `success`, `rejected`, `failed`, `timeout`, `force_import`, `manual_import`
+
+### search_log table
+
+Every search attempt is logged to `search_log` with: `request_id`, `query` (normalized search term), `result_count`, `elapsed_s`, `outcome`, `created_at`. Failed searches also increment `search_attempts` on `album_requests` and trigger exponential backoff.
+
+6 outcomes: `found` (matched + enqueued), `no_match` (results but no suitable download), `no_results` (0 results from slskd), `timeout`, `error`, `empty_query` (can't build query)
 
 ## Decision Architecture
 
