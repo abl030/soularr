@@ -58,8 +58,9 @@ lib/
                            Decision functions:
                            - spectral_import_decision(), import_quality_decision()
                            - transcode_detection(), quality_gate_decision()
-                           - is_verified_lossless(), parse_import_result()
+                           - determine_verified_lossless(), is_verified_lossless() (legacy)
                            - effective_search_tiers() (merges search_filetype_override + target_format)
+                           - should_clear_lossless_search_override() (intent toggle cleanup)
                            Dispatch functions:
                            - dispatch_action() → DispatchAction (mark_done/failed/denylist/requeue flags)
                            - compute_effective_override_bitrate(), extract_usernames()
@@ -233,7 +234,7 @@ All quality decisions are pure functions in `lib/quality.py` — no I/O, no data
 2. **`import_quality_decision()`** — Import-time: is this an upgrade or downgrade? (import/downgrade/transcode)
 3. **`transcode_detection(spectral_grade)`** — Post-conversion: was this FLAC actually a transcode? Spectral grade is authoritative when available (suspect/likely_transcode = transcode, genuine/marginal = not transcode). Bitrate < 210kbps threshold is fallback only when spectral is unavailable.
 4. **`quality_gate_decision()`** — Post-import: accept, or re-queue for better quality?
-5. **`is_verified_lossless()`** — Was this imported from a genuine FLAC source?
+5. **`determine_verified_lossless()`** — Single source of truth for verified lossless status. `is_verified_lossless()` is the legacy fallback for old download_log rows.
 6. **`dispatch_action()`** — Post-import_one.py: map decision string to action flags (mark_done/failed, denylist, requeue, trigger_meelo, quality_gate). Used by `dispatch_import()`.
 7. **`compute_effective_override_bitrate()`** — Return the lower of container/spectral bitrate (conservative). Used for `--override-min-bitrate`.
 8. **`verify_filetype()`** — Pre-search: does a slskd file dict match an allowed filetype spec? (VBR V0/V2, CBR, min bitrate, bitdepth/samplerate)
@@ -290,7 +291,7 @@ After every import, the quality gate decides what to do next. It checks these co
 
 1. **`verified_lossless=TRUE` + any bitrate** → **DONE**. We verified this from genuine FLAC. Low V0 bitrate (e.g. 207kbps) on lo-fi music is fine — the source is proven lossless.
 2. **`min_bitrate < 210kbps`** → **RE-QUEUE** for upgrade. Bad quality, search for better.
-3. **CBR on disk** (all tracks same bitrate) **+ not verified_lossless** → **RE-QUEUE for FLAC only** (`search_filetype_override="flac"`). CBR is unverifiable — spectral analysis can detect obvious upsamples but cannot prove a CBR file came from lossless source.
+3. **CBR on disk** (all tracks same bitrate) **+ not verified_lossless** → **RE-QUEUE for lossless** (`search_filetype_override="lossless"`). CBR is unverifiable — spectral analysis can detect obvious upsamples but cannot prove a CBR file came from lossless source. The `"lossless"` tier matches FLAC, ALAC, and WAV sources.
 4. **VBR above 210kbps** → **DONE**. VBR bitrate is trustworthy.
 
 ### Two Key Concepts (don't confuse them)
@@ -317,7 +318,7 @@ After every import, the quality gate decides what to do next. It checks these co
 1. Spectral check runs in `process_completed_album()` (soularr.py) — detects upsampled garbage via cliff detection
 2. If spectral says SUSPECT → reject, denylist user
 3. If spectral says genuine or marginal → import (something is better than nothing)
-4. Quality gate sees CBR + not verified_lossless → re-queues with `search_filetype_override="flac"` to find lossless source
+4. Quality gate sees CBR + not verified_lossless → re-queues with `search_filetype_override="lossless"` to find lossless source
 
 ### Spectral Analysis (`lib/spectral_check.py`)
 
@@ -332,8 +333,8 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 
 ### Key Fields (`album_requests` table)
 
-- `search_filetype_override TEXT` — Transient CSV filetype list (e.g. `"flac,mp3 v0,mp3 320"` or just `"flac"`). Overrides global `allowed_filetypes` for search. Set by quality gate requeue paths and backfill. Cleared on quality gate accept.
-- `target_format TEXT` — Persistent user intent for desired format on disk (e.g. `"flac"`). Set only by user action (CLI/web set-intent). Never cleared by quality gate. When set, drives search tiers if no `search_filetype_override` is active.
+- `search_filetype_override TEXT` — Transient CSV filetype list (e.g. `"lossless,mp3 v0,mp3 320"` or just `"lossless"`). Overrides global `allowed_filetypes` for search. Set by quality gate requeue paths and backfill. Cleared on quality gate accept. The `"lossless"` virtual tier matches FLAC, ALAC, and WAV.
+- `target_format TEXT` — Persistent user intent for desired format on disk (`"lossless"` or NULL). Set only by user action (CLI/web set-intent toggle). Never cleared by quality gate. When set, keeps lossless on disk (normalizes ALAC/WAV → FLAC) instead of converting to V0/target.
 - `min_bitrate INTEGER` — Current min track bitrate in kbps (from beets).
 - `prev_min_bitrate INTEGER` — Previous min_bitrate before last upgrade. Shows delta in UI.
 - `verified_lossless BOOLEAN` — True only when imported from spectral-verified genuine FLAC→V0.
@@ -357,7 +358,7 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 - `--override-min-bitrate` arg: `dispatch_import()` passes `min(min_bitrate, current_spectral_bitrate)` from the pipeline DB. When spectral says the existing files are 128kbps but the container says 320kbps (fake CBR), the spectral truth is used so genuine upgrades aren't blocked.
 - `mark_done()` respects `verified_lossless_override` from import_one.py instead of re-deriving via `is_verified_lossless()`. When verified lossless, `current_spectral_bitrate` is set to the actual V0 min bitrate (not the spectral cliff estimate, which can miscalibrate on genuine files).
 - Spectral state writes always go through `RequestSpectralStateUpdate` — grade and bitrate are always written together (including explicit NULLs for genuine files with no cliff). This prevents stale spectral data from persisting after an upgrade.
-- `--target-format` flag: when `target_format="flac"`, skips FLAC→V0 conversion and keeps FLAC on disk as-is. Genuine FLAC on disk is marked `verified_lossless`. Passed from `dispatch_import()` when `album_data.db_target_format` is set.
+- `--target-format` flag: when `target_format="lossless"` (or legacy `"flac"`), skips V0 conversion and keeps lossless on disk. ALAC/WAV sources are normalized to FLAC via `FLAC_SPEC`. Genuine lossless on disk is marked `verified_lossless`. Passed from `dispatch_import()` when `album_data.db_target_format` is set.
 - `--verified-lossless-target` flag: target format after verified lossless (e.g. "opus 128", "mp3 v2", "aac 128"). Passed from `dispatch_import()` when `cfg.verified_lossless_target` is set. When the target has the same `.mp3` extension as V0, V0 files are removed before target conversion.
 - `--force` flag: skips the distance check (`MAX_DISTANCE=999`) for force-importing rejected albums. Used by `pipeline_cli.py force-import` and `POST /api/pipeline/force-import`.
 - Exit codes: 0=imported, 1=conversion failed, 2=beets failed, 3=path not found, 5=downgrade, 6=transcode (may or may not have imported as upgrade)
@@ -369,7 +370,7 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 ### Web UI Controls
 
 - **Recents tab** ("validation pipeline log"): Shows every download with full quality flow (slskd reported → actual on disk → spectral → existing). Badges: Upgraded, New import, Wrong match, Transcode, Quality mismatch. "On disk (before)" shows pre-import state.
-- **Library tab**: Quality label per album (MP3 V0, MP3 320, etc.). Upgrade button. Accept button (sets avg bitrate for lo-fi edge cases).
+- **Library tab**: Quality label per album (MP3 V0, MP3 320, etc.). Upgrade button. Accept button (sets avg bitrate for lo-fi edge cases). Intent toggle: Default / Lossless (keeps lossless on disk for specific albums).
 - **Decisions tab**: Pipeline decision diagram generated from `get_decision_tree()` — shows FLAC/MP3 branching paths, all stages and rules with live thresholds from the code. Interactive simulator calls `full_pipeline_decision()` via `/api/pipeline/simulate` with presets for known scenarios.
 - **Ban source**: Denylists user + removes from beets + requeues.
 
