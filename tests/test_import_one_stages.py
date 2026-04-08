@@ -259,135 +259,70 @@ class TestConversionTarget(unittest.TestCase):
 
 
 # ============================================================================
-# opus_cleanup_decision — clean up FLAC when opus path skipped
+# target_cleanup_decision — clean up sources when target conversion skipped
 # ============================================================================
 
-class TestOpusCleanupDecision(unittest.TestCase):
-    """When opus was requested but skipped (transcode), FLAC files must be cleaned up."""
+class TestTargetCleanupDecision(unittest.TestCase):
+    """When a target was configured but skipped (transcode), source files must be cleaned up."""
 
-    def test_opus_skipped_with_flag_needs_cleanup(self):
-        from import_one import opus_cleanup_decision
-        r = opus_cleanup_decision(opus_skipped=True,
-                                  opus_conversion_enabled=True,
-                                  converted=5)
-        self.assertTrue(r)
+    def test_target_skipped_needs_cleanup(self):
+        from import_one import target_cleanup_decision
+        self.assertTrue(target_cleanup_decision(
+            target_achieved=False, target_was_configured=True, sources_kept=5))
 
-    def test_opus_skipped_without_flag_no_cleanup(self):
-        from import_one import opus_cleanup_decision
-        r = opus_cleanup_decision(opus_skipped=True,
-                                  opus_conversion_enabled=False,
-                                  converted=5)
-        self.assertFalse(r)
+    def test_no_target_configured_no_cleanup(self):
+        from import_one import target_cleanup_decision
+        self.assertFalse(target_cleanup_decision(
+            target_achieved=False, target_was_configured=False, sources_kept=5))
 
-    def test_opus_not_skipped_no_cleanup(self):
-        from import_one import opus_cleanup_decision
-        r = opus_cleanup_decision(opus_skipped=False,
-                                  opus_conversion_enabled=True,
-                                  converted=5)
-        self.assertFalse(r)
+    def test_target_achieved_no_cleanup(self):
+        from import_one import target_cleanup_decision
+        self.assertFalse(target_cleanup_decision(
+            target_achieved=True, target_was_configured=True, sources_kept=5))
 
-    def test_no_conversion_no_cleanup(self):
-        from import_one import opus_cleanup_decision
-        r = opus_cleanup_decision(opus_skipped=True,
-                                  opus_conversion_enabled=True,
-                                  converted=0)
-        self.assertFalse(r)
+    def test_no_sources_no_cleanup(self):
+        from import_one import target_cleanup_decision
+        self.assertFalse(target_cleanup_decision(
+            target_achieved=False, target_was_configured=True, sources_kept=0))
 
 
 
 
-class TestConvertV0KeepSource(unittest.TestCase):
+class TestConvertLosslessKeepSource(unittest.TestCase):
     """Test that keep_source=True preserves original lossless files."""
 
     def test_keep_source_preserves_flac(self):
         """With keep_source=True, FLAC files should remain after V0 conversion."""
         import tempfile
-        from import_one import convert_lossless_to_v0
+        from import_one import convert_lossless, V0_SPEC
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a small valid FLAC file via ffmpeg
             flac_path = os.path.join(tmpdir, "track01.flac")
             subprocess.run(
                 ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
                  "-y", flac_path],
                 capture_output=True, timeout=30)
             self.assertTrue(os.path.exists(flac_path))
-            converted, failed, ext = convert_lossless_to_v0(tmpdir, keep_source=True)
+            converted, failed, ext = convert_lossless(tmpdir, V0_SPEC,
+                                                      keep_source=True)
             self.assertEqual(converted, 1)
             self.assertEqual(failed, 0)
-            # FLAC still present
             self.assertTrue(os.path.exists(flac_path))
-            # MP3 was created
             mp3_path = os.path.join(tmpdir, "track01.mp3")
             self.assertTrue(os.path.exists(mp3_path))
 
     def test_default_removes_flac(self):
         """Default behavior (keep_source=False) removes FLAC after conversion."""
         import tempfile
-        from import_one import convert_lossless_to_v0
+        from import_one import convert_lossless, V0_SPEC
         with tempfile.TemporaryDirectory() as tmpdir:
             flac_path = os.path.join(tmpdir, "track01.flac")
             subprocess.run(
                 ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
                  "-y", flac_path],
                 capture_output=True, timeout=30)
-            converted, failed, ext = convert_lossless_to_v0(tmpdir)
+            converted, failed, ext = convert_lossless(tmpdir, V0_SPEC)
             self.assertEqual(converted, 1)
-            # FLAC removed (default behavior)
             self.assertFalse(os.path.exists(flac_path))
-
-
-# ============================================================================
-# convert_lossless_to_opus
-# ============================================================================
-
-class TestConvertLosslessToOpus(unittest.TestCase):
-    """Test the Opus conversion function."""
-
-    def test_converts_flac_to_opus(self):
-        """FLAC files should be converted to .opus files."""
-        import tempfile
-        from import_one import convert_lossless_to_opus
-        with tempfile.TemporaryDirectory() as tmpdir:
-            flac_path = os.path.join(tmpdir, "track01.flac")
-            subprocess.run(
-                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                 "-y", flac_path],
-                capture_output=True, timeout=30)
-            converted, failed = convert_lossless_to_opus(tmpdir)
-            self.assertEqual(converted, 1)
-            self.assertEqual(failed, 0)
-            opus_path = os.path.join(tmpdir, "track01.opus")
-            self.assertTrue(os.path.exists(opus_path))
-            # Source FLAC is NOT deleted (caller manages lifecycle)
-            self.assertTrue(os.path.exists(flac_path))
-
-    def test_no_lossless_files_noop(self):
-        """No lossless files → (0, 0)."""
-        import tempfile
-        from import_one import convert_lossless_to_opus
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mp3_path = os.path.join(tmpdir, "track01.mp3")
-            with open(mp3_path, "w") as f:
-                f.write("not real")
-            converted, failed = convert_lossless_to_opus(tmpdir)
-            self.assertEqual(converted, 0)
-            self.assertEqual(failed, 0)
-
-    def test_dry_run_no_files_created(self):
-        """Dry run should not create any Opus files."""
-        import tempfile
-        from import_one import convert_lossless_to_opus
-        with tempfile.TemporaryDirectory() as tmpdir:
-            flac_path = os.path.join(tmpdir, "track01.flac")
-            subprocess.run(
-                ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                 "-y", flac_path],
-                capture_output=True, timeout=30)
-            converted, failed = convert_lossless_to_opus(tmpdir, dry_run=True)
-            self.assertEqual(converted, 1)
-            self.assertEqual(failed, 0)
-            opus_path = os.path.join(tmpdir, "track01.opus")
-            self.assertFalse(os.path.exists(opus_path))
 
 
 if __name__ == "__main__":

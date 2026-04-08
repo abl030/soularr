@@ -147,17 +147,6 @@ def target_cleanup_decision(target_achieved: bool,
     return not target_achieved and target_was_configured and sources_kept > 0
 
 
-# Legacy aliases for existing callers/tests
-def opus_cleanup_decision(opus_skipped: bool, opus_conversion_enabled: bool,
-                          converted: int) -> bool:
-    """Deprecated: use target_cleanup_decision instead."""
-    return target_cleanup_decision(
-        target_achieved=not opus_skipped,
-        target_was_configured=opus_conversion_enabled,
-        sources_kept=converted,
-    )
-
-
 def final_exit_decision(is_transcode: bool) -> int:
     """Determine the final exit code after a successful import."""
     return 6 if is_transcode else 0
@@ -432,27 +421,6 @@ def convert_lossless(album_path: str, spec: ConversionSpec,
             converted += 1
 
     return converted, failed, original_ext
-
-
-# Legacy wrappers — to be removed once all callers migrate to convert_lossless()
-def convert_lossless_to_v0(album_path, dry_run=False, keep_source=False):
-    """Convert lossless → MP3 V0. Legacy wrapper around convert_lossless()."""
-    return convert_lossless(album_path, V0_SPEC, dry_run=dry_run,
-                            keep_source=keep_source)
-
-
-def convert_lossless_to_opus(album_path, dry_run=False):
-    """Convert lossless → Opus 128. Legacy wrapper around convert_lossless()."""
-    _OPUS_128 = ConversionSpec(
-        codec="libopus",
-        codec_args=("-b:a", "128k"),
-        extension="opus",
-        label="opus 128",
-    )
-    converted, failed, _ = convert_lossless(album_path, _OPUS_128,
-                                            dry_run=dry_run,
-                                            keep_source=True)
-    return converted, failed
 
 
 # ---------------------------------------------------------------------------
