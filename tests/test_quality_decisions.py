@@ -514,6 +514,7 @@ EXPECTED_PARAMS = {
     "override_min_bitrate",
     "post_conversion_min_bitrate", "converted_count",
     "verified_lossless", "opus_conversion",
+    "verified_lossless_target",
     "target_format",
 }
 
@@ -830,8 +831,14 @@ class TestDispatchAction(unittest.TestCase):
         a = self._action("import_failed")
         self.assertTrue(a.mark_failed)
 
+    def test_target_conversion_failed_marks_failed(self):
+        """Target conversion failure falls into catch-all → mark_failed."""
+        a = self._action("target_conversion_failed")
+        self.assertTrue(a.mark_failed)
+        self.assertFalse(a.denylist)
+
     def test_opus_conversion_failed_marks_failed(self):
-        """Opus conversion failure falls into catch-all → mark_failed."""
+        """Legacy opus_conversion_failed also falls into catch-all."""
         a = self._action("opus_conversion_failed")
         self.assertTrue(a.mark_failed)
         self.assertFalse(a.denylist)

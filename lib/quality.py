@@ -1529,8 +1529,10 @@ def full_pipeline_decision(
     converted_count=0,
     # Pipeline state
     verified_lossless=False,
-    # Opus conversion
+    # Opus conversion (deprecated, use verified_lossless_target)
     opus_conversion=False,
+    # Verified lossless target format (e.g. "opus 128", "mp3 v2")
+    verified_lossless_target=None,
     # Target format (user intent — "flac" skips conversion)
     target_format=None,
 ):
@@ -1635,9 +1637,10 @@ def full_pipeline_decision(
                 spectral_grade in ("genuine", "marginal", None)):
             verified_lossless = True
 
-        # Opus conversion: if verified lossless + enabled, final format is Opus 128
-        if verified_lossless and opus_conversion:
-            result["opus_final_format"] = "opus 128"
+        # Target format conversion: if verified lossless + target configured
+        effective_target = verified_lossless_target or ("opus 128" if opus_conversion else None)
+        if verified_lossless and effective_target:
+            result["opus_final_format"] = effective_target
 
         # Use post-conversion bitrate for quality gate
         gate_bitrate = post_conversion_min_bitrate or min_bitrate

@@ -515,5 +515,51 @@ class TestConversionPipelineE2E(unittest.TestCase):
             self.assertEqual(exts, {".mp3": 2})
 
 
+    def test_mp3_v2_target_same_extension_as_v0(self):
+        """MP3 V2 target has same .mp3 extension as V0 — must remove V0 first.
+
+        Regression test: without removing V0 .mp3 files before the target
+        conversion, convert_lossless() would skip all files (output exists)
+        and leave zero audio files after cleanup.
+        """
+        from import_one import (convert_lossless, V0_SPEC,
+                                parse_verified_lossless_target,
+                                _remove_files_by_ext, _remove_lossless_files)
+        with tempfile.TemporaryDirectory() as d:
+            album = os.path.join(d, "album")
+            make_test_album(album, track_count=2, cutoff_hz=15500)
+
+            # Step 1: V0 verification (keep source)
+            convert_lossless(album, V0_SPEC, keep_source=True)
+
+            # Step 2: Remove V0 before target conversion (same extension)
+            target_spec = parse_verified_lossless_target("mp3 v2")
+            self.assertEqual(target_spec.extension, V0_SPEC.extension)
+            _remove_files_by_ext(album, "." + V0_SPEC.extension)
+
+            # Step 3: Convert FLAC → MP3 V2
+            converted, failed, _ = convert_lossless(album, target_spec,
+                                                    keep_source=True)
+            self.assertEqual(converted, 2)
+            self.assertEqual(failed, 0)
+
+            # Step 4: Clean up FLAC
+            _remove_lossless_files(album)
+
+            # Final state: only MP3 V2 files
+            exts = {}
+            for f in os.listdir(album):
+                ext = os.path.splitext(f)[1].lower()
+                exts[ext] = exts.get(ext, 0) + 1
+            self.assertEqual(exts, {".mp3": 2})
+
+            # V2 bitrate should be lower than V0 (typically ~190 vs ~236)
+            for f in os.listdir(album):
+                if f.endswith(".mp3"):
+                    br = get_bitrate_kbps(os.path.join(album, f))
+                    self.assertLess(br, 220,
+                                    f"V2 bitrate {br}kbps seems too high for V2")
+
+
 if __name__ == "__main__":
     unittest.main()

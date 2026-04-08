@@ -243,6 +243,23 @@ class TestConfigDefaults(unittest.TestCase):
         cfg = SoularrConfig.from_ini(config)
         self.assertTrue(cfg.opus_conversion)
 
+    def test_verified_lossless_target_default_empty(self):
+        config = configparser.ConfigParser()
+        for section in ["Slskd", "Search Settings", "Release Settings",
+                        "Download Settings", "Beets Validation", "Pipeline DB", "Meelo", "Plex"]:
+            config.add_section(section)
+        cfg = SoularrConfig.from_ini(config)
+        self.assertEqual(cfg.verified_lossless_target, "")
+
+    def test_verified_lossless_target_set(self):
+        config = configparser.ConfigParser()
+        for section in ["Slskd", "Search Settings", "Release Settings",
+                        "Download Settings", "Beets Validation", "Pipeline DB", "Meelo", "Plex"]:
+            config.add_section(section)
+        config.set("Beets Validation", "verified_lossless_target", "opus 128")
+        cfg = SoularrConfig.from_ini(config)
+        self.assertEqual(cfg.verified_lossless_target, "opus 128")
+
 
 if __name__ == "__main__":
     unittest.main()
