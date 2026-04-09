@@ -401,6 +401,7 @@ class TestSearchLog(unittest.TestCase):
         history = self.db.get_search_history(self.req_id)
         self.assertEqual(len(history), 1)
         self.assertIsNone(history[0]["query"])
+        self.assertIsNone(history[0]["result_count"])
         self.assertEqual(history[0]["outcome"], "empty_query")
 
     def test_batch_fetch(self):

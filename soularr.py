@@ -383,6 +383,15 @@ def _log_search_result(album, result, ctx) -> None:
         db.record_attempt(request_id, "search")
 
 
+def _apply_find_download_result(album, result, find_result, failed_grab) -> None:
+    """Translate matching/enqueue outcome into search_log telemetry."""
+    if find_result.outcome == "found":
+        result.outcome = "found"
+        return
+    result.outcome = "error" if find_result.outcome == "enqueue_failed" else "no_match"
+    failed_grab.append(album)
+
+
 def search_and_queue(albums, ctx):
     if cfg.parallel_searches > 1 and len(albums) > 1:
         return _search_and_queue_parallel(albums, ctx)
@@ -394,11 +403,8 @@ def search_and_queue(albums, ctx):
         logger.info(f"Album {i}/{total}: {album.artist_name} - {album.title}")
         result = search_for_album(album, ctx)
         if result.success:
-            if find_download(album, grab_list, ctx):
-                result.outcome = "found"
-            else:
-                result.outcome = "no_match"
-                failed_grab.append(album)
+            find_result = find_download(album, grab_list, ctx)
+            _apply_find_download_result(album, result, find_result, failed_grab)
         else:
             failed_search.append(album)
         _log_search_result(album, result, ctx)
@@ -485,15 +491,13 @@ def _search_and_queue_parallel(albums, ctx):
                     done_count = len(grab_list) + len(failed_grab) + len(failed_search)
                     logger.info(
                         f"Search {done_count + 1}/{total} done: {result.query} "
-                        f"({result.result_count} results, {result.elapsed_s:.1f}s)"
+                        f"({result.result_count if result.result_count is not None else 'n/a'} results, "
+                        f"{result.elapsed_s:.1f}s)"
                     )
                     if result.success:
                         _merge_search_result(result, ctx)
-                        if find_download(album, grab_list, ctx):
-                            result.outcome = "found"
-                        else:
-                            result.outcome = "no_match"
-                            failed_grab.append(album)
+                        find_result = find_download(album, grab_list, ctx)
+                        _apply_find_download_result(album, result, find_result, failed_grab)
                     else:
                         failed_search.append(album)
                     _log_search_result(album, result, ctx)

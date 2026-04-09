@@ -717,12 +717,12 @@ class TestMultiEnqueueNoDeepCopy(unittest.TestCase):
             "slskd_do_enqueue",
             side_effect=[[download1], [download2]],
         ) as enqueue_mock:
-            found, downloads = soularr.try_multi_enqueue(
+            attempt = soularr.try_multi_enqueue(
                 release, tracks, results, "flac", self.ctx
             )
 
-        self.assertTrue(found)
-        self.assertEqual(downloads, [download1, download2])
+        self.assertTrue(attempt.matched)
+        self.assertEqual(attempt.downloads, [download1, download2])
         self.assertEqual(dir1["files"][0]["filename"], "01 - Track.flac")
         self.assertEqual(dir2["files"][0]["filename"], "01 - Track.flac")
         self.assertEqual(
@@ -884,20 +884,113 @@ class TestSingleEnqueuePathPrefixing(unittest.TestCase):
             "slskd_do_enqueue",
             return_value=downloads,
         ) as enqueue_mock:
-            found, actual_downloads = soularr.try_enqueue(
+            attempt = soularr.try_enqueue(
                 make_tracks((1, "Track One", 1)),
                 results,
                 "flac",
                 self.ctx,
             )
 
-        self.assertTrue(found)
-        self.assertEqual(actual_downloads, downloads)
+        self.assertTrue(attempt.matched)
+        self.assertEqual(attempt.downloads, downloads)
         self.assertEqual(directory["files"][0]["filename"], "01 - Track.flac")
         self.assertEqual(
             enqueue_mock.call_args.kwargs["files"][0]["filename"],
             "Music\\Album\\01 - Track.flac",
         )
+
+
+class TestSearchLoggingOutcomes(unittest.TestCase):
+    """Search logging should preserve telemetry semantics across failures."""
+
+    def setUp(self):
+        self._orig_cfg = soularr.cfg
+        soularr.cfg = MagicMock()
+        soularr.cfg.parallel_searches = 1
+
+    def tearDown(self):
+        soularr.cfg = self._orig_cfg
+
+    def test_log_search_result_preserves_unknown_result_count(self):
+        db = MagicMock()
+        source = MagicMock()
+        source._get_db.return_value = db
+        ctx = _make_ctx(pipeline_db_source=source)
+        album = MagicMock(db_request_id=42)
+
+        from lib.search import SearchResult
+
+        soularr._log_search_result(
+            album,
+            SearchResult(album_id=1, success=False, query="Artist Album", outcome="error"),
+            ctx,
+        )
+
+        db.log_search.assert_called_once_with(
+            request_id=42,
+            query="Artist Album",
+            result_count=None,
+            elapsed_s=None,
+            outcome="error",
+        )
+        db.record_attempt.assert_called_once_with(42, "search")
+
+    def test_apply_find_download_result_maps_enqueue_failure_to_error(self):
+        album = MagicMock()
+        failed_grab = []
+
+        from lib.search import SearchResult
+
+        result = SearchResult(
+            album_id=1,
+            success=True,
+            query="Artist Album",
+            result_count=7,
+            elapsed_s=1.5,
+        )
+        soularr._apply_find_download_result(
+            album,
+            result,
+            enqueue_module.FindDownloadResult(outcome="enqueue_failed"),
+            failed_grab,
+        )
+
+        self.assertEqual(result.outcome, "error")
+        self.assertEqual(failed_grab, [album])
+
+    def test_try_enqueue_marks_enqueue_failure_when_match_found_but_enqueue_fails(self):
+        source = MagicMock()
+        db = MagicMock()
+        db.get_denylisted_users.return_value = []
+        source._get_db.return_value = db
+        ctx = _make_ctx(cfg=soularr.cfg, pipeline_db_source=source)
+        ctx.current_album_cache[1] = MagicMock(title="Album", artist_name="Artist")
+        ctx.user_upload_speed["user1"] = 10
+
+        directory = make_directory("Music\\Album", [
+            {"filename": "01 - Track.flac", "size": 100},
+        ])
+        results = {"user1": {"flac": ["Music\\Album"]}}
+
+        with patch.object(
+            enqueue_module,
+            "check_for_match",
+            return_value=(True, directory, "Music\\Album"),
+        ), patch.object(
+            enqueue_module,
+            "slskd_do_enqueue",
+            return_value=None,
+        ):
+            attempt = soularr.try_enqueue(
+                make_tracks((1, "Track One", 1)),
+                results,
+                "flac",
+                ctx,
+            )
+
+        self.assertFalse(attempt.matched)
+        self.assertTrue(attempt.enqueue_failed)
+        self.assertIsNone(attempt.downloads)
 
 
 class TestNegativeMatchCache(unittest.TestCase):

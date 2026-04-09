@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import TYPE_CHECKING, Any, Literal, Sequence, cast
 
 from lib.browse import download_filter
 from lib.download import cancel_and_delete, slskd_do_enqueue
@@ -17,6 +18,22 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("soularr")
+
+
+@dataclass(frozen=True)
+class EnqueueAttempt:
+    """Outcome of a single enqueue path after matching candidate directories."""
+
+    matched: bool
+    downloads: list[Any] | None = None
+    enqueue_failed: bool = False
+
+
+@dataclass(frozen=True)
+class FindDownloadResult:
+    """Final outcome of matching + enqueue for one album."""
+
+    outcome: Literal["found", "no_match", "enqueue_failed"]
 
 
 def release_trackcount_mode(releases: list[Any]) -> Any:
@@ -165,7 +182,7 @@ def try_enqueue(
     results: dict[str, dict[str, list[str]]],
     allowed_filetype: str,
     ctx: SoularrContext,
-) -> tuple[bool, list[Any] | None]:
+) -> EnqueueAttempt:
     """Single album match and enqueue."""
     album_id = all_tracks[0]["albumId"]
     album = get_album_by_id(album_id, ctx)
@@ -177,6 +194,7 @@ def try_enqueue(
         key=lambda u: ctx.user_upload_speed.get(u, 0),
         reverse=True,
     )
+    had_enqueue_failure = False
     for username in sorted_users:
         if username in denied_users:
             logger.info(
@@ -202,19 +220,21 @@ def try_enqueue(
                     ctx=ctx,
                 )
                 if downloads is not None:
-                    return True, downloads
+                    return EnqueueAttempt(matched=True, downloads=downloads)
+                had_enqueue_failure = True
                 logger.info(
                     f"Failed to enqueue download to slskd for "
                     f"{artist_name} - {album_name} from {username}"
                 )
             except Exception as e:
+                had_enqueue_failure = True
                 logger.warning(f"Exception enqueueing tracks: {e}")
                 logger.info(
                     f"Exception enqueueing download to slskd for "
                     f"{artist_name} - {album_name} from {username}"
                 )
     logger.info(f"Failed to enqueue {artist_name} - {album_name}")
-    return False, None
+    return EnqueueAttempt(matched=False, enqueue_failed=had_enqueue_failure)
 
 
 def try_multi_enqueue(
@@ -223,7 +243,7 @@ def try_multi_enqueue(
     results: dict[str, dict[str, list[str]]],
     allowed_filetype: str,
     ctx: SoularrContext,
-) -> tuple[bool, list[Any] | None]:
+) -> EnqueueAttempt:
     """Locate and enqueue a multi-disc album."""
     split_release: list[dict[str, Any]] = []
     for media in release.media:
@@ -264,7 +284,7 @@ def try_multi_enqueue(
                 count_found += 1
                 break
         else:
-            return False, None
+            return EnqueueAttempt(matched=False)
     if count_found == total:
         all_downloads = []
         enqueued = 0
@@ -291,7 +311,7 @@ def try_multi_enqueue(
                     )
                     if len(all_downloads) > 0:
                         cancel_and_delete(all_downloads, ctx)
-                        return False, None
+                    return EnqueueAttempt(matched=False, enqueue_failed=True)
             except Exception:
                 logger.exception("Exception enqueueing tracks")
                 logger.info(
@@ -300,14 +320,14 @@ def try_multi_enqueue(
                 )
                 if len(all_downloads) > 0:
                     cancel_and_delete(all_downloads, ctx)
-                    return False, None
+                return EnqueueAttempt(matched=False, enqueue_failed=True)
         if enqueued == total:
-            return True, all_downloads
+            return EnqueueAttempt(matched=True, downloads=all_downloads)
         if len(all_downloads) > 0:
             cancel_and_delete(all_downloads, ctx)
-        return False, None
+        return EnqueueAttempt(matched=False, enqueue_failed=True)
 
-    return False, None
+    return EnqueueAttempt(matched=False)
 
 
 def _try_filetype(
@@ -316,12 +336,13 @@ def _try_filetype(
     allowed_filetype: str,
     grab_list: dict[int, GrabListEntry],
     ctx: SoularrContext,
-) -> bool:
+) -> FindDownloadResult:
     """Try to match and enqueue an album at a specific filetype quality."""
     album_id = album.id
     artist_name = album.artist_name
     releases = list(album.releases)
     has_monitored = any(r.monitored for r in releases)
+    had_enqueue_failure = False
 
     for _ in range(len(releases)):
         if not releases:
@@ -336,17 +357,17 @@ def _try_filetype(
             )
             continue
 
-        found, downloads = try_enqueue(all_tracks, results, allowed_filetype, ctx)
-        if not found and len(release.media) > 1:
-            found, downloads = try_multi_enqueue(
+        attempt = try_enqueue(all_tracks, results, allowed_filetype, ctx)
+        if not attempt.matched and len(release.media) > 1:
+            attempt = try_multi_enqueue(
                 release, all_tracks, results, allowed_filetype, ctx
             )
 
-        if found:
-            assert downloads is not None
+        if attempt.matched:
+            assert attempt.downloads is not None
             grab_list[album_id] = GrabListEntry(
                 album_id=album_id,
-                files=downloads,
+                files=attempt.downloads,
                 filetype=allowed_filetype,
                 title=album.title,
                 artist=artist_name,
@@ -357,7 +378,10 @@ def _try_filetype(
                 db_search_filetype_override=album.db_search_filetype_override,
                 db_target_format=album.db_target_format,
             )
-            return True
+            return FindDownloadResult(outcome="found")
+
+        if attempt.enqueue_failed:
+            had_enqueue_failure = True
 
         if has_monitored and release.monitored:
             logger.info(
@@ -369,14 +393,16 @@ def _try_filetype(
         if has_monitored and not release.monitored:
             break
 
-    return False
+    return FindDownloadResult(
+        outcome="enqueue_failed" if had_enqueue_failure else "no_match"
+    )
 
 
 def find_download(
     album: Any,
     grab_list: dict[int, GrabListEntry],
     ctx: SoularrContext,
-) -> bool:
+) -> FindDownloadResult:
     """Walk search results and enqueue the best matching download."""
     album_id = album.id
     artist_name = album.artist_name
@@ -397,10 +423,14 @@ def find_download(
             f"searching {filetypes_to_try}"
         )
 
+    had_enqueue_failure = False
     for allowed_filetype in filetypes_to_try:
         logger.info(f"Checking for Quality: {allowed_filetype}")
-        if _try_filetype(album, results, allowed_filetype, grab_list, ctx):
-            return True
+        result = _try_filetype(album, results, allowed_filetype, grab_list, ctx)
+        if result.outcome == "found":
+            return result
+        if result.outcome == "enqueue_failed":
+            had_enqueue_failure = True
 
     if (
         catch_all
@@ -410,7 +440,12 @@ def find_download(
             f"No match at preferred quality for {artist_name} - {album.title}, "
             f"trying catch-all (any audio format)"
         )
-        if _try_filetype(album, results, "*", grab_list, ctx):
-            return True
+        result = _try_filetype(album, results, "*", grab_list, ctx)
+        if result.outcome == "found":
+            return result
+        if result.outcome == "enqueue_failed":
+            had_enqueue_failure = True
 
-    return False
+    return FindDownloadResult(
+        outcome="enqueue_failed" if had_enqueue_failure else "no_match"
+    )

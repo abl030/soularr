@@ -706,7 +706,8 @@ class PipelineDB:
     # -- Search log -----------------------------------------------------------
 
     def log_search(self, request_id: int, query: str | None = None,
-                   result_count: int | None = None, elapsed_s: float | None = None,
+                   result_count: int | None = None,
+                   elapsed_s: float | None = None,
                    outcome: str = "error") -> None:
         """Record one search attempt for an album request."""
         self._execute("""
