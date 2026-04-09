@@ -120,63 +120,11 @@ class TestBuildDownloadInfo(unittest.TestCase):
         self.assertEqual(dl.username, "alpha_user, beta_user")
 
 
-class TestGatherSpectralContext(unittest.TestCase):
-
-    def test_non_mp3_returns_no_check(self):
-        from lib.import_dispatch import _build_download_info
-        files = [_make_file(filename="01 - Track.flac")]
-        album = _make_album_data(files=files, filetype="flac")
-        dl = _build_download_info(album)
-        # For FLAC, spectral check happens in import_one.py, not pre-staging
-        # _gather_spectral_context checks filetype string for "mp3"
-        filetype_str = (dl.filetype or "").lower()
-        is_mp3 = "mp3" in filetype_str and "flac" not in filetype_str
-        self.assertFalse(is_mp3)
-
-    def test_vbr_mp3_no_check(self):
-        from lib.import_dispatch import _build_download_info
-        files = [_make_file(isVariableBitRate=True)]
-        album = _make_album_data(files=files, filetype="mp3", is_vbr=True)
-        dl = _build_download_info(album)
-        is_vbr = dl.is_vbr or False
-        is_mp3 = "mp3" in (dl.filetype or "").lower()
-        # VBR MP3 doesn't need spectral check
-        self.assertTrue(is_mp3)
-        self.assertTrue(is_vbr)
-
-    def test_cbr_mp3_needs_check(self):
-        from lib.import_dispatch import _build_download_info
-        files = [_make_file(bitRate=320, isVariableBitRate=False)]
-        album = _make_album_data(files=files, filetype="mp3")
-        dl = _build_download_info(album)
-        is_vbr = dl.is_vbr or False
-        is_mp3 = "mp3" in (dl.filetype or "").lower()
-        self.assertTrue(is_mp3)
-        self.assertFalse(is_vbr)
-
-
-class TestCheckQualityGateDecision(unittest.TestCase):
-    """Test that quality gate calls the pure decision function correctly."""
-
-    def test_verified_lossless_accepts(self):
-        from lib.quality import quality_gate_decision, AudioQualityMeasurement
-        m = AudioQualityMeasurement(min_bitrate_kbps=207, verified_lossless=True)
-        self.assertEqual(quality_gate_decision(m), "accept")
-
-    def test_low_bitrate_requeues(self):
-        from lib.quality import quality_gate_decision, AudioQualityMeasurement
-        m = AudioQualityMeasurement(min_bitrate_kbps=190)
-        self.assertEqual(quality_gate_decision(m), "requeue_upgrade")
-
-    def test_cbr_requeues_lossless(self):
-        from lib.quality import quality_gate_decision, AudioQualityMeasurement
-        m = AudioQualityMeasurement(min_bitrate_kbps=320, is_cbr=True)
-        self.assertEqual(quality_gate_decision(m), "requeue_lossless")
-
-    def test_vbr_above_threshold_accepts(self):
-        from lib.quality import quality_gate_decision, AudioQualityMeasurement
-        m = AudioQualityMeasurement(min_bitrate_kbps=245)
-        self.assertEqual(quality_gate_decision(m), "accept")
+## TestGatherSpectralContext and TestCheckQualityGateDecision removed:
+## - TestGatherSpectralContext never called the function it claimed to test —
+##   it reimplemented the condition logic in test code and asserted on that.
+## - TestCheckQualityGateDecision duplicated tests already in
+##   test_quality_decisions.py::TestQualityGateDecision.
 
 
 # === NEW tests for functions moving to lib/download.py ===

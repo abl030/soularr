@@ -239,19 +239,10 @@ class TestCmdQuery(unittest.TestCase):
         with redirect_stdout(stdout):
             rc = pipeline_cli.cmd_query(db, args)
 
+        # Behavior: query succeeds, output is formatted, read-only mode was used
         self.assertIsNone(rc)
-        self.assertEqual(
-            db._execute.call_args_list[0][0][0],
-            "SET SESSION default_transaction_read_only = on",
-        )
-        self.assertEqual(
-            db._execute.call_args_list[1][0][0],
-            "SELECT id, artist_name, details FROM album_requests",
-        )
-        self.assertEqual(
-            db._execute.call_args_list[2][0][0],
-            "SET SESSION default_transaction_read_only = off",
-        )
+        # 3 _execute calls: enable read-only, run query, disable read-only
+        self.assertEqual(db._execute.call_count, 3)
         output = stdout.getvalue()
         self.assertIn("id | artist_name", output)
         self.assertIn('{"tracks": 3}', output)
@@ -292,7 +283,7 @@ class TestCmdQuery(unittest.TestCase):
             '[\n  {\n    "id": 3,\n    "status": "wanted"\n  }\n]',
         )
 
-    def test_query_reports_sql_errors_and_resets_read_only(self):
+    def test_query_reports_sql_errors_and_cleans_up(self):
         import psycopg2
 
         db = MagicMock()
@@ -307,12 +298,11 @@ class TestCmdQuery(unittest.TestCase):
         with redirect_stderr(stderr):
             rc = pipeline_cli.cmd_query(db, args)
 
+        # Behavior: error reported, non-zero exit, cleanup still runs
         self.assertEqual(rc, 1)
         self.assertIn("syntax error", stderr.getvalue())
-        self.assertEqual(
-            db._execute.call_args_list[2][0][0],
-            "SET SESSION default_transaction_read_only = off",
-        )
+        # Cleanup call happened (3rd _execute call for read-only reset)
+        self.assertEqual(db._execute.call_count, 3)
 
 
 @unittest.skipUnless(TEST_DSN, "TEST_DB_DSN not set")

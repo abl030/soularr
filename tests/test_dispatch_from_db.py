@@ -46,7 +46,12 @@ def _make_import_result(decision="import", new_min_bitrate=245,
 
 
 class TestDispatchImportForceFlag(unittest.TestCase):
-    """dispatch_import must pass --force when force=True."""
+    """dispatch_import must pass --force when force=True.
+
+    NOTE: Subprocess arg wiring tests — will break if import_one becomes a
+    library call (#48). The behavioral equivalent (high-distance album imports
+    successfully) is tested via test_downgrade_prevented in TestDispatchImportFromDb.
+    """
 
     def test_force_flag_in_command(self):
         from lib.import_dispatch import dispatch_import
