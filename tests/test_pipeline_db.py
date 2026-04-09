@@ -1137,6 +1137,19 @@ class TestUserCooldowns(unittest.TestCase):
         cooled = self.db.get_cooled_down_users()
         self.assertNotIn("mixeduser", cooled)
 
+    def test_check_and_apply_cooldown_counts_multi_user_rows(self):
+        """Comma-joined usernames in download_log should count for each user."""
+        for i in range(5):
+            req = self.req1 if i < 3 else self.req2
+            self.db.log_download(
+                request_id=req,
+                soulseek_username="disc1user, disc2user",
+                outcome="timeout",
+            )
+        self.assertTrue(self.db.check_and_apply_cooldown("disc1user"))
+        cooled = self.db.get_cooled_down_users()
+        self.assertIn("disc1user", cooled)
+
     def test_check_and_apply_cooldown_below_threshold(self):
         """Only 2 outcomes → not enough data → no cooldown."""
         self.db.log_download(request_id=self.req1, soulseek_username="newuser",

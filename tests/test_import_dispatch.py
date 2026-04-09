@@ -63,6 +63,7 @@ def _make_ctx():
     ctx = MagicMock()
     ctx.cfg.beets_harness_path = "/nix/store/fake/harness/run_beets_harness.sh"
     ctx.cfg.beets_distance_threshold = 0.15
+    ctx.cooled_down_users = set()
     ctx.pipeline_db_source = MagicMock()
     db_mock = MagicMock()
     db_mock.get_request.return_value = make_request_row(status="downloading")

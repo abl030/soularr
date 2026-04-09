@@ -635,7 +635,11 @@ def main():
             """Run Phase 1 in a background thread with its own DB connection."""
             phase1_source = DatabaseSource(cfg.pipeline_db_dsn)
             phase1_ctx = SoularrContext(
-                cfg=cfg, slskd=slskd, pipeline_db_source=phase1_source)
+                cfg=cfg,
+                slskd=slskd,
+                pipeline_db_source=phase1_source,
+                cooled_down_users=_module_ctx.cooled_down_users,
+            )
             try:
                 _poll_impl(phase1_ctx)
             finally:

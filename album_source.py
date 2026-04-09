@@ -283,7 +283,8 @@ class DatabaseSource:
         )
 
     def mark_failed(self, album_record, bv_result, usernames=None,
-                    download_info=None, search_filetype_override=None):
+                    download_info=None, search_filetype_override=None,
+                    cooled_down_users: set[str] | None = None):
         """Log the failure, preserve intent, and keep the album wanted for retry."""
         from lib.quality import DownloadInfo
         request_id = getattr(album_record, "db_request_id", None)
@@ -337,7 +338,8 @@ class DatabaseSource:
         if usernames:
             for username in usernames:
                 db.add_denylist(request_id, username, "beets validation rejected")
-                db.check_and_apply_cooldown(username)
+                if db.check_and_apply_cooldown(username) and cooled_down_users is not None:
+                    cooled_down_users.add(username)
 
     def get_denylisted_users(self, album_record):
         """Get denylisted usernames for an album."""

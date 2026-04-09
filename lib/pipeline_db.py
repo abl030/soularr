@@ -838,7 +838,13 @@ class PipelineDB:
         cfg = config or CooldownConfig()
         cur = self._execute("""
             SELECT outcome FROM download_log
-            WHERE soulseek_username = %s AND outcome IS NOT NULL
+            WHERE outcome IS NOT NULL
+              AND %s = ANY(
+                  regexp_split_to_array(
+                      regexp_replace(COALESCE(soulseek_username, ''), '\\s*,\\s*', ',', 'g'),
+                      ','
+                  )
+              )
             ORDER BY id DESC
             LIMIT %s
         """, (username, cfg.lookback_window))

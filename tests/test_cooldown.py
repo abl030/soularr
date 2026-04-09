@@ -163,6 +163,7 @@ class TestCooldownTriggerOnTimeout(unittest.TestCase):
         )
 
         mock_db = MagicMock()
+        mock_db.check_and_apply_cooldown.return_value = True
         mock_source = MagicMock()
         mock_source._get_db.return_value = mock_db
         ctx = SoularrContext(
@@ -178,6 +179,52 @@ class TestCooldownTriggerOnTimeout(unittest.TestCase):
         mock_db.log_download.assert_called_once()
         self.assertEqual(mock_db.log_download.call_args.kwargs["outcome"], "timeout")
         mock_db.check_and_apply_cooldown.assert_called_once_with("deaduser")
+        self.assertEqual(ctx.cooled_down_users, {"deaduser"})
+
+    def test_timeout_checks_each_user_for_multi_user_download(self):
+        """Multi-user downloads should evaluate cooldown per source user."""
+        from lib.download import _timeout_album
+        from lib.grab_list import GrabListEntry, DownloadFile
+
+        entry = GrabListEntry(
+            album_id=1,
+            files=[
+                DownloadFile(
+                    filename="01.flac", id="xfer-1", file_dir="Music\\Disc 1",
+                    username="disc1user", size=50000000,
+                ),
+                DownloadFile(
+                    filename="02.flac", id="xfer-2", file_dir="Music\\Disc 2",
+                    username="disc2user", size=50000000,
+                ),
+            ],
+            filetype="flac",
+            title="Album",
+            artist="Artist",
+            year="2020",
+            mb_release_id="mb-uuid",
+            db_request_id=42,
+        )
+
+        mock_db = MagicMock()
+        mock_db.check_and_apply_cooldown.side_effect = [True, False]
+        mock_source = MagicMock()
+        mock_source._get_db.return_value = mock_db
+        ctx = SoularrContext(
+            cfg=MagicMock(),
+            slskd=MagicMock(),
+            pipeline_db_source=mock_source,
+        )
+
+        with patch("lib.download.cancel_and_delete"), \
+             patch("lib.download.apply_transition"):
+            _timeout_album(entry, 42, "stalled", ctx)
+
+        cooldown_calls = {
+            args[0] for args, _kwargs in mock_db.check_and_apply_cooldown.call_args_list
+        }
+        self.assertEqual(cooldown_calls, {"disc1user", "disc2user"})
+        self.assertEqual(ctx.cooled_down_users, {"disc1user"})
 
     def test_timeout_no_cooldown_when_no_username(self):
         """If username is empty/None, don't call cooldown check."""
@@ -235,14 +282,18 @@ class TestCooldownTriggerOnRejection(unittest.TestCase):
         bv_result.error = "distance too high"
 
         dl = DownloadInfo(username="baduser")
+        cooled_down_users: set[str] = set()
+        mock_db.check_and_apply_cooldown.return_value = True
 
         with patch("lib.transitions.apply_transition"):
             source.mark_failed(album_record, bv_result,
-                               usernames=["baduser"], download_info=dl)
+                               usernames=["baduser"], download_info=dl,
+                               cooled_down_users=cooled_down_users)
 
         mock_db.log_download.assert_called_once()
         self.assertEqual(mock_db.log_download.call_args.kwargs["outcome"], "rejected")
         mock_db.check_and_apply_cooldown.assert_called_once_with("baduser")
+        self.assertEqual(cooled_down_users, {"baduser"})
 
 
 if __name__ == "__main__":
