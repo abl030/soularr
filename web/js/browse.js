@@ -24,7 +24,14 @@ export function setSearchType(type) {
  * @param {string} id - MusicBrainz artist ID
  * @param {string} name - Artist name
  */
+const VA_MBID = '89ad4ac3-39f7-470e-963a-56509c546377';
+
 export function openBrowseArtist(id, name) {
+  if (id === VA_MBID) {
+    setSearchType('release');
+    toast('Various Artists has too many releases — search by album title instead');
+    return;
+  }
   state.browseArtist = {id, name};
   state.browseSubView = 'discography';
   document.getElementById('results').style.display = 'none';
@@ -153,13 +160,19 @@ export async function searchArtists(q) {
       const data = await r.json();
       const rgs = data.release_groups || [];
       if (!rgs.length) { el.innerHTML = '<div class="loading">No results</div>'; return; }
-      el.innerHTML = rgs.map(rg => `
-        <div class="artist" style="cursor:pointer;padding:6px 0;" onclick="window.openBrowseArtist('${rg.artist_id}', '${esc(rg.artist_name)}')">
+      el.innerHTML = rgs.map(rg => {
+        const isVA = rg.artist_id === VA_MBID;
+        const onclick = isVA
+          ? `window.loadReleaseGroup('${rg.id}', this)`
+          : `window.openBrowseArtist('${rg.artist_id}', '${esc(rg.artist_name)}')`;
+        return `
+        <div class="artist" style="cursor:pointer;padding:6px 0;" onclick="${onclick}">
           <span class="artist-name">${esc(rg.artist_name)}</span>
           <span class="artist-dis"> — ${esc(rg.title)}</span>
           ${rg.primary_type ? `<span class="artist-dis" style="color:#888;"> (${esc(rg.primary_type)})</span>` : ''}
         </div>
-      `).join('');
+        <div id="rel-${rg.id}"></div>`;
+      }).join('');
     } else {
       const r = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
       const data = await r.json();
