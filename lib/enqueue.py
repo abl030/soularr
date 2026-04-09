@@ -196,6 +196,12 @@ def try_enqueue(
     )
     had_enqueue_failure = False
     for username in sorted_users:
+        if username in ctx.cooled_down_users:
+            logger.info(
+                f"Skipping user '{username}' for album ID {album_id}: "
+                f"on cooldown (recent download failures)"
+            )
+            continue
         if username in denied_users:
             logger.info(
                 f"Skipping user '{username}' for album ID {album_id}: denylisted "
@@ -266,6 +272,12 @@ def try_multi_enqueue(
     for disk in split_release:
         ctx.negative_matches.clear()
         for username in results:
+            if username in ctx.cooled_down_users:
+                logger.info(
+                    f"Skipping user '{username}' for album ID {album_id} "
+                    f"(multi-disc): on cooldown (recent download failures)"
+                )
+                continue
             if username in denied_users:
                 logger.info(
                     f"Skipping user '{username}' for album ID {album_id} "
