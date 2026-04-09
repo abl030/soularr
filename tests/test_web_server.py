@@ -80,6 +80,44 @@ def _make_server():
         },
     ]
 
+    mock_db.get_wrong_matches.return_value = [
+        {
+            "download_log_id": 42,
+            "request_id": 100,
+            "artist_name": "Test Artist",
+            "album_title": "Test Album",
+            "mb_release_id": "abc-123",
+            "soulseek_username": "testuser",
+            "validation_result": {
+                "distance": 0.25,
+                "scenario": "high_distance",
+                "detail": "distance too high",
+                "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
+                "soulseek_username": "testuser",
+                "candidates": [{
+                    "is_target": True,
+                    "artist": "Test Artist",
+                    "album": "Test Album",
+                    "distance": 0.25,
+                    "distance_breakdown": {"tracks": 0.15, "album": 0.10},
+                    "track_count": 10,
+                    "mapping": [],
+                    "extra_items": [],
+                    "extra_tracks": [],
+                }],
+                "items": [{"path": "01 Track.mp3", "title": "Track"}],
+            },
+        },
+    ]
+    mock_db.get_download_log_entry.return_value = {
+        "id": 42, "request_id": 100,
+        "validation_result": {
+            "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
+            "scenario": "high_distance",
+        },
+    }
+    mock_db.clear_wrong_match_path.return_value = True
+
     srv.db = mock_db
     srv.beets_db_path = None  # No beets DB in tests
 
@@ -469,6 +507,70 @@ class TestApplyPipelineBitrateOverride(unittest.TestCase):
         album = {}
         self._apply(album, {"status": "imported", "search_filetype_override": "flac"})
         self.assertNotIn("upgrade_queued", album)
+
+
+class TestWrongMatchesContract(unittest.TestCase):
+    """Contract tests: /api/wrong-matches returns all fields the frontend needs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server, cls.port, cls.mock_db = _make_server()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"{self.base}{path}"
+        try:
+            resp = urlopen(url)
+            return resp.status, json.loads(resp.read())
+        except HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def _post(self, path: str, body: dict) -> tuple[int, dict]:
+        url = f"{self.base}{path}"
+        data = json.dumps(body).encode()
+        req = Request(url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            resp = urlopen(req)
+            return resp.status, json.loads(resp.read())
+        except HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    REQUIRED_FIELDS = {
+        "download_log_id", "request_id", "artist", "album", "mb_release_id",
+        "failed_path", "files_exist", "distance", "scenario", "detail",
+        "soulseek_username", "candidate", "local_items",
+    }
+
+    def test_response_has_entries_with_required_fields(self):
+        status, data = self._get("/api/wrong-matches")
+        self.assertEqual(status, 200)
+        self.assertIn("entries", data)
+        entries = data["entries"]
+        self.assertGreater(len(entries), 0)
+        for entry in entries:
+            missing = self.REQUIRED_FIELDS - set(entry.keys())
+            self.assertFalse(missing, f"Missing fields: {missing}")
+
+    def test_candidate_has_distance_breakdown(self):
+        status, data = self._get("/api/wrong-matches")
+        entry = data["entries"][0]
+        candidate = entry["candidate"]
+        self.assertIsNotNone(candidate)
+        self.assertIn("distance_breakdown", candidate)
+        self.assertIn("mapping", candidate)
+
+    def test_delete_missing_id_returns_error(self):
+        status, data = self._post("/api/wrong-matches/delete", {})
+        self.assertEqual(status, 400)
+
+    def test_delete_returns_ok(self):
+        status, data = self._post("/api/wrong-matches/delete", {"download_log_id": 42})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "ok")
 
 
 class TestLibraryArtistContract(unittest.TestCase):
