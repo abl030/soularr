@@ -47,6 +47,7 @@ All quality decisions are pure functions in `lib/quality.py` with full unit test
 3. **`transcode_detection()`** -- Post-FLAC-conversion: was the FLAC a transcode?
 4. **`quality_gate_decision()`** -- Post-import: accept, or re-queue for better quality?
 5. **`determine_verified_lossless()`** -- Single source of truth for verified lossless status.
+6. **`should_cooldown()`** -- Global user cooldown: skip users with 5+ consecutive failures for 3 days.
 
 ## Audit trail
 
@@ -80,7 +81,7 @@ WHERE id = <id>;
 ```
 
 All types are fully typed dataclasses with pyright enforcement and JSON round-trip serialization:
-`ImportResult`, `ValidationResult`, `CandidateSummary`, `HarnessItem`, `HarnessTrackInfo`, `TrackMapping`, `DownloadInfo`, `SpectralContext`, `AlbumInfo`, `ActiveDownloadState`, `ActiveDownloadFileState`.
+`ImportResult`, `ValidationResult`, `CandidateSummary`, `HarnessItem`, `HarnessTrackInfo`, `TrackMapping`, `DownloadInfo`, `SpectralContext`, `AlbumInfo`, `ActiveDownloadState`, `ActiveDownloadFileState`, `CooldownConfig`.
 
 ## Pipeline CLI diagnostics
 
@@ -115,6 +116,7 @@ pipeline-cli query --json "SELECT id, outcome, import_result FROM download_log O
 - **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
 - **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
 - **Force-import** -- manually import rejected downloads via CLI (`force-import <id>`) or web API
+- **User cooldowns** -- global, temporary cooldowns for Soulseek users who consistently timeout or fail (5 consecutive failures = 3-day cooldown). Tunables in `CooldownConfig` dataclass.
 - **Comprehensive test suite** (`nix-shell --run "bash scripts/run_tests.sh"`)
 
 ## MusicBrainz mirror
