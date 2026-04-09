@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from classify import classify_log_entry, LogEntry  # type: ignore[import-not-found]
-from lib.import_service import run_import, log_and_update_import  # type: ignore[import-not-found]
 from lib.quality import (QUALITY_LOSSLESS, QUALITY_UPGRADE_TIERS,  # type: ignore[import-not-found]
                          should_clear_lossless_search_override)
 from lib.transitions import apply_transition  # type: ignore[import-not-found]
@@ -543,6 +542,8 @@ def post_pipeline_ban_source(h, body: dict) -> None:
 
 
 def post_pipeline_force_import(h, body: dict) -> None:
+    from lib.import_dispatch import dispatch_import_from_db
+
     s = _server()
     log_id = body.get("download_log_id")
 
@@ -571,33 +572,19 @@ def post_pipeline_force_import(h, body: dict) -> None:
     if not req:
         h._error(f"Album request {request_id} not found", 404)
         return
-    mbid = req.get("mb_release_id")
-    if not mbid:
-        h._error("Album has no MusicBrainz release ID")
-        return
 
     resolved_path = resolve_failed_path(str(failed_path))
     if resolved_path is None:
         h._error(f"Files not found at: {failed_path}")
         return
-    failed_path = resolved_path
 
-    import_one_path = os.path.join(
-        os.path.dirname(__file__), "..", "..", "harness", "import_one.py")
-    outcome = run_import(
-        failed_path, mbid,
-        request_id=request_id,
-        import_one_path=import_one_path,
-        force=True,
-        override_min_bitrate=req.get("min_bitrate"),
+    outcome = dispatch_import_from_db(
+        s._db(), request_id=request_id, failed_path=resolved_path,
+        force=True, outcome_label="force_import",
     )
-    log_and_update_import(s._db(), request_id, outcome,
-                          outcome_label="force_import",
-                          staged_path=failed_path)
 
     h._json({
         "status": "ok" if outcome.success else "error",
-        "exit_code": outcome.exit_code,
         "request_id": request_id,
         "artist": req["artist_name"],
         "album": req["album_title"],

@@ -1,32 +1,18 @@
-"""Unified import service — single entry point for running import_one.py.
+"""Import service — extraction helpers for ImportResult JSON.
 
-Replaces 4 duplicated codepaths (force-import CLI/web, manual-import CLI/web)
-with one run_import() + log_and_update() flow.
+The subprocess execution and dispatch logic lives in lib/import_dispatch.py
+(dispatch_import + dispatch_import_from_db). This module provides helpers for
+extracting typed fields from ImportResult JSON blobs.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import subprocess
-import sys
-from dataclasses import dataclass
-from typing import Any
 
-from lib.config import read_verified_lossless_target
 from lib.quality import ImportResult
 
 logger = logging.getLogger("soularr")
-
-
-@dataclass(frozen=True)
-class ImportOutcome:
-    """Result of running import_one.py."""
-    success: bool
-    exit_code: int
-    message: str
-    import_result_json: str | None = None
 
 
 def _apply_request_spectral_fields(
@@ -154,106 +140,3 @@ def extract_import_log_fields(import_result_json: str | None) -> dict[str, objec
     return fields
 
 
-def run_import(
-    path: str,
-    mb_release_id: str,
-    *,
-    request_id: int,
-    import_one_path: str,
-    force: bool = False,
-    override_min_bitrate: int | None = None,
-    verified_lossless_target: str | None = None,
-) -> ImportOutcome:
-    """Run import_one.py and return a typed outcome.
-
-    Unifies force-import and manual-import subprocess patterns.
-    """
-    if not os.path.isdir(path):
-        return ImportOutcome(
-            success=False, exit_code=3,
-            message=f"Path not found: {path}",
-        )
-
-    cmd = [
-        sys.executable, import_one_path,
-        path, mb_release_id,
-        "--request-id", str(request_id),
-    ]
-    effective_target = (
-        verified_lossless_target
-        if verified_lossless_target is not None
-        else read_verified_lossless_target()
-    )
-    if force:
-        cmd.append("--force")
-    if override_min_bitrate is not None:
-        cmd.extend(["--override-min-bitrate", str(override_min_bitrate)])
-    if effective_target:
-        cmd.extend(["--verified-lossless-target", effective_target])
-
-    logger.info("IMPORT-SERVICE: running %s", " ".join(cmd))
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1800,
-            env={**os.environ, "HOME": "/home/abl030"},
-        )
-    except subprocess.TimeoutExpired:
-        return ImportOutcome(
-            success=False, exit_code=-1,
-            message="import_one.py timed out after 30 minutes",
-        )
-
-    # Log stderr
-    if result.stderr:
-        for line in result.stderr.strip().splitlines():
-            logger.info("  [import] %s", line)
-
-    import_result_json = parse_import_result_stdout(result.stdout or "")
-
-    if result.returncode == 0:
-        return ImportOutcome(
-            success=True, exit_code=0,
-            message="Import successful",
-            import_result_json=import_result_json,
-        )
-    else:
-        return ImportOutcome(
-            success=False, exit_code=result.returncode,
-            message=f"import_one.py exited with code {result.returncode}",
-            import_result_json=import_result_json,
-        )
-
-
-def log_and_update_import(
-    db: Any,
-    request_id: int,
-    outcome: ImportOutcome,
-    *,
-    outcome_label: str,
-    staged_path: str | None = None,
-) -> None:
-    """Write download_log row and update album_requests status.
-
-    Args:
-        db: PipelineDB instance
-        request_id: Album request ID
-        outcome: Result from run_import()
-        outcome_label: download_log outcome string (e.g. "force_import", "manual_import")
-        staged_path: Path to staged files
-    """
-    from lib.transitions import apply_transition
-
-    log_fields = extract_import_log_fields(outcome.import_result_json)
-    db.log_download(
-        request_id=request_id,
-        outcome=outcome_label if outcome.success else "failed",
-        import_result=outcome.import_result_json,
-        staged_path=staged_path,
-        error_message=None if outcome.success else outcome.message,
-        **log_fields,
-    )
-
-    if outcome.success:
-        update_fields = extract_import_update_fields(outcome.import_result_json)
-        apply_transition(db, request_id, "imported", **update_fields)

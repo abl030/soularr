@@ -750,27 +750,20 @@ def cmd_force_import(db, args):
     print(f"  Path: {failed_path}")
     print(f"  MBID: {mbid}")
 
-    from lib.import_service import run_import, log_and_update_import
-    outcome = run_import(
-        failed_path, mbid,
-        request_id=request_id,
-        import_one_path=IMPORT_ONE,
-        force=True,
-        override_min_bitrate=req["min_bitrate"],
-        verified_lossless_target=getattr(args, "verified_lossless_target", None),
+    from lib.import_dispatch import dispatch_import_from_db
+    outcome = dispatch_import_from_db(
+        db, request_id=request_id, failed_path=failed_path,
+        force=True, outcome_label="force_import",
     )
-    log_and_update_import(db, request_id, outcome,
-                          outcome_label="force_import",
-                          staged_path=failed_path)
     if outcome.success:
-        print(f"  [OK] Force-import successful (exit code 0)")
+        print(f"  [OK] {outcome.message}")
     else:
         print(f"  [WARN] {outcome.message}")
 
 
 def cmd_manual_import(db, args):
     """Import a local folder as a pipeline request."""
-    from lib.import_service import run_import, log_and_update_import
+    from lib.import_dispatch import dispatch_import_from_db
 
     request_id = args.id
     path = args.path
@@ -790,16 +783,10 @@ def cmd_manual_import(db, args):
     print(f"  Path: {path}")
     print(f"  MBID: {mbid}")
 
-    outcome = run_import(
-        path, mbid,
-        request_id=request_id,
-        import_one_path=IMPORT_ONE,
-        override_min_bitrate=req["min_bitrate"],
-        verified_lossless_target=getattr(args, "verified_lossless_target", None),
+    outcome = dispatch_import_from_db(
+        db, request_id=request_id, failed_path=path,
+        force=False, outcome_label="manual_import",
     )
-    log_and_update_import(db, request_id, outcome,
-                          outcome_label="manual_import",
-                          staged_path=path)
     if outcome.success:
         print(f"  [OK] {outcome.message}")
     else:

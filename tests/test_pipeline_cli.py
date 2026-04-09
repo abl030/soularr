@@ -153,48 +153,44 @@ class TestTracksFromMbRelease(unittest.TestCase):
 
 class TestCmdManualImport(unittest.TestCase):
     @patch("builtins.print")
-    def test_failed_manual_import_logs_error_message(self, _mock_print):
-        from lib.import_service import ImportOutcome
+    def test_failed_manual_import_prints_error(self, _mock_print):
+        from lib.import_dispatch import DispatchOutcome
         db = MagicMock()
         db.get_request.return_value = make_request_row(
             id=123, status="manual", min_bitrate=320,
             mb_release_id="mbid-123", artist_name="Artist", album_title="Album",
         )
 
-        mock_outcome = ImportOutcome(
-            success=False, exit_code=5,
-            message="import_one.py exited with code 5",
-            import_result_json='{"decision":"downgrade","exit_code":5}',
+        mock_outcome = DispatchOutcome(
+            success=False,
+            message="Rejected: quality_downgrade — new 192kbps <= existing 320kbps",
         )
-        with patch("lib.import_service.run_import", return_value=mock_outcome):
+        with patch("lib.import_dispatch.dispatch_import_from_db",
+                    return_value=mock_outcome):
             args = MagicMock(id=123, path="/tmp/Album")
             pipeline_cli.cmd_manual_import(db, args)
 
-        db.log_download.assert_called_once()
-        kwargs = db.log_download.call_args.kwargs
-        self.assertEqual(kwargs["outcome"], "failed")
-        self.assertEqual(kwargs["staged_path"], "/tmp/Album")
+        # Should print failure message
+        _mock_print.assert_any_call("  [FAIL] Rejected: quality_downgrade — new 192kbps <= existing 320kbps")
 
     @patch("builtins.print")
-    def test_manual_import_passes_verified_lossless_target_override(self, _mock_print):
-        from lib.import_service import ImportOutcome
+    def test_manual_import_calls_dispatch_from_db(self, _mock_print):
+        from lib.import_dispatch import DispatchOutcome
         db = MagicMock()
         db.get_request.return_value = make_request_row(
             id=123, status="manual", min_bitrate=320,
             mb_release_id="mbid-123", artist_name="Artist", album_title="Album",
         )
 
-        mock_outcome = ImportOutcome(success=True, exit_code=0, message="ok")
-        with patch("lib.import_service.run_import", return_value=mock_outcome) as mock_run:
-            args = MagicMock(
-                id=123,
-                path="/tmp/Album",
-                verified_lossless_target="mp3 v2",
-            )
+        mock_outcome = DispatchOutcome(success=True, message="ok")
+        with patch("lib.import_dispatch.dispatch_import_from_db",
+                    return_value=mock_outcome) as mock_dispatch:
+            args = MagicMock(id=123, path="/tmp/Album")
             pipeline_cli.cmd_manual_import(db, args)
 
-        self.assertEqual(
-            mock_run.call_args.kwargs["verified_lossless_target"], "mp3 v2"
+        mock_dispatch.assert_called_once_with(
+            db, request_id=123, failed_path="/tmp/Album",
+            force=False, outcome_label="manual_import",
         )
 
 

@@ -8,7 +8,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from lib.import_service import run_import, log_and_update_import  # type: ignore[import-not-found]
 from lib.manual_import import (  # type: ignore[import-not-found]
     scan_complete_folder,
     match_folders_to_requests,
@@ -126,23 +125,15 @@ def post_manual_import(h, body: dict) -> None:
         h._error("Request has no MusicBrainz release ID")
         return
 
-    import_one_path = os.path.join(
-        os.path.dirname(__file__), "..", "..", "harness", "import_one.py")
-
-    outcome = run_import(
-        path, mbid,
-        request_id=int(request_id),
-        import_one_path=import_one_path,
-        override_min_bitrate=req.get("min_bitrate"),
+    from lib.import_dispatch import dispatch_import_from_db
+    outcome = dispatch_import_from_db(
+        srv._db(), request_id=int(request_id), failed_path=path,
+        force=False, outcome_label="manual_import",
     )
-    log_and_update_import(srv._db(), int(request_id), outcome,
-                          outcome_label="manual_import",
-                          staged_path=path)
 
     h._json({
         "status": "ok" if outcome.success else "error",
         "message": outcome.message,
-        "exit_code": outcome.exit_code,
         "request_id": request_id,
         "artist": req["artist_name"],
         "album": req["album_title"],

@@ -1,16 +1,12 @@
-"""Tests for lib/import_service.py — unified import service."""
+"""Tests for lib/import_service.py — ImportResult extraction helpers."""
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch
 
 from lib.import_service import (
-    ImportOutcome,
     parse_import_result_stdout,
     extract_import_update_fields,
     extract_import_log_fields,
-    run_import,
-    log_and_update_import,
 )
 
 
@@ -88,93 +84,6 @@ class TestExtractImportLogFields(unittest.TestCase):
 
     def test_none_returns_empty(self):
         self.assertEqual(extract_import_log_fields(None), {})
-
-
-class TestRunImport(unittest.TestCase):
-    def test_path_not_found(self):
-        result = run_import("/nonexistent/path", "mbid",
-                            request_id=1, import_one_path="/fake")
-        self.assertFalse(result.success)
-        self.assertEqual(result.exit_code, 3)
-
-    @patch("lib.import_service.subprocess.run")
-    @patch("lib.import_service.os.path.isdir", return_value=True)
-    def test_force_flag_passed(self, _isdir, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        run_import("/tmp/test", "mbid", request_id=1,
-                   import_one_path="/fake/import_one.py", force=True)
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--force", cmd)
-
-    @patch("lib.import_service.subprocess.run")
-    @patch("lib.import_service.os.path.isdir", return_value=True)
-    def test_no_force_flag(self, _isdir, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        run_import("/tmp/test", "mbid", request_id=1,
-                   import_one_path="/fake/import_one.py", force=False)
-        cmd = mock_run.call_args[0][0]
-        self.assertNotIn("--force", cmd)
-
-    @patch("lib.import_service.subprocess.run")
-    @patch("lib.import_service.os.path.isdir", return_value=True)
-    def test_override_min_bitrate(self, _isdir, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        run_import("/tmp/test", "mbid", request_id=1,
-                   import_one_path="/fake", override_min_bitrate=245)
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--override-min-bitrate", cmd)
-        idx = cmd.index("--override-min-bitrate")
-        self.assertEqual(cmd[idx + 1], "245")
-
-    @patch("lib.import_service.subprocess.run")
-    @patch("lib.import_service.os.path.isdir", return_value=True)
-    def test_verified_lossless_target_passed_explicitly(self, _isdir, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        run_import("/tmp/test", "mbid", request_id=1,
-                   import_one_path="/fake",
-                   verified_lossless_target="opus 128")
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--verified-lossless-target", cmd)
-        idx = cmd.index("--verified-lossless-target")
-        self.assertEqual(cmd[idx + 1], "opus 128")
-
-    @patch("lib.import_service.subprocess.run")
-    @patch("lib.import_service.os.path.isdir", return_value=True)
-    @patch("lib.import_service.read_verified_lossless_target", return_value="aac 128")
-    def test_verified_lossless_target_loaded_from_runtime_config(
-        self, _runtime_target, _isdir, mock_run
-    ):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        run_import("/tmp/test", "mbid", request_id=1, import_one_path="/fake")
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--verified-lossless-target", cmd)
-        idx = cmd.index("--verified-lossless-target")
-        self.assertEqual(cmd[idx + 1], "aac 128")
-
-
-class TestLogAndUpdateImport(unittest.TestCase):
-    def test_success_logs_and_updates(self):
-        db = MagicMock()
-        db.get_request.return_value = {"status": "manual"}
-        outcome = ImportOutcome(success=True, exit_code=0, message="ok",
-                                import_result_json='{"decision":"import","new_measurement":{"min_bitrate_kbps":245}}')
-        log_and_update_import(db, 42, outcome,
-                              outcome_label="force_import",
-                              staged_path="/tmp/test")
-        db.log_download.assert_called_once()
-        self.assertEqual(db.log_download.call_args.kwargs["outcome"], "force_import")
-        # update_status called by apply_transition
-        db.update_status.assert_called_once()
-
-    def test_failure_logs_only(self):
-        db = MagicMock()
-        outcome = ImportOutcome(success=False, exit_code=5, message="downgrade")
-        log_and_update_import(db, 42, outcome,
-                              outcome_label="force_import",
-                              staged_path="/tmp/test")
-        db.log_download.assert_called_once()
-        self.assertEqual(db.log_download.call_args.kwargs["outcome"], "failed")
-        db.update_status.assert_not_called()
 
 
 if __name__ == "__main__":
