@@ -108,6 +108,7 @@ class TestDispatchImportCore(unittest.TestCase):
             "result": result,
             "cmd": cmd,
             "db": db,
+            "path": tmpdir,
             "mock_meelo": mock_meelo,
             "mock_plex": mock_plex,
             "mock_gate": mock_gate,
@@ -179,6 +180,23 @@ class TestDispatchImportCore(unittest.TestCase):
                                  new_min_bitrate=128, prev_min_bitrate=180)
         r = self._dispatch(ir=ir, requeue_on_failure=True)
         r["db"].log_download.assert_called()
+
+    def test_transcode_downgrade_no_requeue_when_disabled(self):
+        """Failure requeue flag must suppress action.requeue for failed outcomes."""
+        ir = _make_import_result(decision="transcode_downgrade",
+                                 new_min_bitrate=190, prev_min_bitrate=320)
+        r = self._dispatch(ir=ir, requeue_on_failure=False)
+        r["db"].reset_to_wanted.assert_not_called()
+
+    def test_failed_log_includes_validation_result_and_staged_path(self):
+        """Failure logs must preserve typed audit payloads when no prior validation JSON exists."""
+        ir = _make_import_result(decision="downgrade",
+                                 new_min_bitrate=128, prev_min_bitrate=180)
+        r = self._dispatch(ir=ir, requeue_on_failure=False)
+        log_kwargs = r["db"].log_download.call_args.kwargs
+        self.assertEqual(log_kwargs["staged_path"], r["path"])
+        self.assertIsNotNone(log_kwargs["validation_result"])
+        self.assertIn("quality_downgrade", log_kwargs["validation_result"])
 
     def test_transcode_upgrade_requeues(self):
         ir = _make_import_result(decision="transcode_upgrade",

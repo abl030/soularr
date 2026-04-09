@@ -177,6 +177,7 @@ class TestDispatchImportFromDb(unittest.TestCase):
             "result": result,
             "cmd": cmd,
             "db": db,
+            "path": tmpdir,
             "mock_meelo": mock_meelo,
             "mock_gate": mock_gate,
         }
@@ -266,6 +267,28 @@ class TestDispatchImportFromDb(unittest.TestCase):
             if call.args:
                 self.assertNotEqual(call.args[1] if len(call.args) > 1 else None, "wanted",
                                     "Failed force-import should not requeue to wanted")
+
+    def test_transcode_downgrade_does_not_requeue(self):
+        """Transcode downgrade is still a failure for force-import and must not requeue."""
+        ir = _make_import_result(decision="transcode_downgrade",
+                                 new_min_bitrate=190, prev_min_bitrate=320)
+        r = self._dispatch(ir=ir)
+        db = r["db"]
+        db.reset_to_wanted.assert_not_called()
+        for call in db.update_status.call_args_list:
+            if call.args:
+                self.assertNotEqual(call.args[1] if len(call.args) > 1 else None, "wanted",
+                                    "Failed force-import should not requeue to wanted")
+
+    def test_failure_logs_validation_result_and_staged_path(self):
+        """Force-import failures must preserve typed failure audit payloads."""
+        ir = _make_import_result(decision="downgrade",
+                                 new_min_bitrate=128, prev_min_bitrate=180)
+        r = self._dispatch(ir=ir)
+        log_kwargs = r["db"].log_download.call_args.kwargs
+        self.assertEqual(log_kwargs["staged_path"], r["path"])
+        self.assertIsNotNone(log_kwargs["validation_result"])
+        self.assertIn("quality_downgrade", log_kwargs["validation_result"])
 
     def test_no_double_download_log(self):
         """Successful force-import should create exactly one download_log entry."""

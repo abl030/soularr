@@ -129,6 +129,8 @@ def _do_mark_failed(
     requeue: bool = True,
     outcome_label: str = "rejected",
     search_filetype_override: str | None = None,
+    validation_result: str | None = None,
+    staged_path: str | None = None,
 ) -> None:
     """Log failure and optionally requeue — standalone version of DatabaseSource.mark_failed.
 
@@ -156,6 +158,7 @@ def _do_mark_failed(
         beets_scenario=scenario,
         beets_detail=detail,
         outcome=outcome_label,
+        staged_path=staged_path,
         error_message=error,
         bitrate=dl_info.bitrate,
         sample_rate=dl_info.sample_rate,
@@ -176,7 +179,9 @@ def _do_mark_failed(
             dl_info.current_spectral.bitrate_kbps if dl_info.current_spectral else None
         ),
         import_result=dl_info.import_result,
-        validation_result=dl_info.validation_result,
+        validation_result=(validation_result
+                           if validation_result is not None
+                           else dl_info.validation_result),
     )
 
 
@@ -431,7 +436,14 @@ def dispatch_import_core(
                 detail=f"import_one.py rc={result.returncode}, no JSON",
                 error=f"rc={result.returncode}",
                 requeue=requeue_on_failure,
-                outcome_label="failed")
+                outcome_label="failed",
+                validation_result=ValidationResult(
+                    distance=distance,
+                    scenario="no_json_result",
+                    detail=f"import_one.py rc={result.returncode}, no JSON",
+                    error=f"rc={result.returncode}",
+                ).to_json(),
+                staged_path=path)
             outcome_message = f"No JSON result (rc={result.returncode})"
         else:
             _populate_dl_info_from_import_result(dl_info, ir)
@@ -519,7 +531,15 @@ def dispatch_import_core(
                     error=fail_error,
                     requeue=requeue_on_failure,
                     outcome_label="rejected",
-                    search_filetype_override=narrowed_override)
+                    search_filetype_override=narrowed_override,
+                    validation_result=(dl_info.validation_result
+                                       or ValidationResult(
+                                           distance=distance,
+                                           scenario=fail_scenario,
+                                           detail=fail_detail,
+                                           error=fail_error,
+                                       ).to_json()),
+                    staged_path=path)
                 if narrowed_override is not None:
                     logger.info(
                         f"  Narrowed search_filetype_override '{current_override}'"
@@ -541,7 +561,7 @@ def dispatch_import_core(
                             cooled_down_users.add(username)
                 logger.info(f"  Denylisted {usernames} for request {request_id}")
 
-            if action.requeue:
+            if action.requeue and (requeue_on_failure or not action.mark_failed):
                 requeue_fields: dict[str, object] = {
                     "search_filetype_override": QUALITY_UPGRADE_TIERS,
                 }
@@ -572,7 +592,14 @@ def dispatch_import_core(
             db, request_id, dl_info,
             distance=distance, scenario="timeout",
             detail="import_one.py timed out", error="timeout",
-            requeue=requeue_on_failure, outcome_label="failed")
+            requeue=requeue_on_failure, outcome_label="failed",
+            validation_result=ValidationResult(
+                distance=distance,
+                scenario="timeout",
+                detail="import_one.py timed out",
+                error="timeout",
+            ).to_json(),
+            staged_path=path)
         outcome_message = "Import timed out"
     except Exception:
         logger.exception(f"{mode} ERROR: {label}")
@@ -580,7 +607,14 @@ def dispatch_import_core(
             db, request_id, dl_info,
             distance=distance, scenario="exception",
             detail="unhandled exception in auto-import", error="exception",
-            requeue=requeue_on_failure, outcome_label="failed")
+            requeue=requeue_on_failure, outcome_label="failed",
+            validation_result=ValidationResult(
+                distance=distance,
+                scenario="exception",
+                detail="unhandled exception in auto-import",
+                error="exception",
+            ).to_json(),
+            staged_path=path)
         outcome_message = "Unhandled exception"
 
     return DispatchOutcome(success=outcome_success, message=outcome_message)
