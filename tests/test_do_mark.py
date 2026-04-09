@@ -86,7 +86,8 @@ class TestDoMarkFailed(unittest.TestCase):
     """_do_mark_failed must log failure, optionally requeue, handle cooldowns."""
 
     def _call(self, requeue=True, outcome_label="rejected",
-              search_filetype_override=None, dl_info=None):
+              search_filetype_override=None, dl_info=None,
+              validation_result=None, staged_path=None):
         from lib.import_dispatch import _do_mark_failed
         db = MagicMock()
         db.get_request.return_value = make_request_row(status="downloading")
@@ -103,6 +104,8 @@ class TestDoMarkFailed(unittest.TestCase):
             requeue=requeue,
             outcome_label=outcome_label,
             search_filetype_override=search_filetype_override,
+            validation_result=validation_result,
+            staged_path=staged_path,
         )
         return db
 
@@ -147,6 +150,17 @@ class TestDoMarkFailed(unittest.TestCase):
         db = self._call(requeue=True, search_filetype_override="flac,mp3 v0")
         reset_kwargs = db.reset_to_wanted.call_args.kwargs
         self.assertEqual(reset_kwargs.get("search_filetype_override"), "flac,mp3 v0")
+
+    def test_explicit_validation_result_and_staged_path_logged(self):
+        """Explicit failure audit payloads must be forwarded to download_log."""
+        db = self._call(
+            requeue=False,
+            validation_result='{"scenario":"quality_downgrade"}',
+            staged_path="/tmp/staged/Artist - Album",
+        )
+        log_kwargs = db.log_download.call_args.kwargs
+        self.assertEqual(log_kwargs["validation_result"], '{"scenario":"quality_downgrade"}')
+        self.assertEqual(log_kwargs["staged_path"], "/tmp/staged/Artist - Album")
 
 
 if __name__ == "__main__":
