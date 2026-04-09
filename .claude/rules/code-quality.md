@@ -69,6 +69,15 @@
 - Before marking any feature complete, trace the full path from trigger to effect. Ask: "Does this actually run in production without manual intervention?" If not, it's not done.
 - A new dataclass that nothing constructs, a config option nobody sets, a fallback that never triggers — these are all incomplete work, not shipped features.
 
+## No Parallel Code Paths
+- Never create a second function that calls the same subprocess (import_one.py, beets_harness.py, etc.). If a new entry point needs the pipeline, write an adapter that constructs the existing function's inputs and delegates. If the interface makes this painful, fix the interface — don't route around it.
+- Never construct `SoularrConfig` with positional/keyword args for a subset of fields. Always use `SoularrConfig.from_ini()` with the runtime config file. Partial configs silently diverge when new config fields are added.
+- Before adding a new function that "does roughly what X does but simpler," check if X can be called with an adapter. The adapter may be ugly — that's a signal to improve X's interface, not to duplicate X.
+
+## Test Behaviors Not Implementations
+- Tests for import/pipeline paths must assert **pipeline behaviors** (quality gate runs, meelo triggers, downgrade prevented, denylist applied), not implementation details (correct subprocess args). If a test only verifies that function A calls function B with the right args, it locks in the implementation without protecting the behavior.
+- When you write a test for a new entry point (force-import, manual-import, web API), ask: "if someone replaced this with a simpler function that skips the quality gate, would this test catch it?" If not, the test is testing plumbing, not behavior.
+
 ## Pre-Commit Review Gate
 - For non-trivial changes (new dataclasses, refactored function signatures, new pipeline paths), spawn an Opus agent to review the diff before committing.
 - The agent should check: correctness bugs, test gaps, callers you missed, type errors, unfinished wiring.
