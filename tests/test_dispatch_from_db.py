@@ -9,8 +9,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from lib.quality import (DownloadInfo, ImportResult, ConversionInfo,
-                         AudioQualityMeasurement, PostflightInfo,
-                         SpectralMeasurement)
+                         AudioQualityMeasurement, PostflightInfo)
 from tests.helpers import make_request_row
 
 
