@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -282,70 +283,114 @@ class TestRawConfigParserRegression(unittest.TestCase):
 class TestMainCLIParsing(unittest.TestCase):
     """Test the CLI argument parsing and config loading path in main()."""
 
+    class _StopMain(Exception):
+        """Sentinel to stop main() after config parsing in tests."""
+
+    def _write_minimal_config(self, directory: str, *, api_key: str = "test-key") -> str:
+        path = os.path.join(directory, "config.ini")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                "[Slskd]\n"
+                f"api_key = {api_key}\n"
+                "host_url = http://localhost:5030\n"
+                "download_dir = /tmp/test\n"
+                "[Pipeline DB]\n"
+                "enabled = True\n"
+                "dsn = postgresql://test@localhost/test\n"
+            )
+        return path
+
+    def _run_main_until_config_parse(self, argv: list[str], callback) -> None:
+        import soularr
+
+        soularr.cfg = None
+        soularr.pipeline_db_source = None
+        soularr._module_ctx = None
+
+        def fake_from_ini(config, config_dir=".", var_dir="."):
+            callback(config, config_dir, var_dir)
+            raise self._StopMain()
+
+        with patch.object(sys, "argv", argv), \
+             patch("lib.config.SoularrConfig.from_ini", side_effect=fake_from_ini):
+            with self.assertRaises(self._StopMain):
+                soularr.main()
+
     def test_missing_config_exits_with_error(self):
         """main() exits 1 when config.ini doesn't exist at --config-dir."""
+        import soularr
+
         with tempfile.TemporaryDirectory() as d:
-            # No config.ini in d
-            with self.assertRaises(SystemExit) as cm:
-                sys.argv = ["soularr", "--config-dir", d, "--var-dir", d, "--no-lock-file"]
-                # Import main fresh to get the parser
-                import soularr
-                soularr.main()
+            with patch.object(sys, "argv", [
+                "soularr", "--config-dir", d, "--var-dir", d, "--no-lock-file"
+            ]):
+                with self.assertRaises(SystemExit) as cm:
+                    soularr.main()
             self.assertEqual(cm.exception.code, 1)
 
     def test_config_dir_resolves_config_path(self):
         """--config-dir joins with config.ini to find the config file."""
         with tempfile.TemporaryDirectory() as d:
-            # Write a minimal config.ini — main() will exit later when it
-            # tries to connect to slskd, but we just need to verify it found the file.
-            config_path = os.path.join(d, "config.ini")
-            with open(config_path, "w") as f:
-                f.write("[Slskd]\napi_key = test\nhost_url = http://localhost:5030\n"
-                        "download_dir = /tmp/test\n"
-                        "[Pipeline DB]\nenabled = True\n"
-                        "dsn = postgresql://test@localhost/test\n")
-            # The config file exists, so main() won't exit with "not found"
-            import argparse
-            parser = argparse.ArgumentParser()
-            parser.add_argument("-c", "--config-dir", default=".")
-            parser.add_argument("-v", "--var-dir", default=".")
-            parser.add_argument("--no-lock-file", action="store_true")
-            args = parser.parse_args(["--config-dir", d, "--no-lock-file"])
-            config_file_path = os.path.join(args.config_dir, "config.ini")
-            self.assertTrue(os.path.exists(config_file_path))
+            self._write_minimal_config(d, api_key="from-config-dir")
+
+            def assert_from_ini(config, config_dir, var_dir):
+                self.assertIsInstance(config, configparser.RawConfigParser)
+                self.assertEqual(config_dir, d)
+                self.assertEqual(var_dir, d)
+                self.assertEqual(config.get("Slskd", "api_key"), "from-config-dir")
+
+            self._run_main_until_config_parse(
+                ["soularr", "--config-dir", d, "--var-dir", d, "--no-lock-file"],
+                assert_from_ini,
+            )
 
     def test_lock_file_created_in_var_dir(self):
         """Lock file path is var_dir/.soularr.lock."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("-c", "--config-dir", default=".")
-        parser.add_argument("-v", "--var-dir", default=".")
-        parser.add_argument("--no-lock-file", action="store_true")
-        args = parser.parse_args(["--var-dir", "/custom/var"])
-        lock_path = os.path.join(args.var_dir, ".soularr.lock")
-        self.assertEqual(lock_path, "/custom/var/.soularr.lock")
+        with tempfile.TemporaryDirectory() as config_dir, tempfile.TemporaryDirectory() as var_dir:
+            self._write_minimal_config(config_dir)
+            lock_path = os.path.join(var_dir, ".soularr.lock")
+
+            def assert_from_ini(config, actual_config_dir, actual_var_dir):
+                self.assertEqual(actual_config_dir, config_dir)
+                self.assertEqual(actual_var_dir, var_dir)
+                self.assertTrue(os.path.exists(lock_path))
+
+            self._run_main_until_config_parse(
+                ["soularr", "--config-dir", config_dir, "--var-dir", var_dir],
+                assert_from_ini,
+            )
 
     def test_no_lock_file_flag(self):
         """--no-lock-file sets the flag to True."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("-c", "--config-dir", default=".")
-        parser.add_argument("-v", "--var-dir", default=".")
-        parser.add_argument("--no-lock-file", action="store_true")
-        args = parser.parse_args(["--no-lock-file"])
-        self.assertTrue(args.no_lock_file)
+        with tempfile.TemporaryDirectory() as d:
+            self._write_minimal_config(d)
+            lock_path = os.path.join(d, ".soularr.lock")
+
+            def assert_from_ini(config, config_dir, var_dir):
+                self.assertEqual(config_dir, d)
+                self.assertEqual(var_dir, d)
+                self.assertFalse(os.path.exists(lock_path))
+
+            self._run_main_until_config_parse(
+                ["soularr", "--config-dir", d, "--var-dir", d, "--no-lock-file"],
+                assert_from_ini,
+            )
 
     def test_default_args(self):
         """Default config-dir and var-dir are cwd."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("-c", "--config-dir", default=os.getcwd())
-        parser.add_argument("-v", "--var-dir", default=os.getcwd())
-        parser.add_argument("--no-lock-file", action="store_true")
-        args = parser.parse_args([])
-        self.assertEqual(args.config_dir, os.getcwd())
-        self.assertEqual(args.var_dir, os.getcwd())
-        self.assertFalse(args.no_lock_file)
+        with tempfile.TemporaryDirectory() as cwd:
+            self._write_minimal_config(cwd, api_key="from-default-cwd")
+
+            def assert_from_ini(config, config_dir, var_dir):
+                self.assertEqual(config_dir, cwd)
+                self.assertEqual(var_dir, cwd)
+                self.assertEqual(config.get("Slskd", "api_key"), "from-default-cwd")
+
+            with patch("soularr.os.getcwd", return_value=cwd):
+                self._run_main_until_config_parse(
+                    ["soularr", "--no-lock-file"],
+                    assert_from_ini,
+                )
 
 
 if __name__ == "__main__":
