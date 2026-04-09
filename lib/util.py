@@ -42,6 +42,7 @@ def sanitize_folder_name(folder_name: str) -> str:
 
 
 _BAD_FILE_SCENARIOS = frozenset({"audio_corrupt", "spectral_reject"})
+FAILED_IMPORT_SEARCH_DIRS = ("/mnt/virtio/music/slskd",)
 
 
 def move_failed_import(src_path: str, scenario: str | None = None) -> str | None:
@@ -75,6 +76,31 @@ def move_failed_import(src_path: str, scenario: str | None = None) -> str | None
     shutil.move(src_path, target_path)
     logger.info(f"Failed import moved to: {target_path}")
     return target_path
+
+
+def resolve_failed_path(
+    failed_path: str,
+    search_dirs: Sequence[str] | None = None,
+) -> str | None:
+    """Resolve a failed-path entry to an existing absolute directory.
+
+    Older download_log rows stored paths relative to the slskd download root
+    (for example ``failed_imports/Foo - Bar``). Newer rows store absolute
+    paths. This helper accepts either representation and returns an absolute
+    path when the directory still exists.
+    """
+    if not failed_path:
+        return None
+
+    if os.path.isdir(failed_path):
+        return os.path.abspath(failed_path)
+
+    for base in search_dirs or FAILED_IMPORT_SEARCH_DIRS:
+        candidate = os.path.join(base, failed_path)
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+
+    return None
 
 
 def stage_to_ai(album_data: GrabListEntry, source_path: str, staging_dir: str) -> str:

@@ -715,11 +715,12 @@ class PipelineDB:
     # -- Wrong matches ---------------------------------------------------------
 
     def get_wrong_matches(self) -> list[dict[str, object]]:
-        """Return the latest rejected wrong-match download per request.
+        """Return the latest rejected wrong-match candidate per request.
 
-        Filters: outcome='rejected', scenario not in (audio_corrupt, spectral_reject),
-        album has no files in beets (min_bitrate IS NULL), and failed_path is set.
-        Returns most recent download_log entry per request_id.
+        This is the PostgreSQL side of the query only: rejected rows with a
+        failed_path that are eligible for manual review. The route layer applies
+        the BeetsDB filter so "already in library" stays consistent with the
+        rest of the web UI.
         """
         cur = self._execute("""
             SELECT DISTINCT ON (dl.request_id)
@@ -733,7 +734,6 @@ class PipelineDB:
             FROM download_log dl
             JOIN album_requests ar ON dl.request_id = ar.id
             WHERE dl.outcome = 'rejected'
-              AND ar.min_bitrate IS NULL
               AND dl.validation_result->>'failed_path' IS NOT NULL
               AND (dl.validation_result->>'scenario' IS NULL
                    OR dl.validation_result->>'scenario' NOT IN ('audio_corrupt', 'spectral_reject'))

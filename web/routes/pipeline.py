@@ -13,6 +13,7 @@ from lib.import_service import run_import, log_and_update_import  # type: ignore
 from lib.quality import (QUALITY_LOSSLESS, QUALITY_UPGRADE_TIERS,  # type: ignore[import-not-found]
                          should_clear_lossless_search_override)
 from lib.transitions import apply_transition  # type: ignore[import-not-found]
+from lib.util import resolve_failed_path  # type: ignore[import-not-found]
 from quality import get_decision_tree, full_pipeline_decision  # type: ignore[import-not-found]
 from spectral_check import (HF_DEFICIT_SUSPECT, HF_DEFICIT_MARGINAL,  # type: ignore[import-not-found]
                              ALBUM_SUSPECT_PCT, MIN_CLIFF_SLICES,
@@ -575,15 +576,11 @@ def post_pipeline_force_import(h, body: dict) -> None:
         h._error("Album has no MusicBrainz release ID")
         return
 
-    if not os.path.isdir(failed_path):
-        for base in ["/mnt/virtio/music/slskd"]:
-            candidate = os.path.join(base, failed_path)
-            if os.path.isdir(candidate):
-                failed_path = candidate
-                break
-    if not os.path.isdir(failed_path):
+    resolved_path = resolve_failed_path(str(failed_path))
+    if resolved_path is None:
         h._error(f"Files not found at: {failed_path}")
         return
+    failed_path = resolved_path
 
     import_one_path = os.path.join(
         os.path.dirname(__file__), "..", "..", "harness", "import_one.py")

@@ -37,6 +37,7 @@ REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "lib"))
 from pipeline_db import PipelineDB, DEFAULT_DSN
+from util import resolve_failed_path as _shared_resolve_failed_path
 
 MB_API = "http://192.168.1.35:5200/ws/2"
 
@@ -695,13 +696,10 @@ def _resolve_failed_path(failed_path: str) -> "str | None":
     New entries store absolute paths. Try the path as-is first, then
     resolve against known slskd download dirs.
     """
-    if os.path.isdir(failed_path):
-        return failed_path
-    for base in SLSKD_DOWNLOAD_DIRS:
-        candidate = os.path.join(base, failed_path)
-        if os.path.isdir(candidate):
-            return candidate
-    return None
+    return _shared_resolve_failed_path(
+        failed_path,
+        search_dirs=SLSKD_DOWNLOAD_DIRS,
+    )
 
 
 def cmd_force_import(db, args):

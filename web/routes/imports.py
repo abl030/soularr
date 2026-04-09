@@ -14,11 +14,57 @@ from lib.manual_import import (  # type: ignore[import-not-found]
     match_folders_to_requests,
     ImportRequest,
 )
+from lib.util import resolve_failed_path  # type: ignore[import-not-found]
 
 
 def _server():
     from web import server  # type: ignore[import-not-found]
     return server
+
+
+def _parse_validation_result(vr_raw: object) -> dict[str, object]:
+    """Parse a validation_result JSONB value into a plain dict."""
+    if isinstance(vr_raw, dict):
+        return vr_raw
+    if not vr_raw:
+        return {}
+    return json.loads(str(vr_raw))
+
+
+def _is_album_in_beets(
+    row: dict[str, object],
+    beets_info: dict[str, dict[str, object]],
+) -> bool:
+    """Match wrong-match entries against the live beets library."""
+    mbid = row.get("mb_release_id")
+    if isinstance(mbid, str) and mbid and mbid in beets_info:
+        return True
+
+    artist = row.get("artist_name")
+    album = row.get("album_title")
+    if not isinstance(artist, str) or not isinstance(album, str):
+        return False
+
+    return _server().check_beets_by_artist_album(artist, album) is not None
+
+
+def _target_candidate(vr: dict[str, object]) -> dict[str, object] | None:
+    """Return the target candidate from a validation_result payload."""
+    raw_candidates = vr.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        return None
+
+    candidates = [
+        candidate for candidate in raw_candidates
+        if isinstance(candidate, dict)
+    ]
+    target = next(
+        (candidate for candidate in candidates if candidate.get("is_target")),
+        None,
+    )
+    if target is not None:
+        return target
+    return candidates[0] if candidates else None
 
 
 def get_manual_import_scan(h, params: dict[str, list[str]]) -> None:
@@ -107,22 +153,26 @@ def post_manual_import(h, body: dict) -> None:
 
 def get_wrong_matches(h, params: dict[str, list[str]]) -> None:
     """List wrong-match rejections for albums not yet in beets."""
-    pdb = _server()._db()
+    srv = _server()
+    pdb = srv._db()
     rows = pdb.get_wrong_matches()
+    mbids = [
+        mbid for row in rows
+        for mbid in [row.get("mb_release_id")]
+        if isinstance(mbid, str) and mbid
+    ]
+    beets_info = srv.check_beets_library_detail(mbids) if mbids else {}
 
     entries = []
     for row in rows:
-        vr_raw = row.get("validation_result")
-        vr: dict = (
-            vr_raw if isinstance(vr_raw, dict)
-            else json.loads(str(vr_raw)) if vr_raw else {}
-        )
-        failed_path: str = vr.get("failed_path", "")
-        # Extract the target candidate (is_target=True or first candidate)
-        candidates = vr.get("candidates", [])
-        target = next((c for c in candidates if c.get("is_target")), None)
-        if not target and candidates:
-            target = candidates[0]
+        if _is_album_in_beets(row, beets_info):
+            continue
+
+        vr = _parse_validation_result(row.get("validation_result"))
+        failed_path_raw = vr.get("failed_path")
+        failed_path = failed_path_raw if isinstance(failed_path_raw, str) else ""
+        resolved_path = resolve_failed_path(failed_path)
+        target = _target_candidate(vr)
 
         entries.append({
             "download_log_id": row["download_log_id"],
@@ -130,8 +180,8 @@ def get_wrong_matches(h, params: dict[str, list[str]]) -> None:
             "artist": row["artist_name"],
             "album": row["album_title"],
             "mb_release_id": row.get("mb_release_id"),
-            "failed_path": failed_path,
-            "files_exist": bool(failed_path and os.path.isdir(failed_path)),
+            "failed_path": resolved_path or failed_path,
+            "files_exist": resolved_path is not None,
             "distance": vr.get("distance"),
             "scenario": vr.get("scenario"),
             "detail": vr.get("detail"),
@@ -157,16 +207,14 @@ def post_wrong_match_delete(h, body: dict) -> None:
         h._error(f"Download log entry {log_id} not found", 404)
         return
 
-    vr_raw = entry.get("validation_result")
-    vr: dict = (
-        vr_raw if isinstance(vr_raw, dict)
-        else json.loads(str(vr_raw)) if vr_raw else {}
-    )
-    failed_path: str = vr.get("failed_path", "")
+    vr = _parse_validation_result(entry.get("validation_result"))
+    failed_path_raw = vr.get("failed_path")
+    failed_path = failed_path_raw if isinstance(failed_path_raw, str) else ""
+    resolved_path = resolve_failed_path(failed_path)
 
     # Delete files from disk if they exist
-    if failed_path and os.path.isdir(failed_path):
-        shutil.rmtree(failed_path)
+    if resolved_path is not None:
+        shutil.rmtree(resolved_path)
 
     # Clear failed_path so it stops appearing in wrong matches list
     pdb.clear_wrong_match_path(int(log_id))
