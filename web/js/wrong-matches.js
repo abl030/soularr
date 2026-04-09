@@ -47,7 +47,7 @@ export function invalidateWrongMatches() {
  * @param {HTMLElement} el
  */
 function renderWrongMatches(data, el) {
-  const entries = data.entries || [];
+  const entries = (data.entries || []).filter(e => e.files_exist);
   if (entries.length === 0) {
     el.innerHTML = '<div style="color:#888;padding:12px;">No wrong matches in failed_imports.</div>';
     return;
