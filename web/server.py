@@ -263,6 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         "/api/pipeline/delete": ("pipeline", "mb"),
         "/api/beets/delete": ("library", "mb"),
         "/api/manual-import/import": ("pipeline", "library", "mb"),
+        "/api/wrong-matches/delete": ("pipeline",),
     }
 
     def _cache_ttl_for_path(self, path: str) -> int | None:

@@ -1,6 +1,9 @@
-"""Manual import route handlers — scan and import."""
+"""Manual import route handlers — scan, import, wrong matches."""
 
-import os, sys
+import json
+import os
+import shutil
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -102,9 +105,80 @@ def post_manual_import(h, body: dict) -> None:
     })
 
 
+def get_wrong_matches(h, params: dict[str, list[str]]) -> None:
+    """List wrong-match rejections for albums not yet in beets."""
+    pdb = _server()._db()
+    rows = pdb.get_wrong_matches()
+
+    entries = []
+    for row in rows:
+        vr_raw = row.get("validation_result")
+        vr: dict = (
+            vr_raw if isinstance(vr_raw, dict)
+            else json.loads(str(vr_raw)) if vr_raw else {}
+        )
+        failed_path: str = vr.get("failed_path", "")
+        # Extract the target candidate (is_target=True or first candidate)
+        candidates = vr.get("candidates", [])
+        target = next((c for c in candidates if c.get("is_target")), None)
+        if not target and candidates:
+            target = candidates[0]
+
+        entries.append({
+            "download_log_id": row["download_log_id"],
+            "request_id": row["request_id"],
+            "artist": row["artist_name"],
+            "album": row["album_title"],
+            "mb_release_id": row.get("mb_release_id"),
+            "failed_path": failed_path,
+            "files_exist": bool(failed_path and os.path.isdir(failed_path)),
+            "distance": vr.get("distance"),
+            "scenario": vr.get("scenario"),
+            "detail": vr.get("detail"),
+            "soulseek_username": row.get("soulseek_username")
+                or vr.get("soulseek_username"),
+            "candidate": target,
+            "local_items": vr.get("items", []),
+        })
+
+    h._json({"entries": entries})
+
+
+def post_wrong_match_delete(h, body: dict) -> None:
+    """Delete files for a wrong match and clear its failed_path."""
+    log_id = body.get("download_log_id")
+    if not log_id:
+        h._error("Missing download_log_id")
+        return
+
+    pdb = _server()._db()
+    entry = pdb.get_download_log_entry(int(log_id))
+    if not entry:
+        h._error(f"Download log entry {log_id} not found", 404)
+        return
+
+    vr_raw = entry.get("validation_result")
+    vr: dict = (
+        vr_raw if isinstance(vr_raw, dict)
+        else json.loads(str(vr_raw)) if vr_raw else {}
+    )
+    failed_path: str = vr.get("failed_path", "")
+
+    # Delete files from disk if they exist
+    if failed_path and os.path.isdir(failed_path):
+        shutil.rmtree(failed_path)
+
+    # Clear failed_path so it stops appearing in wrong matches list
+    pdb.clear_wrong_match_path(int(log_id))
+
+    h._json({"status": "ok", "download_log_id": log_id})
+
+
 GET_ROUTES: dict[str, object] = {
     "/api/manual-import/scan": get_manual_import_scan,
+    "/api/wrong-matches": get_wrong_matches,
 }
 POST_ROUTES: dict[str, object] = {
     "/api/manual-import/import": post_manual_import,
+    "/api/wrong-matches/delete": post_wrong_match_delete,
 }

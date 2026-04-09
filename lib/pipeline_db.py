@@ -712,6 +712,47 @@ class PipelineDB:
             result[rid].append(r)
         return result
 
+    # -- Wrong matches ---------------------------------------------------------
+
+    def get_wrong_matches(self) -> list[dict[str, object]]:
+        """Return the latest rejected wrong-match download per request.
+
+        Filters: outcome='rejected', scenario not in (audio_corrupt, spectral_reject),
+        album has no files in beets (min_bitrate IS NULL), and failed_path is set.
+        Returns most recent download_log entry per request_id.
+        """
+        cur = self._execute("""
+            SELECT DISTINCT ON (dl.request_id)
+                dl.id AS download_log_id,
+                dl.request_id,
+                ar.artist_name,
+                ar.album_title,
+                ar.mb_release_id,
+                dl.soulseek_username,
+                dl.validation_result
+            FROM download_log dl
+            JOIN album_requests ar ON dl.request_id = ar.id
+            WHERE dl.outcome = 'rejected'
+              AND ar.min_bitrate IS NULL
+              AND dl.validation_result->>'failed_path' IS NOT NULL
+              AND (dl.validation_result->>'scenario' IS NULL
+                   OR dl.validation_result->>'scenario' NOT IN ('audio_corrupt', 'spectral_reject'))
+            ORDER BY dl.request_id, dl.id DESC
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
+    def clear_wrong_match_path(self, log_id: int) -> bool:
+        """Null out failed_path in validation_result for a download_log entry.
+
+        Returns True if the entry was found and updated.
+        """
+        cur = self._execute("""
+            UPDATE download_log
+            SET validation_result = validation_result - 'failed_path'
+            WHERE id = %s AND validation_result->>'failed_path' IS NOT NULL
+        """, (log_id,))
+        return cur.rowcount > 0
+
     # -- Search log -----------------------------------------------------------
 
     def log_search(self, request_id: int, query: str | None = None,
