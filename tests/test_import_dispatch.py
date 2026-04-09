@@ -304,7 +304,14 @@ class TestDispatchImport(unittest.TestCase):
 
 
 class TestOverrideMinBitrate(unittest.TestCase):
-    """Test that --override-min-bitrate uses spectral when lower than container."""
+    """Test that dispatch_import passes the effective override bitrate to import_one.py.
+
+    NOTE: These test subprocess arg wiring, not the decision logic itself.
+    The pure decision function (compute_effective_override_bitrate) is tested
+    in test_quality_decisions.py. These tests will break if import_one becomes
+    a library call (#48) — that's acceptable; they should be replaced with
+    behavioral tests at that point.
+    """
 
     def _get_override_value(self, db_fields):
         """Run dispatch_import with a mock DB request, return the override passed."""
@@ -591,7 +598,13 @@ class TestQualityGatePreservesTargetFormat(unittest.TestCase):
 
 
 class TestOpusConversionDispatch(unittest.TestCase):
-    """Test --verified-lossless-target flag passing and target dl_info population."""
+    """Test --verified-lossless-target flag wiring and dl_info population.
+
+    NOTE: Flag-passing tests (test_target_flag_*) test subprocess arg wiring.
+    They will break if import_one becomes a library call (#48). The dl_info
+    population test (test_opus_import_result_populates_dl_info) tests real
+    behavior and should survive any refactor.
+    """
 
     def _get_cmd(self, verified_lossless_target=""):
         """Run dispatch_import, capture the cmd passed to sp.run."""
@@ -649,7 +662,11 @@ class TestOpusConversionDispatch(unittest.TestCase):
 
 
 class TestTargetFormatDispatch(unittest.TestCase):
-    """Test --target-format flag passing from dispatch_import to import_one.py."""
+    """Test --target-format flag wiring from dispatch_import to import_one.py.
+
+    NOTE: Subprocess arg wiring tests — will break if import_one becomes a
+    library call (#48).
+    """
 
     def _get_cmd(self, target_format=None):
         from lib.import_dispatch import dispatch_import

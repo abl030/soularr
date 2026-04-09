@@ -90,7 +90,7 @@ def _make_server():
             "mb_release_id": "abc-123", "year": 2024,
             "country": "US", "request_status": "imported",
             "request_min_bitrate": 320, "prev_min_bitrate": None,
-            "quality_override": None, "source": "request",
+            "search_filetype_override": None, "source": "request",
         },
     ]
     mock_db._execute.return_value = MagicMock(
@@ -583,6 +583,12 @@ class TestWrongMatchesContract(unittest.TestCase):
         "soulseek_username", "candidate", "local_items", "in_library",
     }
 
+    FIELD_TYPES = {
+        "download_log_id": int, "request_id": int, "artist": str,
+        "album": str, "failed_path": str, "files_exist": bool,
+        "distance": (int, float, type(None)), "in_library": bool,
+    }
+
     def test_response_has_entries_with_required_fields(self):
         status, data = self._get("/api/wrong-matches")
         self.assertEqual(status, 200)
@@ -592,6 +598,10 @@ class TestWrongMatchesContract(unittest.TestCase):
         for entry in entries:
             missing = self.REQUIRED_FIELDS - set(entry.keys())
             self.assertFalse(missing, f"Missing fields: {missing}")
+            # Verify types for fields with known expected types
+            for field, expected_type in self.FIELD_TYPES.items():
+                self.assertIsInstance(entry[field], expected_type,
+                    f"{field}={entry[field]!r} should be {expected_type}")
 
     def test_candidate_has_distance_breakdown(self):
         status, data = self._get("/api/wrong-matches")
@@ -713,6 +723,11 @@ class TestLibraryArtistContract(unittest.TestCase):
         "formats", "min_bitrate", "type", "label", "country", "source",
     }
 
+    FIELD_TYPES = {
+        "id": int, "album": str, "artist": str, "year": int,
+        "track_count": int, "min_bitrate": int, "added": float,
+    }
+
     def test_response_has_all_required_fields(self):
         """Every album dict must include all fields the frontend JS uses."""
         import web.server as srv
@@ -722,6 +737,10 @@ class TestLibraryArtistContract(unittest.TestCase):
             missing = self.REQUIRED_FIELDS - set(album.keys())
             self.assertFalse(missing,
                 f"Album '{album.get('album')}' missing fields: {missing}")
+            # Verify types for critical fields
+            for field, expected_type in self.FIELD_TYPES.items():
+                self.assertIsInstance(album[field], expected_type,
+                    f"{field}={album[field]!r} should be {expected_type}")
 
     def test_release_group_fields_populated(self):
         """mb_releasegroupid and release_group_title must have actual values."""
