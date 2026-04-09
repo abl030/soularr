@@ -5,6 +5,7 @@ Starts a real HTTP server on a random port with mocked DB,
 verifying response codes, JSON structure, and error handling.
 """
 
+import copy
 import json
 import os
 import sys
@@ -25,6 +26,43 @@ _MOCK_PIPELINE_REQUEST = make_request_row(
     id=100, status="imported", min_bitrate=320,
     imported_path="/mnt/virtio/Music/Beets/Test",
 )
+
+_DEFAULT_WRONG_MATCH_ROW = {
+    "download_log_id": 42,
+    "request_id": 100,
+    "artist_name": "Test Artist",
+    "album_title": "Test Album",
+    "mb_release_id": "abc-123",
+    "soulseek_username": "testuser",
+    "validation_result": {
+        "distance": 0.25,
+        "scenario": "high_distance",
+        "detail": "distance too high",
+        "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
+        "soulseek_username": "testuser",
+        "candidates": [{
+            "is_target": True,
+            "artist": "Test Artist",
+            "album": "Test Album",
+            "distance": 0.25,
+            "distance_breakdown": {"tracks": 0.15, "album": 0.10},
+            "track_count": 10,
+            "mapping": [],
+            "extra_items": [],
+            "extra_tracks": [],
+        }],
+        "items": [{"path": "01 Track.mp3", "title": "Track"}],
+    },
+}
+
+_DEFAULT_WRONG_MATCH_ENTRY = {
+    "id": 42,
+    "request_id": 100,
+    "validation_result": {
+        "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
+        "scenario": "high_distance",
+    },
+}
 
 
 def _make_server():
@@ -80,42 +118,8 @@ def _make_server():
         },
     ]
 
-    mock_db.get_wrong_matches.return_value = [
-        {
-            "download_log_id": 42,
-            "request_id": 100,
-            "artist_name": "Test Artist",
-            "album_title": "Test Album",
-            "mb_release_id": "abc-123",
-            "soulseek_username": "testuser",
-            "validation_result": {
-                "distance": 0.25,
-                "scenario": "high_distance",
-                "detail": "distance too high",
-                "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
-                "soulseek_username": "testuser",
-                "candidates": [{
-                    "is_target": True,
-                    "artist": "Test Artist",
-                    "album": "Test Album",
-                    "distance": 0.25,
-                    "distance_breakdown": {"tracks": 0.15, "album": 0.10},
-                    "track_count": 10,
-                    "mapping": [],
-                    "extra_items": [],
-                    "extra_tracks": [],
-                }],
-                "items": [{"path": "01 Track.mp3", "title": "Track"}],
-            },
-        },
-    ]
-    mock_db.get_download_log_entry.return_value = {
-        "id": 42, "request_id": 100,
-        "validation_result": {
-            "failed_path": "/mnt/virtio/music/slskd/failed_imports/Test",
-            "scenario": "high_distance",
-        },
-    }
+    mock_db.get_wrong_matches.return_value = [copy.deepcopy(_DEFAULT_WRONG_MATCH_ROW)]
+    mock_db.get_download_log_entry.return_value = copy.deepcopy(_DEFAULT_WRONG_MATCH_ENTRY)
     mock_db.clear_wrong_match_path.return_value = True
 
     srv.db = mock_db
@@ -539,6 +543,11 @@ class TestWrongMatchesContract(unittest.TestCase):
         except HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def setUp(self) -> None:
+        self.mock_db.get_wrong_matches.return_value = [copy.deepcopy(_DEFAULT_WRONG_MATCH_ROW)]
+        self.mock_db.get_download_log_entry.return_value = copy.deepcopy(_DEFAULT_WRONG_MATCH_ENTRY)
+        self.mock_db.clear_wrong_match_path.reset_mock()
+
     REQUIRED_FIELDS = {
         "download_log_id", "request_id", "artist", "album", "mb_release_id",
         "failed_path", "files_exist", "distance", "scenario", "detail",
@@ -571,6 +580,39 @@ class TestWrongMatchesContract(unittest.TestCase):
         status, data = self._post("/api/wrong-matches/delete", {"download_log_id": 42})
         self.assertEqual(status, 200)
         self.assertEqual(data["status"], "ok")
+
+    @patch("routes.imports.resolve_failed_path", return_value="/mnt/virtio/music/slskd/failed_imports/Test")
+    def test_relative_failed_path_uses_resolved_path(self, _mock_resolve):
+        row = copy.deepcopy(_DEFAULT_WRONG_MATCH_ROW)
+        row["validation_result"]["failed_path"] = "failed_imports/Test"
+        self.mock_db.get_wrong_matches.return_value = [row]
+
+        status, data = self._get("/api/wrong-matches")
+
+        self.assertEqual(status, 200)
+        entry = data["entries"][0]
+        self.assertTrue(entry["files_exist"])
+        self.assertEqual(entry["failed_path"], "/mnt/virtio/music/slskd/failed_imports/Test")
+
+    @patch("routes.imports.shutil.rmtree")
+    @patch("routes.imports.resolve_failed_path", return_value="/mnt/virtio/music/slskd/failed_imports/Test")
+    def test_delete_relative_failed_path_removes_resolved_directory(self, _mock_resolve, mock_rmtree):
+        entry = copy.deepcopy(_DEFAULT_WRONG_MATCH_ENTRY)
+        entry["validation_result"]["failed_path"] = "failed_imports/Test"
+        self.mock_db.get_download_log_entry.return_value = entry
+
+        status, data = self._post("/api/wrong-matches/delete", {"download_log_id": 42})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "ok")
+        mock_rmtree.assert_called_once_with("/mnt/virtio/music/slskd/failed_imports/Test")
+
+    @patch("web.server.check_beets_library_detail", return_value={"abc-123": {"beets_tracks": 10}})
+    def test_entries_already_in_beets_are_filtered_out(self, _mock_beets_detail):
+        status, data = self._get("/api/wrong-matches")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["entries"], [])
 
 
 class TestLibraryArtistContract(unittest.TestCase):
