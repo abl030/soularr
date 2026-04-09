@@ -17,14 +17,14 @@ from tests.fakes import FakePipelineDB
 class TestDispatchFromDbOrchestration(unittest.TestCase):
     """Orchestration tests — assert domain state after force/manual import."""
 
-    def _dispatch(self, force=True, ir=None,
+    def _dispatch(self, force=True, ir=None, outcome_label=None,
                   source_username=None, **req_overrides):
         from lib.import_dispatch import dispatch_import_from_db
 
         db = FakePipelineDB()
         req = make_request_row(
             id=42, mb_release_id="mbid-123",
-            status="downloading",
+            status="manual",
             artist_name="Son Ambulance",
             album_title="Someone Else's Deja Vu",
             min_bitrate=180, current_spectral_bitrate=128,
@@ -35,13 +35,15 @@ class TestDispatchFromDbOrchestration(unittest.TestCase):
 
         if ir is None:
             ir = make_import_result(decision="import", new_min_bitrate=320)
+        if outcome_label is None:
+            outcome_label = "force_import" if force else "manual_import"
 
         tmpdir = tempfile.mkdtemp()
         try:
             with patch("lib.import_dispatch.sp.run") as mock_run, \
                  patch("lib.import_dispatch._cleanup_staged_dir"), \
-                 patch("lib.util.trigger_meelo_scan"), \
-                 patch("lib.import_dispatch._check_quality_gate_core"), \
+                 patch("lib.util.trigger_meelo_scan") as mock_meelo, \
+                 patch("lib.import_dispatch._check_quality_gate_core") as mock_gate, \
                  patch("lib.import_dispatch.parse_import_result", return_value=ir), \
                  patch("lib.util.trigger_plex_scan"), \
                  patch("lib.import_dispatch.cleanup_disambiguation_orphans",
@@ -55,6 +57,7 @@ class TestDispatchFromDbOrchestration(unittest.TestCase):
                 result = dispatch_import_from_db(
                     db, request_id=42, failed_path=tmpdir,  # type: ignore[arg-type]
                     force=force, source_username=source_username,
+                    outcome_label=outcome_label,
                 )
                 cmd = mock_run.call_args[0][0] if mock_run.call_args else []
         finally:
@@ -66,6 +69,8 @@ class TestDispatchFromDbOrchestration(unittest.TestCase):
             "cmd": cmd,
             "db": db,
             "path": tmpdir,
+            "mock_gate": mock_gate,
+            "mock_meelo": mock_meelo,
         }
 
     # --- Success path ---
@@ -80,6 +85,13 @@ class TestDispatchFromDbOrchestration(unittest.TestCase):
         logs = r["db"].download_logs
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].outcome, "force_import")
+
+    def test_successful_force_and_manual_imports_run_post_import_pipeline(self):
+        for force in (True, False):
+            with self.subTest(force=force):
+                r = self._dispatch(force=force)
+                r["mock_gate"].assert_called_once()
+                r["mock_meelo"].assert_called_once()
 
     def test_no_double_download_log(self):
         r = self._dispatch()
@@ -107,13 +119,13 @@ class TestDispatchFromDbOrchestration(unittest.TestCase):
         ir = make_import_result(decision="downgrade",
                                 new_min_bitrate=128, prev_min_bitrate=180)
         r = self._dispatch(ir=ir)
-        self.assertNotEqual(r["db"].request(42)["status"], "wanted")
+        self.assertEqual(r["db"].request(42)["status"], "manual")
 
     def test_transcode_downgrade_does_not_requeue(self):
         ir = make_import_result(decision="transcode_downgrade",
                                 new_min_bitrate=190, prev_min_bitrate=320)
         r = self._dispatch(ir=ir)
-        self.assertNotEqual(r["db"].request(42)["status"], "wanted")
+        self.assertEqual(r["db"].request(42)["status"], "manual")
 
     # --- Audit trail ---
 

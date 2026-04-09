@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from lib.pipeline_db import BACKOFF_BASE_MINUTES, BACKOFF_MAX_MINUTES
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -87,6 +94,7 @@ class FakePipelineDB:
             return
         row["status"] = status
         row["active_download_state"] = None
+        row["updated_at"] = _utcnow()
         for key, val in extra.items():
             row[key] = val
 
@@ -94,6 +102,7 @@ class FakePipelineDB:
         row = self._requests.get(request_id)
         if row is None:
             return
+        now = _utcnow()
         row["status"] = "wanted"
         row["search_attempts"] = 0
         row["download_attempts"] = 0
@@ -101,24 +110,31 @@ class FakePipelineDB:
         row["next_retry_after"] = None
         row["last_attempt_at"] = None
         row["active_download_state"] = None
+        row["updated_at"] = now
         if "search_filetype_override" in fields:
             row["search_filetype_override"] = fields["search_filetype_override"]
         if "min_bitrate" in fields:
-            row["prev_min_bitrate"] = row.get("min_bitrate")
+            current_min_bitrate = row.get("min_bitrate")
+            if current_min_bitrate is not None:
+                row["prev_min_bitrate"] = current_min_bitrate
             row["min_bitrate"] = fields["min_bitrate"]
 
     def set_downloading(self, request_id: int, state_json: str) -> bool:
         row = self._requests.get(request_id)
         if row is None or row["status"] != "wanted":
             return False
+        now = _utcnow()
         row["status"] = "downloading"
         row["active_download_state"] = state_json
+        row["last_attempt_at"] = now
+        row["updated_at"] = now
         return True
 
     def clear_download_state(self, request_id: int) -> None:
         row = self._requests.get(request_id)
         if row:
             row["active_download_state"] = None
+            row["updated_at"] = _utcnow()
 
     def log_download(self, request_id: int, **kwargs: Any) -> None:
         named = {
@@ -152,9 +168,18 @@ class FakePipelineDB:
         row = self._requests.get(request_id)
         if row:
             col = f"{attempt_type}_attempts"
+            now = _utcnow()
             row[col] = (row.get(col) or 0) + 1
+            row["last_attempt_at"] = now
+            row["updated_at"] = now
+            backoff_minutes = min(
+                BACKOFF_BASE_MINUTES * (2 ** (row[col] - 1)),
+                BACKOFF_MAX_MINUTES,
+            )
+            row["next_retry_after"] = now + timedelta(minutes=backoff_minutes)
 
     def update_request_fields(self, request_id: int, **fields: Any) -> None:
         row = self._requests.get(request_id)
         if row:
             row.update(fields)
+            row["updated_at"] = _utcnow()
