@@ -612,6 +612,16 @@ def main():
         from lib.cache import load_caches
         load_caches(_module_ctx, cfg.var_dir)
 
+        # Populate global user cooldowns (issue #39)
+        try:
+            db = pipeline_db_source._get_db()
+            cooled = db.get_cooled_down_users()
+            _module_ctx.cooled_down_users = set(cooled)
+            if cooled:
+                logger.info(f"User cooldowns active: {', '.join(sorted(cooled))}")
+        except Exception as e:
+            logger.warning(f"Failed to load user cooldowns: {e}")
+
         # --- Phase 1 + Phase 2 run concurrently ---
         # Phase 1 (poll downloads) operates on status='downloading' rows.
         # Phase 2 (search + enqueue) operates on status='wanted' rows.
@@ -625,7 +635,11 @@ def main():
             """Run Phase 1 in a background thread with its own DB connection."""
             phase1_source = DatabaseSource(cfg.pipeline_db_dsn)
             phase1_ctx = SoularrContext(
-                cfg=cfg, slskd=slskd, pipeline_db_source=phase1_source)
+                cfg=cfg,
+                slskd=slskd,
+                pipeline_db_source=phase1_source,
+                cooled_down_users=_module_ctx.cooled_down_users,
+            )
             try:
                 _poll_impl(phase1_ctx)
             finally:

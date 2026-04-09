@@ -267,7 +267,8 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                                  scenario="no_json_result",
                                  detail=f"import_one.py rc={result.returncode}, no JSON",
                                  error=f"rc={result.returncode}"),
-                download_info=dl_info)
+                download_info=dl_info,
+                cooled_down_users=ctx.cooled_down_users)
         else:
             _populate_dl_info_from_import_result(dl_info, ir)
             decision = ir.decision or "unknown"
@@ -351,7 +352,8 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                         error=ir.error if decision not in ("downgrade", "transcode_downgrade") else None),
                     usernames=usernames if action.denylist else None,
                     download_info=dl_info,
-                    search_filetype_override=narrowed_override)
+                    search_filetype_override=narrowed_override,
+                    cooled_down_users=ctx.cooled_down_users)
                 if narrowed_override is not None:
                     logger.info(
                         f"  Narrowed search_filetype_override '{current_override}'"
@@ -398,7 +400,8 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
             ValidationResult(distance=bv_result.distance,
                              scenario="timeout", detail="import_one.py timed out",
                              error="timeout"),
-            download_info=timeout_dl)
+            download_info=timeout_dl,
+            cooled_down_users=ctx.cooled_down_users)
     except Exception:
         logger.exception(f"AUTO-IMPORT ERROR: {label}")
         err_dl = _build_download_info(album_data)
@@ -408,4 +411,5 @@ def dispatch_import(album_data: GrabListEntry, bv_result: ValidationResult, dest
                              scenario="exception",
                              detail="unhandled exception in auto-import",
                              error="exception"),
-            download_info=err_dl)
+            download_info=err_dl,
+            cooled_down_users=ctx.cooled_down_users)

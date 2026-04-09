@@ -22,6 +22,7 @@ from lib.quality import (spectral_import_decision, SpectralContext,
                          SpectralMeasurement,
                          ActiveDownloadState, ActiveDownloadFileState,
                          DownloadDecision, decide_download_action,
+                         extract_usernames,
                          rejection_backfill_override)
 from lib.import_dispatch import (_build_download_info, dispatch_import)
 from lib.transitions import apply_transition
@@ -471,9 +472,14 @@ def _handle_rejected_result(album_data: GrabListEntry, bv_result: ValidationResu
     # Backfill search_filetype_override for pre-quality-gate albums stuck in loops
     backfill_override = _compute_rejection_backfill(album_data, ctx)
 
-    ctx.pipeline_db_source.mark_failed(album_data, bv_result, usernames=usernames,
-                                       download_info=dl_info,
-                                       search_filetype_override=backfill_override)
+    ctx.pipeline_db_source.mark_failed(
+        album_data,
+        bv_result,
+        usernames=usernames,
+        download_info=dl_info,
+        search_filetype_override=backfill_override,
+        cooled_down_users=ctx.cooled_down_users,
+    )
     logger.warning(f"REJECTED: {album_data.artist} - {album_data.title} "
                    f"(scenario={bv_result.scenario}, "
                    f"distance={bv_result.distance}, "
@@ -764,6 +770,9 @@ def _timeout_album(
         outcome="timeout",
         error_message=reason,
     )
+    for username in extract_usernames(entry.files):
+        if db.check_and_apply_cooldown(username):
+            ctx.cooled_down_users.add(username)
     apply_transition(db, request_id, "wanted",
                      from_status="downloading",
                      attempt_type="download")
