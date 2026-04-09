@@ -30,8 +30,160 @@ if TYPE_CHECKING:
     from lib.config import SoularrConfig
     from lib.context import SoularrContext
     from lib.grab_list import GrabListEntry
+    from lib.pipeline_db import PipelineDB
 
 logger = logging.getLogger("soularr")
+
+
+def _do_mark_done(
+    db: "PipelineDB",
+    request_id: int,
+    dl_info: DownloadInfo,
+    distance: float,
+    scenario: str,
+    dest_path: str,
+    outcome_label: str = "success",
+    detail: str | None = None,
+) -> None:
+    """Mark album as imported — standalone version of DatabaseSource.mark_done.
+
+    Takes PipelineDB directly instead of going through DatabaseSource.
+    Uses outcome_label for download_log (e.g. "force_import" instead of "success").
+    """
+    from lib.quality import SpectralMeasurement, is_verified_lossless
+    from lib.pipeline_db import RequestSpectralStateUpdate
+
+    update_fields: dict[str, object] = dict(
+        beets_distance=distance,
+        beets_scenario=scenario,
+        imported_path=dest_path,
+    )
+    if dl_info.verified_lossless_override is not None:
+        if dl_info.verified_lossless_override:
+            update_fields["verified_lossless"] = True
+    elif is_verified_lossless(
+        dl_info.was_converted,
+        dl_info.original_filetype,
+        dl_info.download_spectral.grade if dl_info.download_spectral else None,
+    ):
+        update_fields["verified_lossless"] = True
+    if dl_info.download_spectral is not None:
+        current_spectral = dl_info.download_spectral
+        if update_fields.get("verified_lossless") and dl_info.bitrate:
+            current_spectral = SpectralMeasurement(
+                grade=dl_info.download_spectral.grade,
+                bitrate_kbps=dl_info.bitrate // 1000,
+            )
+        update_fields.update(
+            RequestSpectralStateUpdate(
+                last_download=dl_info.download_spectral,
+                current=current_spectral,
+            ).as_update_fields()
+        )
+    if dl_info.final_format:
+        update_fields["final_format"] = dl_info.final_format
+    apply_transition(db, request_id, "imported", **update_fields)
+
+    db.log_download(
+        request_id=request_id,
+        soulseek_username=dl_info.username,
+        filetype=dl_info.filetype,
+        beets_distance=distance,
+        beets_scenario=scenario,
+        beets_detail=detail,
+        outcome=outcome_label,
+        staged_path=dest_path,
+        bitrate=dl_info.bitrate,
+        sample_rate=dl_info.sample_rate,
+        bit_depth=dl_info.bit_depth,
+        is_vbr=dl_info.is_vbr,
+        was_converted=dl_info.was_converted,
+        original_filetype=dl_info.original_filetype,
+        slskd_filetype=dl_info.slskd_filetype,
+        slskd_bitrate=dl_info.slskd_bitrate,
+        actual_filetype=dl_info.actual_filetype,
+        actual_min_bitrate=dl_info.actual_min_bitrate,
+        spectral_grade=dl_info.download_spectral.grade if dl_info.download_spectral else None,
+        spectral_bitrate=(
+            dl_info.download_spectral.bitrate_kbps if dl_info.download_spectral else None
+        ),
+        existing_min_bitrate=dl_info.existing_min_bitrate,
+        existing_spectral_bitrate=(
+            dl_info.current_spectral.bitrate_kbps if dl_info.current_spectral else None
+        ),
+        import_result=dl_info.import_result,
+        validation_result=dl_info.validation_result,
+        final_format=dl_info.final_format,
+    )
+
+
+def _do_mark_failed(
+    db: "PipelineDB",
+    request_id: int,
+    dl_info: DownloadInfo,
+    distance: float,
+    scenario: str,
+    detail: str | None,
+    error: str | None,
+    *,
+    requeue: bool = True,
+    outcome_label: str = "rejected",
+    search_filetype_override: str | None = None,
+    cooled_down_users: set[str] | None = None,
+    usernames: set[str] | None = None,
+) -> None:
+    """Log failure and optionally requeue — standalone version of DatabaseSource.mark_failed.
+
+    When requeue=True (auto-import): transitions to "wanted", records attempt.
+    When requeue=False (force/manual import): only logs to download_log.
+    """
+    if requeue:
+        transition_kwargs: dict[str, object] = dict(
+            beets_distance=distance,
+            beets_scenario=scenario,
+        )
+        if search_filetype_override is not None:
+            transition_kwargs["search_filetype_override"] = search_filetype_override
+        apply_transition(db, request_id, "wanted", **transition_kwargs)
+        db.record_attempt(request_id, "validation")
+
+    db.log_download(
+        request_id=request_id,
+        soulseek_username=dl_info.username,
+        filetype=dl_info.filetype,
+        beets_distance=distance,
+        beets_scenario=scenario,
+        beets_detail=detail,
+        outcome=outcome_label,
+        error_message=error,
+        bitrate=dl_info.bitrate,
+        sample_rate=dl_info.sample_rate,
+        bit_depth=dl_info.bit_depth,
+        is_vbr=dl_info.is_vbr,
+        was_converted=dl_info.was_converted,
+        original_filetype=dl_info.original_filetype,
+        slskd_filetype=dl_info.slskd_filetype,
+        slskd_bitrate=dl_info.slskd_bitrate,
+        actual_filetype=dl_info.actual_filetype,
+        actual_min_bitrate=dl_info.actual_min_bitrate,
+        spectral_grade=dl_info.download_spectral.grade if dl_info.download_spectral else None,
+        spectral_bitrate=(
+            dl_info.download_spectral.bitrate_kbps if dl_info.download_spectral else None
+        ),
+        existing_min_bitrate=dl_info.existing_min_bitrate,
+        existing_spectral_bitrate=(
+            dl_info.current_spectral.bitrate_kbps if dl_info.current_spectral else None
+        ),
+        import_result=dl_info.import_result,
+        validation_result=dl_info.validation_result,
+    )
+
+    if usernames:
+        for username in usernames:
+            db.add_denylist(request_id, username, "beets validation rejected")
+            if cooled_down_users is not None:
+                if db.check_and_apply_cooldown(username):
+                    cooled_down_users.add(username)
 
 
 def _populate_dl_info_from_import_result(dl_info: DownloadInfo,
