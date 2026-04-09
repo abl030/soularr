@@ -5,7 +5,7 @@
  * All modules import state from here instead of using bare globals.
  */
 
-/** @type {{ browseSearchType: string, browseArtist: {id:string, name:string}|null, browseSubView: string, browseCache: Object, pipelineData: Object|null, pipelineFilter: string, recentsCounts: {all:number, imported:number, rejected:number}, recentsFilter: string, dsConstants: Object|null, dsLoaded: boolean, disambData: Object|null, searchTimer: number|null }} */
+/** @type {{ browseSearchType: string, browseArtist: {id:string, name:string}|null, browseSubView: string, browseCache: Object, pipelineData: Object|null, pipelineFilter: string, recentsCounts: {all:number, imported:number, rejected:number}, recentsFilter: string, dsConstants: Object|null, dsLoaded: boolean, disambData: Object|null, searchTimer: number|null, manualSub: string }} */
 export const state = {
   browseSearchType: 'artist',
   browseArtist: null,
@@ -19,6 +19,7 @@ export const state = {
   dsLoaded: false,
   disambData: null,
   searchTimer: null,
+  manualSub: 'complete',
 };
 
 export const API = '';
