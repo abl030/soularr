@@ -41,7 +41,8 @@ lib/
   beets.py              — Beets validation (dry-run import via harness, returns ValidationResult)
   beets_db.py           — BeetsDB: read-only beets SQLite queries (AlbumInfo dataclass)
   config.py             — SoularrConfig dataclass (typed config from config.ini)
-  context.py            — SoularrContext dataclass (replaces module globals for extracted functions)
+  context.py            — SoularrContext dataclass (replaces module globals for extracted functions).
+                           Includes cooled_down_users cache populated at cycle start.
   download.py           — Async download polling, completion processing, spectral context
                            gathering, slskd transfer helpers. All functions accept ctx.
                            Key functions: poll_active_downloads(), process_completed_album(),
@@ -54,6 +55,7 @@ lib/
   import_service.py     — Force-import/manual-import service layer, ImportOutcome dataclass
   pipeline_db.py        — PipelineDB class (PostgreSQL CRUD, queries, schema, get_download_log_entry)
                            Search logging: log_search(), get_search_history(), get_search_history_batch()
+                           User cooldowns: add_cooldown(), get_cooled_down_users(), check_and_apply_cooldown()
                            RequestSpectralStateUpdate (typed spectral state writes)
   quality.py            — Pure decision functions + typed dataclasses:
                            Decision functions:
@@ -62,6 +64,7 @@ lib/
                            - determine_verified_lossless(), is_verified_lossless() (legacy)
                            - effective_search_tiers() (merges search_filetype_override + target_format)
                            - should_clear_lossless_search_override() (intent toggle cleanup)
+                           - should_cooldown() (global user cooldown decision)
                            Dispatch functions:
                            - dispatch_action() → DispatchAction (mark_done/failed/denylist/requeue flags)
                            - compute_effective_override_bitrate(), extract_usernames()
@@ -77,6 +80,8 @@ lib/
                            - ActiveDownloadState, ActiveDownloadFileState
                            Spectral state types:
                            - SpectralMeasurement (grade + bitrate pair, frozen dataclass)
+                           Cooldown types:
+                           - CooldownConfig (tunables for user cooldown system)
                            Other:
                            - DownloadInfo, SpectralContext, DispatchAction
   search.py             — Search query building, normalization, SearchResult dataclass (with outcome)
@@ -245,7 +250,8 @@ All quality decisions are pure functions in `lib/quality.py` — no I/O, no data
 6. **`dispatch_action()`** — Post-import_one.py: map decision string to action flags (mark_done/failed, denylist, requeue, trigger_meelo, quality_gate). Used by `dispatch_import()`.
 7. **`compute_effective_override_bitrate()`** — Return the lower of container/spectral bitrate (conservative). Used for `--override-min-bitrate`.
 8. **`verify_filetype()`** — Pre-search: does a slskd file dict match an allowed filetype spec? (VBR V0/V2, CBR, min bitrate, bitdepth/samplerate)
-9. **`get_decision_tree()`** — Returns the full pipeline decision structure as data (stages, rules, constants) for the web UI Decisions tab. Includes "dispatch" stage showing post-import action mapping. Contract tests in `test_quality_decisions.py` verify this matches the actual functions.
+9. **`should_cooldown()`** — User cooldown: given a user's last N download outcomes, should they be temporarily skipped? Pure function, delegates from `check_and_apply_cooldown()` in pipeline_db.
+10. **`get_decision_tree()`** — Returns the full pipeline decision structure as data (stages, rules, constants) for the web UI Decisions tab. Includes "dispatch" stage showing post-import action mapping. Contract tests in `test_quality_decisions.py` verify this matches the actual functions.
 
 ### Import logging (`download_log.import_result` JSONB)
 
@@ -282,6 +288,7 @@ All types in `lib/quality.py`, fully typed with pyright, JSON round-trip seriali
 - **Dispatch path**: `DispatchAction` (action flags from `dispatch_action()`), `StageResult` (in `import_one.py` — pure stage decisions)
 - **Async download path**: `ActiveDownloadState` → `ActiveDownloadFileState` (persisted to `album_requests.active_download_state` JSONB)
 - **Spectral state**: `SpectralMeasurement` (grade + bitrate pair), `RequestSpectralStateUpdate` (typed DB write for last_download + current spectral)
+- **Cooldown path**: `CooldownConfig` (tunables: threshold, duration, failure outcomes, lookback window)
 - **Shared**: `DownloadInfo` (replaces untyped dl_info dict), `SpectralContext` (pre-import spectral gathering), `AlbumInfo` (beets DB queries in `lib/beets_db.py`)
 
 ## Quality Upgrade System
@@ -387,6 +394,67 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 - **Mixed-source CBR** (e.g. 13 tracks at 320 + 1 track at 192): Looks like VBR to `COUNT(DISTINCT bitrate)` but isn't genuine V0. Quality gate uses min_bitrate (192 < 210) → re-queues.
 - **Fake FLACs**: MP3 wrapped in FLAC container. Spectral detects cliff pre-conversion, V0 bitrate confirms post-conversion. Source denylisted, but file imported if better than existing.
 - **Discogs-sourced albums**: Numeric IDs instead of MB UUIDs. Cannot use upgrade pipeline. See `TODO.md`.
+
+## User Cooldowns (issue #39)
+
+Global, temporary cooldowns for Soulseek users who consistently fail to deliver downloads. Separate from the per-request quality denylist (`source_denylist`) — cooldowns are global (not per-album) and time-bounded.
+
+### How it works
+
+After every timeout or beets rejection, `check_and_apply_cooldown(username)` queries the user's last 5 download outcomes globally (across all albums). If all 5 are failures (timeout/failed/rejected), a 3-day cooldown is inserted into `user_cooldowns`. During enqueue, cooled-down users are skipped with a distinct "on cooldown" log message.
+
+### Tunables (`CooldownConfig` in `lib/quality.py`)
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `failure_threshold` | 5 | Consecutive failures before cooldown |
+| `cooldown_days` | 3 | Cooldown duration |
+| `failure_outcomes` | timeout, failed, rejected | Which outcomes count as failures |
+| `lookback_window` | 5 | How many recent outcomes to check |
+
+### Table: `user_cooldowns`
+
+```sql
+CREATE TABLE user_cooldowns (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    cooldown_until TIMESTAMPTZ NOT NULL,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+- `UNIQUE(username)` — one active cooldown per user, upsert extends it
+- No `request_id` — this is global across all albums
+- Expired rows are harmless (filtered by `cooldown_until > NOW()`)
+
+### Data flow
+
+1. **Trigger**: `_timeout_album()` (download.py) and `mark_failed()` (album_source.py) call `db.check_and_apply_cooldown(username)` after logging the outcome
+2. **Decision**: `check_and_apply_cooldown()` queries `download_log` for last N outcomes, delegates to `should_cooldown()` pure function
+3. **Storage**: If triggered, upserts `user_cooldowns` with `cooldown_until = NOW() + 3 days`
+4. **Cache**: `ctx.cooled_down_users` populated at cycle start in `soularr.py main()`, shared with Phase 1 thread. Updated in real-time when new cooldowns are applied mid-cycle.
+5. **Enforcement**: `try_enqueue()` and `try_multi_enqueue()` in `lib/enqueue.py` skip users in `ctx.cooled_down_users` before checking the per-request denylist
+
+### Re-cooldown behavior
+
+After the 3-day cooldown expires, the user gets one chance. If they succeed, the success breaks their failure streak. If they fail, `check_and_apply_cooldown` sees 4 old failures + 1 new = 5 failures → immediate re-cooldown.
+
+### Diagnostics
+
+```bash
+# View active cooldowns
+pipeline-cli query "SELECT username, cooldown_until, reason FROM user_cooldowns WHERE cooldown_until > NOW()"
+
+# View all cooldowns (including expired)
+pipeline-cli query "SELECT * FROM user_cooldowns ORDER BY cooldown_until DESC"
+
+# Top timeout offenders
+pipeline-cli query "SELECT soulseek_username, COUNT(*) FROM download_log WHERE outcome = 'timeout' GROUP BY soulseek_username ORDER BY count DESC LIMIT 10"
+
+# Manually seed cooldowns for all users with 5+ consecutive failures
+psql -h 192.168.100.11 -U soularr soularr -c "INSERT INTO user_cooldowns ..."
+```
 
 ## Deploying Changes
 
