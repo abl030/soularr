@@ -35,8 +35,9 @@ class SearchResult:
     # username -> dir -> audio file count (for pre-filtering before browse)
     dir_audio_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     query: str = ""
-    result_count: int = 0
+    result_count: int | None = None
     elapsed_s: float = 0.0
+    outcome: str = ""  # found, no_match, no_results, timeout, error, empty_query
 
 # Soulseek's distributed search times out with too many tokens.
 # 4 is the safe maximum.
