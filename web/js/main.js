@@ -14,6 +14,7 @@ import { renderLibraryResults, renderLibraryResultsInto, toggleLibDetail, banSou
 import { loadDecisions, dsPreset, runSimulator } from './decisions.js';
 import { renderDisambiguateInto, toggleDisambRGTracks, disambRemove, disambDeleteFromLibrary } from './analysis.js';
 import { loadManualImport, runManualImport } from './manual.js';
+import { loadWrongMatches, toggleWrongMatchDetail, forceImportWrongMatch, deleteWrongMatch } from './wrong-matches.js';
 import { toast } from './state.js';
 
 // --- Tab management ---
@@ -30,7 +31,18 @@ function showTab(name) {
   if (name === 'pipeline') loadPipeline();
   if (name === 'recents') loadRecents();
   if (name === 'decisions') loadDecisions();
-  if (name === 'manual') loadManualImport();
+  if (name === 'manual') showManualSub(state.manualSub || 'complete');
+}
+
+/** @param {string} sub - 'complete' or 'wrong' */
+function showManualSub(sub) {
+  state.manualSub = sub;
+  document.getElementById('manual-complete').style.display = sub === 'complete' ? 'block' : 'none';
+  document.getElementById('manual-wrong').style.display = sub === 'wrong' ? 'block' : 'none';
+  document.getElementById('manual-sub-complete').className = 'p-btn' + (sub === 'complete' ? ' active-status' : '');
+  document.getElementById('manual-sub-wrong').className = 'p-btn' + (sub === 'wrong' ? ' active-status' : '');
+  if (sub === 'complete') loadManualImport();
+  if (sub === 'wrong') loadWrongMatches();
 }
 
 // --- Search input (debounced) ---
@@ -86,5 +98,10 @@ Object.assign(window, {
   disambDeleteFromLibrary,
   loadManualImport,
   runManualImport,
+  showManualSub,
+  loadWrongMatches,
+  toggleWrongMatchDetail,
+  forceImportWrongMatch,
+  deleteWrongMatch,
   toast,
 });

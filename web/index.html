@@ -238,7 +238,12 @@
 </div>
 
 <div id="manual-section" class="section">
-  <div id="manual-content" class="loading">Loading...</div>
+  <div style="display:flex;gap:2px;margin-bottom:12px;">
+    <button class="p-btn active-status" id="manual-sub-complete" onclick="showManualSub('complete')">Complete</button>
+    <button class="p-btn" id="manual-sub-wrong" onclick="showManualSub('wrong')">Wrong Matches</button>
+  </div>
+  <div id="manual-complete"><div id="manual-content" class="loading">Loading...</div></div>
+  <div id="manual-wrong" style="display:none;"><div id="wrong-matches-content" class="loading"></div></div>
 </div>
 
 
