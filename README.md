@@ -1,8 +1,12 @@
-# Soularr (abl030 fork)
+# Cratedigger
 
-A Soulseek download engine for music libraries, driven by a PostgreSQL pipeline database. Searches Soulseek via [slskd](https://github.com/slskd/slskd), validates downloads against [MusicBrainz](https://musicbrainz.org/) via [beets](https://beets.io/), auto-imports to a beets library with quality verification, or stages for manual review.
+A quality-obsessed music acquisition pipeline. Searches Soulseek via [slskd](https://github.com/slskd/slskd), validates downloads against [MusicBrainz](https://musicbrainz.org/) via [beets](https://beets.io/), and curates a library toward verified lossless sources — automatically.
 
-Originally forked from [mrusse/soularr](https://github.com/mrusse/soularr). This fork has diverged significantly: the pipeline DB is the sole source of truth, and a web UI at `music.ablz.au` is the album picker.
+Cratedigger doesn't just download albums. It siphons the best available quality out of Soulseek over time: downloading, verifying via spectral analysis, converting, comparing against what's already on disk, and re-queuing for upgrades when better sources appear.
+
+> This project was originally inspired by [mrusse/soularr](https://github.com/mrusse/soularr), a clever script that connected Lidarr with Soulseek. Cratedigger has since diverged into its own thing — PostgreSQL pipeline DB, beets validation, spectral quality verification, async downloads, a web UI — but the original idea of bridging Soulseek into a music library workflow came from mrusse's work. Thank you.
+>
+> If you'd like to support the original author: [buy mrusse a coffee](https://ko-fi.com/mrusse).
 
 ## How it works
 
@@ -37,6 +41,22 @@ Pipeline DB (PostgreSQL)           |                       |
       |  ImportResult + ValidationResult JSON               |
       |<---------------------------------------------------+
 ```
+
+## Features
+
+- **PostgreSQL pipeline DB** as the sole source of truth for album requests, download state, and quality history
+- **Web UI** (`music.ablz.au`) for browsing a local MusicBrainz mirror and adding albums
+- **Beets validation** -- every download validated against the target MusicBrainz release ID before import
+- **Auto-import** with FLAC->V0 conversion (or configurable target: Opus, MP3 V2, AAC, FLAC on disk), spectral analysis, and quality gating
+- **Async downloads** -- non-blocking: enqueue downloads, persist state to DB, poll on next run. Downloads span multiple 5-minute cycles.
+- **Parallel Soulseek searches** -- `ThreadPoolExecutor` fires all searches concurrently
+- **Spectral quality verification** -- sox-based transcode detection catches fake FLACs and upsampled MP3s
+- **Quality upgrade system** -- automatically re-queues albums when better sources become available. CBR -> lossless -> verified V0.
+- **User cooldowns** -- global, temporary cooldowns for Soulseek users who consistently timeout or fail (5 consecutive failures = 3-day cooldown)
+- **Force-import** -- manually import rejected downloads via CLI or web API
+- **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
+- **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout, pyright enforced
+- **Comprehensive test suite** -- 1375+ tests (`nix-shell --run "bash scripts/run_tests.sh"`)
 
 ## Quality decision pipeline
 
@@ -104,26 +124,9 @@ SQL
 pipeline-cli query --json "SELECT id, outcome, import_result FROM download_log ORDER BY id DESC LIMIT 3"
 ```
 
-## What's different from upstream
-
-- **PostgreSQL pipeline DB** replaces Lidarr as the source of truth
-- **Web UI** (`music.ablz.au`) for browsing MusicBrainz and adding albums
-- **Beets validation** -- every download validated against target MusicBrainz release ID
-- **Auto-import** with FLAC->V0 conversion (or configurable target: Opus, MP3 V2, AAC, FLAC on disk), spectral analysis, quality gating
-- **Async downloads** -- non-blocking: enqueue downloads, persist state to DB, poll on next run. Downloads span multiple 5-minute cycles. No more blocking `while True` loop.
-- **Parallel Soulseek searches** -- `ThreadPoolExecutor` fires all searches concurrently, ~2x speedup (see `docs/parallel-search.md`)
-- **Typed decision pipeline** -- pure functions in `quality.py`, typed dataclasses throughout
-- **Full audit trail** -- every decision stored as queryable JSONB in PostgreSQL
-- **Centralized beets queries** -- `BeetsDB` class in `lib/beets_db.py`
-- **Force-import** -- manually import rejected downloads via CLI (`force-import <id>`) or web API
-- **User cooldowns** -- global, temporary cooldowns for Soulseek users who consistently timeout or fail (5 consecutive failures = 3-day cooldown). Tunables in `CooldownConfig` dataclass.
-- **Comprehensive test suite** (`nix-shell --run "bash scripts/run_tests.sh"`)
-
 ## MusicBrainz mirror
 
 All MusicBrainz lookups hit a local mirror at `http://192.168.1.35:5200` (doc2), not the public API. This avoids rate limits and provides sub-second response times. The mirror runs [musicbrainz-docker](https://github.com/metabrainz/musicbrainz-docker) and replicates nightly.
-
-The web UI (`web/mb.py`) and beets both query this mirror. Beets is configured with `musicbrainz.host: 192.168.1.35:5200`.
 
 ```bash
 # Search releases
@@ -168,13 +171,14 @@ nix-shell --run "python3 -m unittest tests.<module> -v"  # single module
 
 ## Deployment
 
-Deployed via NixOS. The NixOS module builds a Python environment with dependencies and runs Soularr as a systemd oneshot on a 5-minute timer.
+Deployed via NixOS. The NixOS module builds a Python environment with dependencies and runs Cratedigger as a systemd oneshot on a 5-minute timer.
 
 ## Credits
 
-- **Original Soularr**: [Michael Russell](https://github.com/mrusse) -- [mrusse/soularr](https://github.com/mrusse/soularr)
-- **Libraries**: [slskd-api](https://github.com/bigoulours/slskd-python-api), [music-tag](https://github.com/KristoforMaynworWormo/music-tag), [psycopg2](https://www.psycopg.org/)
+This project grew out of [mrusse/soularr](https://github.com/mrusse/soularr) by [Michael Russell](https://github.com/mrusse) -- the original idea of bridging Soulseek into a music library workflow. If you appreciate that idea, [buy mrusse a coffee](https://ko-fi.com/mrusse).
+
+**Libraries**: [slskd-api](https://github.com/bigoulours/slskd-python-api), [music-tag](https://github.com/KristoforMaynworWormo/music-tag), [psycopg2](https://www.psycopg.org/), [beets](https://beets.io/)
 
 ## License
 
-[MIT](LICENSE) (same as upstream)
+[MIT](LICENSE)

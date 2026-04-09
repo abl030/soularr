@@ -8,11 +8,11 @@
 
 # **This is a curated music collection. Multiple editions/pressings of the same album are intentional and must be preserved. NEVER delete or merge duplicate albums — they are different MusicBrainz releases (different countries, track counts, labels, etc.) and the user wants them all. Beets must disambiguate them into separate folders on disk.**
 
-# Soularr — Music Download Pipeline
+# Cratedigger — Music Acquisition Pipeline
 
-A Soulseek download engine driven by a PostgreSQL pipeline database. Searches Soulseek via slskd, validates downloads against MusicBrainz via beets, auto-imports or stages for manual review. Includes a web UI at `music.ablz.au` for browsing MusicBrainz and adding album requests.
+A quality-obsessed music acquisition pipeline. Searches Soulseek via slskd, validates downloads against MusicBrainz via beets, auto-imports with spectral quality verification, or stages for manual review. Includes a web UI at `music.ablz.au` for browsing MusicBrainz and adding album requests.
 
-Forked from [mrusse/soularr](https://github.com/mrusse/soularr). This fork has diverged significantly — the pipeline DB is the sole source of truth, and the web UI at `music.ablz.au` is the album picker.
+Originally inspired by [mrusse/soularr](https://github.com/mrusse/soularr) ([Ko-Fi](https://ko-fi.com/mrusse)). Has since diverged into its own project — the pipeline DB is the sole source of truth, and the web UI at `music.ablz.au` is the album picker. Internal code still uses "soularr" naming in many places (class names, logger, systemd service, DB name).
 
 ## Web UI (music.ablz.au)
 
