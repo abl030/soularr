@@ -151,7 +151,11 @@ class TestDispatchCoreOrchestration(unittest.TestCase):
         ir = make_import_result(decision="downgrade",
                                 new_min_bitrate=128, prev_min_bitrate=180)
         r = self._dispatch(ir=ir, requeue_on_failure=True)
-        self.assertEqual(r["db"].request(42)["status"], "wanted")
+        row = r["db"].request(42)
+        self.assertEqual(row["status"], "wanted")
+        self.assertEqual(row["validation_attempts"], 1)
+        self.assertIsNotNone(row["last_attempt_at"])
+        self.assertIsNotNone(row["next_retry_after"])
 
     # --- Transcode paths ---
 
