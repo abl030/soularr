@@ -19,6 +19,7 @@ from tests.helpers import (
     make_grab_list_entry,
     make_spectral_context,
 )
+from tests.fakes import FakeSlskdAPI
 
 
 def _utc_now_iso() -> str:
@@ -211,18 +212,29 @@ class TestSlskdDownloadStatus(unittest.TestCase):
 
     def test_populates_status(self):
         from lib.download import slskd_download_status
-        ctx = _make_ctx()
-        ctx.slskd.transfers.get_download.return_value = {"state": "Completed, Succeeded"}
-        f = _make_transfer_mock()
+        slskd = FakeSlskdAPI()
+        slskd.add_transfer(
+            username="user1",
+            directory="user1\\Music",
+            filename="01 - Track.mp3",
+            id="file-id-1",
+            state="Completed, Succeeded",
+        )
+        ctx = _make_ctx(slskd=slskd)
+        f = make_download_file(id="file-id-1")
         ok = slskd_download_status([f], ctx)
         self.assertTrue(ok)
+        self.assertIsNotNone(f.status)
+        assert f.status is not None
         self.assertEqual(f.status["state"], "Completed, Succeeded")
+        self.assertEqual(slskd.transfers.get_download_calls, [("user1", "file-id-1")])
 
     def test_error_sets_none(self):
         from lib.download import slskd_download_status
-        ctx = _make_ctx()
-        ctx.slskd.transfers.get_download.side_effect = Exception("fail")
-        f = _make_transfer_mock()
+        slskd = FakeSlskdAPI()
+        slskd.transfers.get_download_error = Exception("fail")
+        ctx = _make_ctx(slskd=slskd)
+        f = make_download_file(id="file-id-1")
         ok = slskd_download_status([f], ctx)
         self.assertFalse(ok)
         self.assertIsNone(f.status)
@@ -230,8 +242,9 @@ class TestSlskdDownloadStatus(unittest.TestCase):
     def test_bulk_snapshot_populates_status(self):
         """When snapshot is provided, use match_transfer instead of per-file API."""
         from lib.download import slskd_download_status
-        ctx = _make_ctx()
-        f = _make_transfer_mock(filename="Music\\01 - Track.mp3", username="user1")
+        slskd = FakeSlskdAPI()
+        ctx = _make_ctx(slskd=slskd)
+        f = make_download_file(filename="Music\\01 - Track.mp3", username="user1")
         snapshot = [{
             "username": "user1",
             "directories": [{"files": [{
@@ -243,15 +256,17 @@ class TestSlskdDownloadStatus(unittest.TestCase):
         }]
         ok = slskd_download_status([f], ctx, snapshot=snapshot)
         self.assertTrue(ok)
+        self.assertIsNotNone(f.status)
+        assert f.status is not None
         self.assertEqual(f.status["state"], "Completed, Succeeded")
         # No per-file API calls should have been made
-        ctx.slskd.transfers.get_download.assert_not_called()
+        self.assertEqual(slskd.transfers.get_download_calls, [])
 
     def test_bulk_snapshot_file_not_found(self):
         """When snapshot doesn't contain the file, status is None, returns False."""
         from lib.download import slskd_download_status
-        ctx = _make_ctx()
-        f = _make_transfer_mock(filename="Music\\missing.mp3", username="user1")
+        ctx = _make_ctx(slskd=FakeSlskdAPI())
+        f = make_download_file(filename="Music\\missing.mp3", username="user1")
         snapshot = [{"username": "user1", "directories": [{"files": []}]}]
         ok = slskd_download_status([f], ctx, snapshot=snapshot)
         self.assertFalse(ok)
@@ -262,15 +277,14 @@ class TestSlskdDoEnqueue(unittest.TestCase):
 
     def test_successful_enqueue(self):
         from lib.download import slskd_do_enqueue
-        ctx = _make_ctx()
-        ctx.slskd.transfers.enqueue.return_value = True
-        ctx.slskd.transfers.get_all_downloads.return_value = [{
+        slskd = FakeSlskdAPI(downloads=[{
             "username": "user1",
             "directories": [{
                 "directory": "user1\\Music",
                 "files": [{"filename": "track.mp3", "id": "new-id"}],
             }],
-        }]
+        }])
+        ctx = _make_ctx(slskd=slskd)
         files = [{"filename": "track.mp3", "size": 5000000}]
         with patch("time.sleep"):
             result = slskd_do_enqueue("user1", files, "user1\\Music", ctx)
@@ -278,12 +292,14 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         assert result is not None
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].id, "new-id")
-        ctx.slskd.transfers.get_all_downloads.assert_called_once_with(includeRemoved=True)
+        self.assertEqual(slskd.transfers.enqueue_calls[0].files, files)
+        self.assertEqual(slskd.transfers.get_all_downloads_calls, [True])
 
     def test_enqueue_failure_returns_none(self):
         from lib.download import slskd_do_enqueue
-        ctx = _make_ctx()
-        ctx.slskd.transfers.enqueue.side_effect = Exception("fail")
+        slskd = FakeSlskdAPI()
+        slskd.transfers.enqueue_error = Exception("fail")
+        ctx = _make_ctx(slskd=slskd)
         with patch("time.sleep"):
             result = slskd_do_enqueue("user1", [], "dir", ctx)
         self.assertIsNone(result)
@@ -291,8 +307,6 @@ class TestSlskdDoEnqueue(unittest.TestCase):
     def test_enqueue_polls_until_ids_found(self):
         """Transfer IDs appear on 2nd poll — should resolve in 2 iterations, not 5s."""
         from lib.download import slskd_do_enqueue
-        ctx = _make_ctx()
-        ctx.slskd.transfers.enqueue.return_value = True
         snapshot_with_id = [{
             "username": "user1",
             "directories": [{"files": [{"filename": "track.mp3", "id": "tid-1"}]}],
@@ -301,10 +315,9 @@ class TestSlskdDoEnqueue(unittest.TestCase):
             "username": "user1",
             "directories": [{"files": []}],
         }]
-        ctx.slskd.transfers.get_all_downloads.side_effect = [
-            snapshot_without_id,  # 1st poll: not ready
-            snapshot_with_id,     # 2nd poll: ready
-        ]
+        slskd = FakeSlskdAPI(
+            download_snapshots=[snapshot_without_id, snapshot_with_id])
+        ctx = _make_ctx(slskd=slskd)
         files = [{"filename": "track.mp3", "size": 5000000}]
         with patch("time.sleep"):
             result = slskd_do_enqueue("user1", files, "user1\\Music", ctx)
@@ -313,18 +326,17 @@ class TestSlskdDoEnqueue(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].id, "tid-1")
         # Should have polled twice
-        self.assertEqual(ctx.slskd.transfers.get_all_downloads.call_count, 2)
+        self.assertEqual(len(slskd.transfers.get_all_downloads_calls), 2)
 
     def test_enqueue_timeout_returns_partial(self):
         """Transfer IDs never appear — should return whatever we have after timeout."""
         from lib.download import slskd_do_enqueue
-        ctx = _make_ctx()
-        ctx.slskd.transfers.enqueue.return_value = True
         # Never returns the transfer ID
-        ctx.slskd.transfers.get_all_downloads.return_value = [{
+        slskd = FakeSlskdAPI(downloads=[{
             "username": "user1",
             "directories": [{"files": []}],
-        }]
+        }])
+        ctx = _make_ctx(slskd=slskd)
         files = [{"filename": "track.mp3", "size": 5000000}]
         with patch("time.sleep"):
             result = slskd_do_enqueue("user1", files, "user1\\Music", ctx)
@@ -709,18 +721,17 @@ class TestRederiveTransferIds(unittest.TestCase):
             filetype="flac", title="T", artist="A", year="2020",
             mb_release_id="mbid",
         )
-        mock_slskd = MagicMock()
-        mock_slskd.transfers.get_all_downloads.return_value = [{
+        slskd = FakeSlskdAPI(downloads=[{
             "username": "user1",
             "directories": [{"directory": "u\\M", "files": [
                 {"filename": "u\\M\\01.flac", "id": "new-id-1"},
                 {"filename": "u\\M\\02.flac", "id": "new-id-2"},
             ]}],
-        }]
-        rederive_transfer_ids(entry, mock_slskd)
+        }])
+        rederive_transfer_ids(entry, slskd)
         self.assertEqual(entry.files[0].id, "new-id-1")
         self.assertEqual(entry.files[1].id, "new-id-2")
-        mock_slskd.transfers.get_all_downloads.assert_called_once_with(includeRemoved=True)
+        self.assertEqual(slskd.transfers.get_all_downloads_calls, [True])
 
     def test_missing_transfer_keeps_empty_id(self):
         from lib.download import rederive_transfer_ids
@@ -733,12 +744,11 @@ class TestRederiveTransferIds(unittest.TestCase):
             filetype="flac", title="T", artist="A", year="2020",
             mb_release_id="mbid",
         )
-        mock_slskd = MagicMock()
-        mock_slskd.transfers.get_all_downloads.return_value = [{
+        slskd = FakeSlskdAPI(downloads=[{
             "username": "user1",
             "directories": [{"directory": "u\\M", "files": []}],
-        }]
-        rederive_transfer_ids(entry, mock_slskd)
+        }])
+        rederive_transfer_ids(entry, slskd)
         self.assertEqual(entry.files[0].id, "")
 
     def test_uses_bulk_downloads_for_spacey_usernames(self):
@@ -768,8 +778,7 @@ class TestRederiveTransferIds(unittest.TestCase):
             year="2020",
             mb_release_id="mbid",
         )
-        mock_slskd = MagicMock()
-        mock_slskd.transfers.get_all_downloads.return_value = [
+        slskd = FakeSlskdAPI(downloads=[
             {
                 "username": "Mr. Odd",
                 "directories": [{"directory": "Mr. Odd\\Album", "files": [
@@ -782,13 +791,13 @@ class TestRederiveTransferIds(unittest.TestCase):
                     {"filename": "Miick Starr\\Album\\01.flac", "id": "starr-id"},
                 ]}],
             },
-        ]
+        ])
 
-        rederive_transfer_ids(entry, mock_slskd)
+        rederive_transfer_ids(entry, slskd)
 
         self.assertEqual(entry.files[0].id, "starr-id")
         self.assertEqual(entry.files[1].id, "odd-id")
-        mock_slskd.transfers.get_downloads.assert_not_called()
+        self.assertEqual(slskd.transfers.get_downloads_calls, [])
 
     def test_terminal_snapshot_sets_file_status(self):
         from lib.download import rederive_transfer_ids
@@ -810,8 +819,7 @@ class TestRederiveTransferIds(unittest.TestCase):
             year="2020",
             mb_release_id="mbid",
         )
-        mock_slskd = MagicMock()
-        mock_slskd.transfers.get_all_downloads.return_value = [{
+        slskd = FakeSlskdAPI(downloads=[{
             "username": "user1",
             "directories": [{"directory": "user1\\Album", "files": [
                 {
@@ -821,9 +829,9 @@ class TestRederiveTransferIds(unittest.TestCase):
                     "bytesTransferred": 1000,
                 },
             ]}],
-        }]
+        }])
 
-        rederive_transfer_ids(entry, mock_slskd)
+        rederive_transfer_ids(entry, slskd)
 
         self.assertEqual(entry.files[0].id, "done-id")
         status = entry.files[0].status

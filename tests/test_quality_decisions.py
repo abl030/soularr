@@ -325,53 +325,33 @@ class TestQualityGateDecision(unittest.TestCase):
 class TestIsVerifiedLossless(unittest.TestCase):
     """Test verified_lossless derivation."""
 
-    def test_gold_standard(self):
-        """Converted FLAC + genuine spectral = verified."""
-        self.assertTrue(is_verified_lossless(True, "flac", "genuine"))
+    CASES = [
+        ("gold standard", True, "flac", "genuine", True),
+        ("uppercase flac", True, "FLAC", "genuine", True),
+        ("not converted", False, None, "genuine", False),
+        ("not lossless source", True, "mp3", "genuine", False),
+        ("suspect spectral", True, "flac", "suspect", False),
+        ("likely transcode", True, "flac", "likely_transcode", False),
+        ("marginal spectral", True, "flac", "marginal", False),
+        ("none spectral", True, "flac", None, False),
+        ("none filetype", True, None, "genuine", False),
+        ("all none", False, None, None, False),
+        ("alac m4a verified", True, "m4a", "genuine", True),
+        ("wav verified", True, "wav", "genuine", True),
+        ("alac suspect not verified", True, "m4a", "suspect", False),
+    ]
 
-    def test_flac_uppercase(self):
-        self.assertTrue(is_verified_lossless(True, "FLAC", "genuine"))
-
-    def test_not_converted(self):
-        """MP3 download, no conversion — never verified."""
-        self.assertFalse(is_verified_lossless(False, None, "genuine"))
-
-    def test_not_flac_source(self):
-        """Converted from something other than FLAC — not verified."""
-        self.assertFalse(is_verified_lossless(True, "mp3", "genuine"))
-
-    def test_suspect_spectral(self):
-        """FLAC converted but spectral says suspect — fake FLAC, not verified."""
-        self.assertFalse(is_verified_lossless(True, "flac", "suspect"))
-
-    def test_likely_transcode(self):
-        self.assertFalse(is_verified_lossless(True, "flac", "likely_transcode"))
-
-    def test_marginal_spectral(self):
-        """Marginal spectral is NOT verified — only genuine counts."""
-        self.assertFalse(is_verified_lossless(True, "flac", "marginal"))
-
-    def test_none_spectral(self):
-        """No spectral data — can't verify."""
-        self.assertFalse(is_verified_lossless(True, "flac", None))
-
-    def test_none_filetype(self):
-        self.assertFalse(is_verified_lossless(True, None, "genuine"))
-
-    def test_all_none(self):
-        self.assertFalse(is_verified_lossless(False, None, None))
-
-    def test_alac_m4a_verified(self):
-        """Converted ALAC (m4a) + genuine spectral = verified lossless."""
-        self.assertTrue(is_verified_lossless(True, "m4a", "genuine"))
-
-    def test_wav_verified(self):
-        """Converted WAV + genuine spectral = verified lossless."""
-        self.assertTrue(is_verified_lossless(True, "wav", "genuine"))
-
-    def test_alac_suspect_not_verified(self):
-        """ALAC converted but spectral suspect — not verified."""
-        self.assertFalse(is_verified_lossless(True, "m4a", "suspect"))
+    def test_verified_lossless_cases(self):
+        for desc, was_converted, original_filetype, spectral_grade, expected in self.CASES:
+            with self.subTest(desc=desc):
+                self.assertEqual(
+                    is_verified_lossless(
+                        was_converted,
+                        original_filetype,
+                        spectral_grade,
+                    ),
+                    expected,
+                )
 
 
 # ============================================================================

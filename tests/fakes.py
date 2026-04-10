@@ -45,6 +45,175 @@ class DenylistEntry:
     reason: str | None = None
 
 
+@dataclass
+class EnqueueCall:
+    """One slskd enqueue call captured by FakeSlskdAPI."""
+    username: str
+    files: list[dict[str, Any]]
+
+
+@dataclass
+class CancelDownloadCall:
+    """One slskd cancel_download call captured by FakeSlskdAPI."""
+    username: str
+    id: str
+
+
+class FakeSlskdTransfers:
+    """Stateful fake for the slskd transfers API."""
+
+    def __init__(self, api: "FakeSlskdAPI") -> None:
+        self._api = api
+        self.enqueue_calls: list[EnqueueCall] = []
+        self.get_all_downloads_calls: list[bool] = []
+        self.get_download_calls: list[tuple[str, str]] = []
+        self.get_downloads_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        self.cancel_download_calls: list[CancelDownloadCall] = []
+        self.enqueue_result = True
+        self.enqueue_error: Exception | None = None
+        self.get_all_downloads_error: Exception | None = None
+        self.get_download_error: Exception | None = None
+        self.cancel_download_error: Exception | None = None
+
+    def enqueue(self, username: str, files: list[dict[str, Any]]) -> bool:
+        self.enqueue_calls.append(EnqueueCall(username, copy.deepcopy(files)))
+        if self.enqueue_error is not None:
+            raise self.enqueue_error
+        return self.enqueue_result
+
+    def get_all_downloads(self, includeRemoved: bool = False) -> list[dict[str, Any]]:
+        self.get_all_downloads_calls.append(includeRemoved)
+        if self.get_all_downloads_error is not None:
+            raise self.get_all_downloads_error
+        return self._api._next_download_snapshot()
+
+    def get_downloads(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        self.get_downloads_calls.append((args, copy.deepcopy(kwargs)))
+        return self.get_all_downloads(
+            includeRemoved=bool(kwargs.get("includeRemoved", False)))
+
+    def get_download(self, username: str, id: str) -> dict[str, Any]:
+        self.get_download_calls.append((username, id))
+        if self.get_download_error is not None:
+            raise self.get_download_error
+        transfer = self._api._find_transfer(username, id)
+        if transfer is None:
+            raise KeyError(f"No transfer {id!r} for {username!r}")
+        return transfer
+
+    def cancel_download(self, username: str, id: str) -> bool:
+        self.cancel_download_calls.append(CancelDownloadCall(username, id))
+        if self.cancel_download_error is not None:
+            raise self.cancel_download_error
+        return True
+
+
+class FakeSlskdUsers:
+    """Stateful fake for the slskd users API."""
+
+    def __init__(self) -> None:
+        self.directory_calls: list[tuple[str, str]] = []
+        self.directory_error: Exception | None = None
+        self._directories: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    def set_directory(
+        self,
+        username: str,
+        directory: str,
+        result: list[dict[str, Any]],
+    ) -> None:
+        self._directories[(username, directory)] = copy.deepcopy(result)
+
+    def directory(self, username: str, directory: str) -> list[dict[str, Any]]:
+        self.directory_calls.append((username, directory))
+        if self.directory_error is not None:
+            raise self.directory_error
+        return copy.deepcopy(self._directories.get((username, directory), []))
+
+
+class FakeSlskdAPI:
+    """In-memory fake for slskd API clients used by download tests."""
+
+    def __init__(
+        self,
+        *,
+        downloads: list[dict[str, Any]] | None = None,
+        download_snapshots: list[list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.transfers = FakeSlskdTransfers(self)
+        self.users = FakeSlskdUsers()
+        self._downloads = copy.deepcopy(downloads or [])
+        self._download_snapshots = [
+            copy.deepcopy(snapshot) for snapshot in (download_snapshots or [])
+        ]
+
+    def set_downloads(self, downloads: list[dict[str, Any]]) -> None:
+        self._downloads = copy.deepcopy(downloads)
+        self._download_snapshots = []
+
+    def queue_download_snapshots(self, *snapshots: list[dict[str, Any]]) -> None:
+        self._download_snapshots.extend(copy.deepcopy(list(snapshots)))
+
+    def add_transfer(
+        self,
+        *,
+        username: str,
+        directory: str,
+        filename: str,
+        id: str,
+        state: str | None = None,
+        size: int | None = None,
+        bytesTransferred: int | None = None,
+        **extra: Any,
+    ) -> None:
+        group = self._find_or_create_group(username)
+        directory_row = self._find_or_create_directory(group, directory)
+        transfer: dict[str, Any] = {"filename": filename, "id": id}
+        if state is not None:
+            transfer["state"] = state
+        if size is not None:
+            transfer["size"] = size
+        if bytesTransferred is not None:
+            transfer["bytesTransferred"] = bytesTransferred
+        transfer.update(extra)
+        directory_row.setdefault("files", []).append(transfer)
+
+    def _next_download_snapshot(self) -> list[dict[str, Any]]:
+        if self._download_snapshots:
+            self._downloads = self._download_snapshots.pop(0)
+        return copy.deepcopy(self._downloads)
+
+    def _find_transfer(self, username: str, transfer_id: str) -> dict[str, Any] | None:
+        for group in self._downloads:
+            if group.get("username") not in (None, "", username):
+                continue
+            for directory in group.get("directories", []):
+                for transfer in directory.get("files", []):
+                    if transfer.get("id") == transfer_id:
+                        return copy.deepcopy(transfer)
+        return None
+
+    def _find_or_create_group(self, username: str) -> dict[str, Any]:
+        for group in self._downloads:
+            if group.get("username") == username:
+                return group
+        group = {"username": username, "directories": []}
+        self._downloads.append(group)
+        return group
+
+    @staticmethod
+    def _find_or_create_directory(
+        group: dict[str, Any],
+        directory: str,
+    ) -> dict[str, Any]:
+        for row in group.setdefault("directories", []):
+            if row.get("directory") == directory:
+                return row
+        row = {"directory": directory, "files": []}
+        group["directories"].append(row)
+        return row
+
+
 class FakePipelineDB:
     """In-memory fake for PipelineDB — records mutations for test assertions.
 
