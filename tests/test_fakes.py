@@ -5,7 +5,7 @@ import unittest
 from lib.grab_list import DownloadFile, GrabListEntry
 from lib.pipeline_db import RequestSpectralStateUpdate
 from lib.quality import SpectralContext, SpectralMeasurement, ValidationResult
-from tests.fakes import FakePipelineDB
+from tests.fakes import FakePipelineDB, FakeSlskdAPI
 from tests.helpers import (
     make_download_file,
     make_grab_list_entry,
@@ -83,6 +83,47 @@ class TestFakePipelineDB(unittest.TestCase):
         db.assert_log(self, 0, outcome="success")
         # Extra field goes into .extra dict
         self.assertEqual(db.download_logs[0].extra["spectral_grade"], "genuine")
+
+
+class TestFakeSlskdAPI(unittest.TestCase):
+    def test_get_downloads_returns_queued_snapshots(self):
+        first = [{"username": "user1", "directories": [{"files": []}]}]
+        second = [{"username": "user1", "directories": [{"files": [
+            {"filename": "track.mp3", "id": "tid-1"},
+        ]}]}]
+        slskd = FakeSlskdAPI(download_snapshots=[first, second])
+
+        self.assertEqual(slskd.transfers.get_all_downloads(includeRemoved=True), first)
+        self.assertEqual(slskd.transfers.get_all_downloads(includeRemoved=True), second)
+        self.assertEqual(slskd.transfers.get_all_downloads(includeRemoved=True), second)
+        self.assertEqual(slskd.transfers.get_all_downloads_calls, [True, True, True])
+
+    def test_get_download_matches_username_and_id(self):
+        slskd = FakeSlskdAPI()
+        slskd.add_transfer(
+            username="user1",
+            directory="user1\\Music",
+            filename="user1\\Music\\01.flac",
+            id="tid-1",
+            state="Completed, Succeeded",
+        )
+
+        transfer = slskd.transfers.get_download("user1", "tid-1")
+
+        self.assertEqual(transfer["filename"], "user1\\Music\\01.flac")
+        self.assertEqual(transfer["state"], "Completed, Succeeded")
+        self.assertEqual(slskd.transfers.get_download_calls, [("user1", "tid-1")])
+
+    def test_records_enqueue_and_cancel_calls(self):
+        slskd = FakeSlskdAPI()
+        files = [{"filename": "track.mp3", "size": 1000}]
+
+        self.assertTrue(slskd.transfers.enqueue("user1", files))
+        self.assertTrue(slskd.transfers.cancel_download("user1", "tid-1"))
+
+        self.assertEqual(slskd.transfers.enqueue_calls[0].username, "user1")
+        self.assertEqual(slskd.transfers.enqueue_calls[0].files, files)
+        self.assertEqual(slskd.transfers.cancel_download_calls[0].id, "tid-1")
 
 
 class TestBuilders(unittest.TestCase):
