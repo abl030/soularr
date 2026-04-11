@@ -225,6 +225,60 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
             "180kbps falls back to the default EXCELLENT gate and requeues.")
         self.assertIsNone(row["search_filetype_override"])
 
+    def test_native_vbr_import_clears_stale_final_format(self):
+        """A later plain MP3 import must clear an old target-format label.
+
+        If `final_format='opus 64'` is left behind from a previous import,
+        the rank gate misclassifies the new on-disk MP3 as GOOD and requeues
+        it forever. The success path must clear stale `final_format` when the
+        new import does not carry an explicit label.
+        """
+        ir = make_import_result(decision="import", new_min_bitrate=245)
+        beets_info = AlbumInfo(
+            album_id=1, track_count=10, min_bitrate_kbps=245,
+            avg_bitrate_kbps=245, format="MP3",
+            is_cbr=False, album_path="/Beets/Test")
+
+        db = self._run_dispatch(
+            ir,
+            beets_info,
+            request_overrides={"final_format": "opus 64"},
+        )
+
+        row = db.request(42)
+        self.assertEqual(
+            row["status"], "imported",
+            "stale final_format labels must be cleared so the quality gate "
+            "uses the new beets codec metadata")
+        self.assertIsNone(row["search_filetype_override"])
+        self.assertIsNone(row.get("final_format"))
+
+    def test_native_cbr_import_clears_stale_verified_lossless(self):
+        """A later non-verified import must clear an old verified flag.
+
+        Otherwise a plain CBR 320 replacement inherits `verified_lossless=True`
+        from the previous album and incorrectly skips the lossless requeue path.
+        """
+        ir = make_import_result(decision="import", new_min_bitrate=320)
+        beets_info = AlbumInfo(
+            album_id=1, track_count=10, min_bitrate_kbps=320,
+            avg_bitrate_kbps=320, format="MP3",
+            is_cbr=True, album_path="/Beets/Test")
+
+        db = self._run_dispatch(
+            ir,
+            beets_info,
+            request_overrides={"verified_lossless": True},
+        )
+
+        row = db.request(42)
+        self.assertEqual(
+            row["status"], "wanted",
+            "stale verified_lossless=True must be cleared so native CBR "
+            "imports still requeue for lossless verification")
+        self.assertEqual(row["search_filetype_override"], QUALITY_LOSSLESS)
+        self.assertFalse(row["verified_lossless"])
+
 
 class TestQualityGateVerifiedLosslessBypass(unittest.TestCase):
     """Integration slice: quality gate honors persisted final_format labels."""

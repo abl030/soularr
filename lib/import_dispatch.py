@@ -135,15 +135,18 @@ def _do_mark_done(
         beets_scenario=scenario,
         imported_path=dest_path,
     )
-    if dl_info.verified_lossless_override is not None:
-        if dl_info.verified_lossless_override:
-            update_fields["verified_lossless"] = True
-    elif is_verified_lossless(
-        dl_info.was_converted,
-        dl_info.original_filetype,
-        dl_info.download_spectral.grade if dl_info.download_spectral else None,
-    ):
-        update_fields["verified_lossless"] = True
+    verified_lossless = (
+        bool(dl_info.verified_lossless_override)
+        if dl_info.verified_lossless_override is not None
+        else is_verified_lossless(
+            dl_info.was_converted,
+            dl_info.original_filetype,
+            dl_info.download_spectral.grade if dl_info.download_spectral else None,
+        )
+    )
+    # Persist the full current quality state, not only truthy upgrades.
+    # Otherwise old verified/final-format labels leak into later imports.
+    update_fields["verified_lossless"] = verified_lossless
     if dl_info.download_spectral is not None:
         current_spectral = dl_info.download_spectral
         if update_fields.get("verified_lossless") and dl_info.bitrate:
@@ -155,10 +158,9 @@ def _do_mark_done(
             RequestSpectralStateUpdate(
                 last_download=dl_info.download_spectral,
                 current=current_spectral,
-            ).as_update_fields()
+                ).as_update_fields()
         )
-    if dl_info.final_format:
-        update_fields["final_format"] = dl_info.final_format
+    update_fields["final_format"] = dl_info.final_format
     apply_transition(db, request_id, "imported", **update_fields)
 
     db.log_download(
