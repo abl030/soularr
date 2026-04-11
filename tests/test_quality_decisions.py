@@ -1996,7 +1996,24 @@ class TestQualityRankConfigRoundTrip(unittest.TestCase):
 
 
 class TestQualityRankConfigDefaults(unittest.TestCase):
-    """Lock the default policy values so changes are explicit."""
+    """Lock the default policy values so changes are explicit.
+
+    **These values are mirrored in the Nix module at**
+    ``nixosconfig/modules/nixos/services/soularr.nix`` →
+    ``homelab.services.soularr.qualityRanks.*`` (see README §
+    "Tuning the quality rank model" for the deployment surface and
+    issue #67 for the rationale). If you change a default here, you
+    MUST also update the Nix defaults, otherwise a fresh
+    ``nixos-rebuild switch`` will revert the change on doc2.
+
+    This class is the single source of truth for what
+    ``QualityRankConfig.defaults()`` returns. The Nix mirror is a
+    convenience for declarative visibility (you shouldn't have to open
+    a Python dataclass to read your production config) — but Python
+    stays authoritative. These pin tests fail loudly on any drift so
+    the discrepancy surfaces before anyone ships with mismatched
+    defaults.
+    """
 
     def test_default_metric_is_avg(self):
         self.assertEqual(CFG.bitrate_metric, RankBitrateMetric.AVG)
@@ -2019,6 +2036,22 @@ class TestQualityRankConfigDefaults(unittest.TestCase):
     def test_default_mp3_vbr_levels_length_is_ten(self):
         self.assertEqual(len(CFG.mp3_vbr_levels), 10)
 
+    def test_default_mp3_vbr_levels_full_tuple(self):
+        """Pin the complete LAME V-level ladder — documented in README
+        and mirrored in docs/quality-ranks.md band defaults example."""
+        self.assertEqual(CFG.mp3_vbr_levels, (
+            QualityRank.TRANSPARENT,  # V0
+            QualityRank.EXCELLENT,    # V1
+            QualityRank.EXCELLENT,    # V2
+            QualityRank.GOOD,         # V3
+            QualityRank.GOOD,         # V4
+            QualityRank.ACCEPTABLE,   # V5
+            QualityRank.ACCEPTABLE,   # V6
+            QualityRank.ACCEPTABLE,   # V7
+            QualityRank.ACCEPTABLE,   # V8
+            QualityRank.ACCEPTABLE,   # V9
+        ))
+
     def test_default_mp3_v0_is_transparent(self):
         self.assertEqual(CFG.mp3_vbr_levels[0], QualityRank.TRANSPARENT)
 
@@ -2027,6 +2060,30 @@ class TestQualityRankConfigDefaults(unittest.TestCase):
         self.assertEqual(CFG.opus.excellent, 88)
         self.assertEqual(CFG.opus.good, 64)
         self.assertEqual(CFG.opus.acceptable, 48)
+
+    def test_default_mp3_vbr_bands(self):
+        """Legacy QUALITY_MIN_BITRATE_KBPS=210 is preserved at ``excellent``
+        — see docs/quality-ranks.md and the
+        test_default_constant_matches_default_cfg_mp3_vbr_excellent pin."""
+        self.assertEqual(CFG.mp3_vbr.transparent, 245)
+        self.assertEqual(CFG.mp3_vbr.excellent, 210)
+        self.assertEqual(CFG.mp3_vbr.good, 170)
+        self.assertEqual(CFG.mp3_vbr.acceptable, 130)
+
+    def test_default_mp3_cbr_bands(self):
+        """Unverifiable CBR is only transparent at 320 — we can't prove
+        a CBR file came from lossless source."""
+        self.assertEqual(CFG.mp3_cbr.transparent, 320)
+        self.assertEqual(CFG.mp3_cbr.excellent, 256)
+        self.assertEqual(CFG.mp3_cbr.good, 192)
+        self.assertEqual(CFG.mp3_cbr.acceptable, 128)
+
+    def test_default_aac_bands(self):
+        """Hydrogenaudio consensus places the music quality ceiling at 192."""
+        self.assertEqual(CFG.aac.transparent, 192)
+        self.assertEqual(CFG.aac.excellent, 144)
+        self.assertEqual(CFG.aac.good, 112)
+        self.assertEqual(CFG.aac.acceptable, 80)
 
 
 if __name__ == "__main__":

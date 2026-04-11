@@ -337,7 +337,7 @@ Quality comparison is now **rank-based**, not raw-bitrate-based. Every measureme
 - **FLAC > any lossy** (LOSSLESS > TRANSPARENT)
 - **Unverifiable CBR 320** → TRANSPARENT but still `requeue_lossless` via the `is_cbr && !verified_lossless` branch
 
-Every numeric threshold lives in `QualityRankConfig` (one dataclass) and can be retuned in the `[Quality Ranks]` section of `config.ini`. The default `mp3_vbr.excellent=210` preserves the legacy 210kbps gate threshold for bare-codec measurements. Full rationale and tuning guide in `docs/quality-ranks.md`.
+Every numeric threshold lives in `QualityRankConfig` (one dataclass) and can be retuned via Nix options at `homelab.services.soularr.qualityRanks.*` in `nixosconfig/modules/nixos/services/soularr.nix`, which render into `[Quality Ranks]` in `/var/lib/soularr/config.ini` on every `nixos-rebuild`. The default `mp3_vbr.excellent=210` preserves the legacy 210kbps gate threshold for bare-codec measurements. **To retune: see `README.md` § "Tuning the quality rank model"** — every option documented with defaults, meaning, and when to retune, plus the three collection fields (`mp3_vbr_levels`, `lossless_codecs`, `mixed_format_precedence`) that are NOT Nix-exposed but live on the same dataclass. Full rationale in `docs/quality-ranks.md`; default drift caught by `TestQualityRankConfigDefaults` pin tests (#67).
 
 **Key rule**: the `verified_lossless=True` bypass is now **tier-gated**. It imports on verdict `"better"` or `"equivalent"` but blocks on `"worse"`. This prevents a deliberately-too-low `verified_lossless_target` (Opus 64) from replacing a good existing album.
 
