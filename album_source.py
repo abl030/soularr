@@ -220,16 +220,18 @@ class DatabaseSource:
             beets_scenario=bv_result.scenario,
             imported_path=dest_path,
         )
-        if dl.verified_lossless_override is not None:
-            # import_one.py computed this — trust it over re-derivation
-            if dl.verified_lossless_override:
-                update_fields["verified_lossless"] = True
-        elif is_verified_lossless(
-            dl.was_converted,
-            dl.original_filetype,
-            dl.download_spectral.grade if dl.download_spectral else None,
-        ):
-            update_fields["verified_lossless"] = True
+        verified_lossless = (
+            bool(dl.verified_lossless_override)
+            if dl.verified_lossless_override is not None
+            else is_verified_lossless(
+                dl.was_converted,
+                dl.original_filetype,
+                dl.download_spectral.grade if dl.download_spectral else None,
+            )
+        )
+        # Persist the full current quality state, not only truthy upgrades.
+        # Otherwise old verified/final-format labels leak into later imports.
+        update_fields["verified_lossless"] = verified_lossless
         if dl.download_spectral is not None:
             current_spectral = dl.download_spectral
             if update_fields.get("verified_lossless") and dl.bitrate:
@@ -245,8 +247,7 @@ class DatabaseSource:
                     current=current_spectral,
                 ).as_update_fields()
             )
-        if dl.final_format:
-            update_fields["final_format"] = dl.final_format
+        update_fields["final_format"] = dl.final_format
         from lib.transitions import apply_transition
         apply_transition(db, request_id, "imported", **update_fields)
 
