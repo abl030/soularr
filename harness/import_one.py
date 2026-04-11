@@ -47,7 +47,8 @@ _bootstrap_import_paths()
 from lib.beets_db import BeetsDB
 from lib.quality import (AUDIO_EXTENSIONS_DOTTED as AUDIO_EXTENSIONS,
                          AudioQualityMeasurement, ImportResult,
-                         PostflightInfo, TRANSCODE_MIN_BITRATE_KBPS,
+                         PostflightInfo, QualityRankConfig,
+                         TRANSCODE_MIN_BITRATE_KBPS,
                          determine_verified_lossless,
                          import_quality_decision, transcode_detection)
 HARNESS = os.path.join(os.path.dirname(__file__), "..", "harness", "run_beets_harness.sh")
@@ -57,6 +58,13 @@ HARNESS_TIMEOUT = 300
 IMPORT_TIMEOUT = 1800
 MAX_DISTANCE = 0.5
 _current_result: ImportResult | None = None
+
+# Rank config used for BeetsDB.get_album_info() reduction of mixed-format
+# albums. Commit 4 will overwrite this with the deserialized runtime config
+# from the --quality-rank-config argv blob. For commit 3 it's the defaults
+# so behavior is unchanged — get_album_info() now takes cfg but mixed-format
+# reduction uses the default precedence tuple.
+_rank_cfg: QualityRankConfig = QualityRankConfig.defaults()
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +682,7 @@ def main():
         if pf.decision == "preflight_existing":
             _log(f"[PRE-FLIGHT] No new files, keeping existing import")
             if request_id:
-                info = beets.get_album_info(mbid)
+                info = beets.get_album_info(mbid, _rank_cfg)
                 if info:
                     r.postflight = PostflightInfo(
                         beets_id=info.album_id,
@@ -922,7 +930,7 @@ def main():
         _emit_and_exit(r)
 
     # --- Post-flight verification ---
-    pf_info = beets.get_album_info(mbid)
+    pf_info = beets.get_album_info(mbid, _rank_cfg)
     if not pf_info:
         r.exit_code = 2
         r.decision = "import_failed"
@@ -952,7 +960,7 @@ def main():
         )
         if move_result.returncode == 0:
             # Re-read path from beets DB — it may have changed
-            pf_info_after = beets.get_album_info(mbid)
+            pf_info_after = beets.get_album_info(mbid, _rank_cfg)
             if pf_info_after:
                 new_path = pf_info_after.album_path
                 if new_path != album_path:

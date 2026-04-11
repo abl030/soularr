@@ -211,7 +211,8 @@ def _gather_spectral_context(album_data: GrabListEntry, import_folder: str,
         if mb_id:
             try:
                 with BeetsDB() as beets:
-                    existing_info = beets.get_album_info(mb_id)
+                    existing_info = beets.get_album_info(
+                        mb_id, ctx.cfg.quality_ranks)
                 if existing_info:
                     spec_ctx.existing_min_bitrate = existing_info.min_bitrate_kbps
                     if os.path.isdir(existing_info.album_path):
@@ -506,7 +507,8 @@ def _compute_rejection_backfill(album_data: GrabListEntry,
             return None
         from lib.beets_db import BeetsDB
         with BeetsDB() as beets:
-            info = beets.get_album_info(album_data.mb_release_id)
+            info = beets.get_album_info(
+                album_data.mb_release_id, ctx.cfg.quality_ranks)
         if not info:
             return None
         override = rejection_backfill_override(

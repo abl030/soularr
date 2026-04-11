@@ -5,27 +5,73 @@ sqlite3.connect() calls from soularr.py and import_one.py.
 
 Usage:
     with BeetsDB() as db:
-        info = db.get_album_info("mbid-here")
+        info = db.get_album_info("mbid-here", cfg.quality_ranks)
         if info:
-            print(info.min_bitrate_kbps, info.is_cbr)
+            print(info.format, info.min_bitrate_kbps, info.avg_bitrate_kbps, info.is_cbr)
 """
 
 import os
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lib.quality import QualityRankConfig
 
 DEFAULT_BEETS_DB = os.environ.get("BEETS_DB", "/mnt/virtio/Music/beets-library.db")
 
 
+def _reduce_album_format(
+    formats_on_disk: set[str],
+    cfg: "QualityRankConfig",
+) -> str:
+    """Reduce a set of beets format strings to a single canonical one.
+
+    Uses cfg.mixed_format_precedence (worst-first). If the album contains
+    any codec listed in the precedence tuple, the first match wins. Otherwise
+    returns the first format alphabetically (stable but not meaningful) or
+    an empty string if the set is empty.
+    """
+    if not formats_on_disk:
+        return ""
+    # Normalized lookup: lowercase -> original.
+    normalized: dict[str, str] = {f.lower(): f for f in formats_on_disk if f}
+    for preferred in cfg.mixed_format_precedence:
+        if preferred in normalized:
+            return normalized[preferred]
+    # No precedence match — pick a deterministic fallback.
+    return sorted(formats_on_disk)[0]
+
+
 @dataclass
 class AlbumInfo:
-    """Query result from beets DB for a single album."""
+    """Query result from beets DB for a single album.
+
+    format:
+        The canonical codec family for the album, derived from
+        beets.items.format (e.g. "MP3", "FLAC", "Opus", "AAC"). When an album
+        has multiple codecs on disk (rare — manually merged album), the
+        worst-ranked codec wins per QualityRankConfig.mixed_format_precedence.
+        This is the bare codec string for quality_rank() — the pipeline
+        carries the richer "opus 128" / "mp3 v0" labels via ImportResult /
+        album_requests.final_format when available. Defaults to empty string
+        so tests constructing AlbumInfo directly (e.g. integration slices)
+        don't have to pass every field. Production always sets it via
+        get_album_info() → _reduce_album_format().
+    min_bitrate_kbps / avg_bitrate_kbps:
+        Minimum and mean per-track bitrate (kbps). The rank model's
+        measurement_rank() picks between these based on
+        QualityRankConfig.bitrate_metric. ``avg_bitrate_kbps`` defaults to
+        None for the same test-ergonomics reason; measurement_rank() falls
+        back to min when avg is None.
+    """
     album_id: int
     track_count: int
     min_bitrate_kbps: int
     is_cbr: bool
-    album_path: str  # directory containing the tracks
+    album_path: str
+    avg_bitrate_kbps: Optional[int] = None
+    format: str = ""
 
 
 class BeetsDB:
@@ -59,10 +105,19 @@ class BeetsDB:
         ).fetchone()
         return row is not None
 
-    def get_album_info(self, mb_release_id: str) -> Optional[AlbumInfo]:
+    def get_album_info(
+        self,
+        mb_release_id: str,
+        cfg: "QualityRankConfig",
+    ) -> Optional[AlbumInfo]:
         """Get full album info for quality gate / postflight verification.
 
         Returns None if the MBID isn't in beets or has no tracks.
+
+        Mixed-format albums (rare: manually merged albums with tracks in
+        multiple codecs) are reduced to a single canonical format using
+        ``cfg.mixed_format_precedence`` — the worst codec in that tuple wins
+        so the rank stays conservative.
         """
         album_row = self._conn.execute(
             "SELECT id FROM albums WHERE mb_albumid = ?", (mb_release_id,)
@@ -71,9 +126,10 @@ class BeetsDB:
             return None
         album_id: int = album_row[0]
 
-        # Get bitrate stats (exclude 0-bitrate tracks)
+        # Get bitrate + format stats (exclude 0-bitrate tracks)
         rows = self._conn.execute(
-            "SELECT bitrate, path FROM items WHERE album_id = ? AND bitrate > 0",
+            "SELECT bitrate, path, format FROM items "
+            "WHERE album_id = ? AND bitrate > 0",
             (album_id,)
         ).fetchall()
         if not rows:
@@ -81,6 +137,7 @@ class BeetsDB:
 
         bitrates = [r[0] for r in rows]
         min_br = min(bitrates)
+        avg_br = sum(bitrates) / len(bitrates)
         is_cbr = len(set(bitrates)) == 1
         track_count = len(rows)
 
@@ -88,12 +145,18 @@ class BeetsDB:
         first_path = self._decode_path(rows[0][1])
         album_path = os.path.dirname(first_path)
 
+        # Reduce multi-format albums via cfg.mixed_format_precedence.
+        formats_on_disk = {r[2] for r in rows if r[2]}
+        album_format = _reduce_album_format(formats_on_disk, cfg)
+
         return AlbumInfo(
             album_id=album_id,
             track_count=track_count,
             min_bitrate_kbps=int(min_br / 1000),
+            avg_bitrate_kbps=int(avg_br / 1000),
             is_cbr=is_cbr,
             album_path=album_path,
+            format=album_format,
         )
 
     def get_min_bitrate(self, mb_release_id: str) -> Optional[int]:

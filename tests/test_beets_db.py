@@ -57,9 +57,13 @@ def _create_test_db(path: str) -> None:
 
 
 def _insert_album(path: str, album_id: int, mbid: str,
-                   tracks: list[tuple[int, str]], **kwargs: object) -> None:
+                   tracks: list[tuple[int, str]],
+                   track_format: str = "MP3",
+                   **kwargs: object) -> None:
     """Insert an album with tracks. tracks = [(bitrate_bps, path_str), ...]
     Extra kwargs are set as album columns (e.g. album='Foo', albumartist='Bar').
+    ``track_format`` is written to every item's format column — defaults to
+    "MP3" for historical tests.
     """
     conn = sqlite3.connect(path)
     cols = "id, mb_albumid"
@@ -71,8 +75,9 @@ def _insert_album(path: str, album_id: int, mbid: str,
     conn.execute(f"INSERT INTO albums ({cols}) VALUES ({placeholders})", vals)
     for i, (bitrate, track_path) in enumerate(tracks):
         conn.execute(
-            "INSERT INTO items (album_id, bitrate, path) VALUES (?, ?, ?)",
-            (album_id, bitrate, track_path.encode()))
+            "INSERT INTO items (album_id, bitrate, path, format) "
+            "VALUES (?, ?, ?, ?)",
+            (album_id, bitrate, track_path.encode(), track_format))
     conn.commit()
     conn.close()
 
@@ -158,6 +163,8 @@ class TestGetAlbumInfo(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmpdir, "test.db")
         _create_test_db(self.db_path)
+        from lib.quality import QualityRankConfig
+        self.cfg = QualityRankConfig.defaults()
 
     def test_single_album(self) -> None:
         _insert_album(self.db_path, 1, "abc-123", [
@@ -165,13 +172,15 @@ class TestGetAlbumInfo(unittest.TestCase):
             (320000, "/music/Artist/Album/02.mp3"),
         ])
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("abc-123")
+            info = db.get_album_info("abc-123", self.cfg)
         assert info is not None
         self.assertEqual(info.album_id, 1)
         self.assertEqual(info.track_count, 2)
         self.assertEqual(info.min_bitrate_kbps, 320)
+        self.assertEqual(info.avg_bitrate_kbps, 320)
         self.assertTrue(info.is_cbr)
         self.assertEqual(info.album_path, "/music/Artist/Album")
+        self.assertEqual(info.format, "MP3")
 
     def test_vbr_album(self) -> None:
         _insert_album(self.db_path, 2, "def-456", [
@@ -180,15 +189,17 @@ class TestGetAlbumInfo(unittest.TestCase):
             (251000, "/music/A/B/03.mp3"),
         ])
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("def-456")
+            info = db.get_album_info("def-456", self.cfg)
         assert info is not None
         self.assertEqual(info.min_bitrate_kbps, 238)
+        self.assertEqual(info.avg_bitrate_kbps, 244)  # (245+238+251)/3 = 244.66 → 244
         self.assertFalse(info.is_cbr)
         self.assertEqual(info.track_count, 3)
+        self.assertEqual(info.format, "MP3")
 
     def test_not_found(self) -> None:
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("nonexistent")
+            info = db.get_album_info("nonexistent", self.cfg)
         self.assertIsNone(info)
 
     def test_album_no_tracks(self) -> None:
@@ -198,7 +209,7 @@ class TestGetAlbumInfo(unittest.TestCase):
         conn.commit()
         conn.close()
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("empty-1")
+            info = db.get_album_info("empty-1", self.cfg)
         self.assertIsNone(info)
 
     def test_zero_bitrate_ignored(self) -> None:
@@ -208,7 +219,7 @@ class TestGetAlbumInfo(unittest.TestCase):
             (256000, "/music/A/B/02.mp3"),
         ])
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("ghi-789")
+            info = db.get_album_info("ghi-789", self.cfg)
         assert info is not None
         self.assertEqual(info.min_bitrate_kbps, 256)
 
@@ -218,9 +229,101 @@ class TestGetAlbumInfo(unittest.TestCase):
             (320000, "/music/Ärtiöst/Albüm/01.mp3"),
         ])
         with BeetsDB(self.db_path) as db:
-            info = db.get_album_info("jkl-012")
+            info = db.get_album_info("jkl-012", self.cfg)
         assert info is not None
         self.assertIn("Albüm", info.album_path)
+
+    def test_opus_album_format(self) -> None:
+        """Opus tracks report format='Opus'."""
+        _insert_album(self.db_path, 5, "opus-1", [
+            (128000, "/m/O/01.opus"),
+            (120000, "/m/O/02.opus"),
+            (135000, "/m/O/03.opus"),
+        ], track_format="Opus")
+        with BeetsDB(self.db_path) as db:
+            info = db.get_album_info("opus-1", self.cfg)
+        assert info is not None
+        self.assertEqual(info.format, "Opus")
+        self.assertEqual(info.min_bitrate_kbps, 120)
+        self.assertEqual(info.avg_bitrate_kbps, 127)  # (128+120+135)/3 = 127.66 → 127
+        self.assertFalse(info.is_cbr)
+
+    def test_flac_album_format(self) -> None:
+        """FLAC tracks report format='FLAC'."""
+        _insert_album(self.db_path, 6, "flac-1", [
+            (900000, "/m/F/01.flac"),
+        ], track_format="FLAC")
+        with BeetsDB(self.db_path) as db:
+            info = db.get_album_info("flac-1", self.cfg)
+        assert info is not None
+        self.assertEqual(info.format, "FLAC")
+
+    def test_mixed_format_album_reduces_via_precedence(self) -> None:
+        """Mixed-format album picks worst codec per cfg.mixed_format_precedence."""
+        # Insert manually because _insert_album uses a single format per album
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO albums (id, mb_albumid) VALUES (7, 'mixed-1')")
+        conn.execute(
+            "INSERT INTO items (album_id, bitrate, path, format) "
+            "VALUES (?, ?, ?, ?)",
+            (7, 1000000, b"/m/mix/01.flac", "FLAC"))
+        conn.execute(
+            "INSERT INTO items (album_id, bitrate, path, format) "
+            "VALUES (?, ?, ?, ?)",
+            (7, 245000, b"/m/mix/02.mp3", "MP3"))
+        conn.commit()
+        conn.close()
+        with BeetsDB(self.db_path) as db:
+            info = db.get_album_info("mixed-1", self.cfg)
+        assert info is not None
+        # Default precedence is ("mp3", "aac", "opus", "flac") — MP3 wins.
+        self.assertEqual(info.format, "MP3")
+
+
+class TestReduceAlbumFormat(unittest.TestCase):
+    """Direct unit tests for _reduce_album_format — pure function, no DB."""
+
+    def setUp(self) -> None:
+        from lib.quality import QualityRankConfig
+        self.cfg = QualityRankConfig.defaults()
+
+    def test_single_format_passes_through(self) -> None:
+        from lib.beets_db import _reduce_album_format
+        self.assertEqual(_reduce_album_format({"MP3"}, self.cfg), "MP3")
+
+    def test_empty_set_returns_empty_string(self) -> None:
+        from lib.beets_db import _reduce_album_format
+        self.assertEqual(_reduce_album_format(set(), self.cfg), "")
+
+    def test_alphabetical_fallback_when_no_precedence_match(self) -> None:
+        """Unknown codecs fall back to sorted()[0]."""
+        from lib.beets_db import _reduce_album_format
+        # Default precedence: ("mp3", "aac", "opus", "flac") — neither matches
+        self.assertEqual(
+            _reduce_album_format({"Vorbis", "WAV"}, self.cfg), "Vorbis")
+
+    def test_precedence_beats_alphabetical(self) -> None:
+        """A precedence-match wins over an alphabetically earlier unknown codec."""
+        from lib.beets_db import _reduce_album_format
+        # "AAC" is earlier alphabetically than "Vorbis" AND is in precedence
+        self.assertEqual(
+            _reduce_album_format({"Vorbis", "AAC"}, self.cfg), "AAC")
+
+    def test_case_insensitive_precedence_match(self) -> None:
+        """Lowercase beets format ("flac") still matches precedence."""
+        from lib.beets_db import _reduce_album_format
+        self.assertEqual(
+            _reduce_album_format({"flac"}, self.cfg), "flac")
+        # Mixed case
+        self.assertEqual(
+            _reduce_album_format({"flac", "mp3"}, self.cfg), "mp3")
+
+    def test_three_way_mix(self) -> None:
+        """{FLAC, Opus, AAC} → AAC (first precedence match)."""
+        from lib.beets_db import _reduce_album_format
+        self.assertEqual(
+            _reduce_album_format({"FLAC", "Opus", "AAC"}, self.cfg), "AAC")
 
 
 class TestGetMinBitrate(unittest.TestCase):
