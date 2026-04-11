@@ -715,10 +715,15 @@ class QualityRankConfig:
     within_rank_tolerance_kbps: int = 5
 
     # --- Per-codec band tables ---
+    # Defaults are tuned to preserve the legacy 210 kbps gate threshold for
+    # bare-codec MP3 VBR measurements (old QUALITY_MIN_BITRATE_KBPS) while
+    # adding perceptual tiers above and below. Explicit labels like "mp3 v0"
+    # / "opus 128" bypass the band tables via the V-level / declared-bitrate
+    # resolution steps — those classify by contract.
     opus:    CodecRankBands = field(default_factory=lambda: CodecRankBands(
         transparent=112, excellent=88, good=64, acceptable=48))
     mp3_vbr: CodecRankBands = field(default_factory=lambda: CodecRankBands(
-        transparent=210, excellent=170, good=130, acceptable=90))
+        transparent=245, excellent=210, good=170, acceptable=130))
     mp3_cbr: CodecRankBands = field(default_factory=lambda: CodecRankBands(
         transparent=320, excellent=256, good=192, acceptable=128))
     aac:     CodecRankBands = field(default_factory=lambda: CodecRankBands(
@@ -1365,13 +1370,26 @@ def spectral_import_decision(spectral_grade, spectral_bitrate, existing_spectral
 # import_one.py decisions (FLAC conversion path)
 # ---------------------------------------------------------------------------
 
-def import_quality_decision(new: AudioQualityMeasurement,
-                            existing: "AudioQualityMeasurement | None",
-                            is_transcode: bool = False) -> str:
-    """Decide whether to import based on bitrate comparison.
+def import_quality_decision(
+    new: AudioQualityMeasurement,
+    existing: "AudioQualityMeasurement | None",
+    is_transcode: bool = False,
+    cfg: "QualityRankConfig | None" = None,
+) -> str:
+    """Decide whether to import based on codec-aware quality comparison (issue #60).
 
     Called in import_one.py after FLAC→V0 conversion (if applicable)
     and before running the beets harness.
+
+    Uses compare_quality() which classifies both measurements into
+    QualityRank bands (via quality_rank/measurement_rank), so cross-codec
+    comparisons (Opus 128 vs MP3 V0) are correctly treated as equivalent.
+
+    The verified_lossless bypass is now a tier-gated preference:
+    ``verified_lossless=True`` still forces an import when the verdict is
+    "better" or "equivalent", but NOT when it would be a downgrade — this
+    blocks a deliberately too-low ``verified_lossless_target`` (e.g. Opus
+    64) from replacing a good existing album.
 
     Returns one of:
         "import"              — new files are better (or no existing), proceed
@@ -1380,32 +1398,33 @@ def import_quality_decision(new: AudioQualityMeasurement,
         "transcode_downgrade" — transcode and not better, skip + denylist (exit 6)
         "transcode_first"     — transcode but nothing on disk yet, import (exit 6)
 
-    Inputs:
-        new:           measurement of the new download
-        existing:      measurement of what's already in beets, or None
-                       (caller resolves override_min_bitrate into existing.min_bitrate_kbps)
-        is_transcode:  True if FLAC→V0 produced a transcode (from transcode_detection)
+    Args:
+        new: measurement of the new download
+        existing: measurement of what's already in beets, or None
+                  (caller resolves override_min_bitrate into existing.min_bitrate_kbps)
+        is_transcode: True if FLAC→V0 produced a transcode (from transcode_detection)
+        cfg: QualityRankConfig. Defaults to QualityRankConfig.defaults().
     """
-    # Genuine FLAC→V0 always wins — V0 bitrate is numerically lower than
-    # CBR 320 but objectively better quality (verified lossless source).
-    if new.verified_lossless:
-        return "import"
+    if cfg is None:
+        cfg = QualityRankConfig.defaults()
 
-    existing_br = existing.min_bitrate_kbps if existing is not None else None
+    if existing is None:
+        return "transcode_first" if is_transcode else "import"
 
-    if existing_br is not None and new.min_bitrate_kbps is not None:
-        if new.min_bitrate_kbps <= existing_br:
-            if is_transcode:
-                return "transcode_downgrade"
-            return "downgrade"
-        else:
-            if is_transcode:
-                return "transcode_upgrade"
-            return "import"
-    elif existing is None and is_transcode:
-        return "transcode_first"
-    else:
-        return "import"
+    verdict = compare_quality(new, existing, cfg)
+
+    # verified_lossless is a soft preference: "better" or "equivalent" still
+    # import, but "worse" is blocked regardless of verified_lossless status.
+    # This prevents a deliberately too-low verified-lossless target from
+    # blindly replacing a good existing album (issue #60 acceptance criterion).
+    if new.verified_lossless and verdict in ("better", "equivalent"):
+        return "transcode_upgrade" if is_transcode else "import"
+
+    if verdict == "better":
+        return "transcode_upgrade" if is_transcode else "import"
+
+    # "worse" or "equivalent" without verified_lossless bypass → reject.
+    return "transcode_downgrade" if is_transcode else "downgrade"
 
 
 def transcode_detection(converted_count, post_conversion_min_bitrate,
@@ -1484,32 +1503,45 @@ def is_verified_lossless(was_converted: bool, original_filetype: Optional[str],
 # Post-import quality gate (runs after successful import in soularr.py)
 # ---------------------------------------------------------------------------
 
-def quality_gate_decision(current: AudioQualityMeasurement) -> str:
-    """Pure decision logic for the post-import quality gate.
+def quality_gate_decision(
+    current: AudioQualityMeasurement,
+    cfg: "QualityRankConfig | None" = None,
+) -> str:
+    """Codec-aware post-import quality gate (issue #60).
+
+    Classifies ``current`` into a QualityRank via measurement_rank() and
+    compares against ``cfg.gate_min_rank``. Spectral bitrate can clamp the
+    rank down (catches fake 320s) by classifying the spectral estimate with
+    the MP3 VBR band table.
 
     Returns one of: "accept", "requeue_upgrade", "requeue_lossless".
 
-    Input:
+    Args:
         current: measurement of the files now on disk (from beets DB + spectral)
+        cfg: QualityRankConfig. Defaults to QualityRankConfig.defaults().
     """
-    gate_br = current.min_bitrate_kbps
-    if gate_br is None:
+    if cfg is None:
+        cfg = QualityRankConfig.defaults()
+
+    rank = measurement_rank(current, cfg)
+
+    # Spectral clamp: when the current measurement carries a spectral
+    # estimate (set upstream only when the grade is suspect/likely_transcode
+    # — see _check_quality_gate_core()), classify that estimate against the
+    # MP3 VBR band table and take the lower rank. This catches fake 320s
+    # and legacy low-spectral transcodes.
+    if current.spectral_bitrate_kbps is not None:
+        spectral_rank = quality_rank(
+            "mp3", current.spectral_bitrate_kbps, is_cbr=False, cfg=cfg)
+        if spectral_rank < rank:
+            rank = spectral_rank
+
+    if rank == QualityRank.UNKNOWN or rank < cfg.gate_min_rank:
         return "requeue_upgrade"
-
-    # Spectral bitrate overrides if lower (catches fake 320s)
-    if current.spectral_bitrate_kbps is not None and current.spectral_bitrate_kbps < gate_br:
-        gate_br = current.spectral_bitrate_kbps
-
-    # Verified lossless overrides low bitrate (quiet/simple music is fine)
-    if current.verified_lossless and gate_br < QUALITY_MIN_BITRATE_KBPS:
-        gate_br = QUALITY_MIN_BITRATE_KBPS  # force pass
-
-    if gate_br < QUALITY_MIN_BITRATE_KBPS:
-        return "requeue_upgrade"
-    elif not current.verified_lossless and current.is_cbr:
+    if (not current.verified_lossless and current.is_cbr
+            and rank < QualityRank.LOSSLESS):
         return "requeue_lossless"
-    else:
-        return "accept"
+    return "accept"
 
 
 # ---------------------------------------------------------------------------
@@ -2155,6 +2187,8 @@ def full_pipeline_decision(
     existing_min_bitrate=None,
     existing_spectral_bitrate=None,
     override_min_bitrate=None,
+    existing_format: str | None = None,
+    existing_is_cbr: bool = False,
     # Post-conversion (FLAC path only)
     post_conversion_min_bitrate=None,
     converted_count=0,
@@ -2164,11 +2198,20 @@ def full_pipeline_decision(
     verified_lossless_target=None,
     # Target format (user intent — "flac" skips conversion)
     target_format=None,
+    # New download format label (codec-aware, passed through to measurements)
+    new_format: str | None = None,
+    # Rank-model config (defaults() for legacy callers)
+    cfg: "QualityRankConfig | None" = None,
 ):
     """Run the full decision chain and return the final outcome.
 
     This simulates what happens when a download completes and flows through
     process_completed_album → import_one.py → _check_quality_gate.
+
+    Codec-aware: when ``new_format`` / ``existing_format`` are supplied, the
+    simulator classifies both measurements via quality_rank() — matching
+    production dispatch behavior. Legacy callers that omit them still get
+    sensible defaults derived from ``is_flac``/``target_format``/``is_cbr``.
 
     Returns a dict:
         {
@@ -2181,6 +2224,8 @@ def full_pipeline_decision(
             "keep_searching": bool,     # whether the system keeps looking for better
         }
     """
+    if cfg is None:
+        cfg = QualityRankConfig.defaults()
     result = {
         "stage1_spectral": None,
         "stage2_import": None,
@@ -2206,19 +2251,31 @@ def full_pipeline_decision(
             return result
 
     # --- Stage 2: Import decision ---
+    # Existing measurement — carries format if the caller provided one,
+    # otherwise defaults to "MP3" so legacy simulator scenarios (which only
+    # carry a min_bitrate) still classify against the MP3 VBR/CBR band
+    # tables. Production always provides a real format via BeetsDB.
+    effective_existing_format = existing_format if existing_format is not None else "MP3"
     existing_m = (AudioQualityMeasurement(
                       min_bitrate_kbps=override_min_bitrate
                       if override_min_bitrate is not None
-                      else existing_min_bitrate)
+                      else existing_min_bitrate,
+                      avg_bitrate_kbps=override_min_bitrate
+                      if override_min_bitrate is not None
+                      else existing_min_bitrate,
+                      format=effective_existing_format,
+                      is_cbr=existing_is_cbr)
                   if existing_min_bitrate is not None else None)
 
     if is_flac and target_format in ("flac", "lossless"):
-        # FLAC kept on disk (no conversion) — use raw FLAC bitrate.
-        # Don't set verified_lossless on new_m for comparison — that would
-        # auto-win over existing FLAC at the same bitrate. Use plain bitrate
-        # comparison. verified_lossless is set on the album after import.
-        new_m = AudioQualityMeasurement(min_bitrate_kbps=min_bitrate)
-        result["stage2_import"] = import_quality_decision(new_m, existing_m)
+        # FLAC kept on disk (no conversion).
+        stage2_new_format = new_format or "flac"
+        new_m = AudioQualityMeasurement(
+            min_bitrate_kbps=min_bitrate,
+            avg_bitrate_kbps=min_bitrate,
+            format=stage2_new_format)
+        result["stage2_import"] = import_quality_decision(
+            new_m, existing_m, cfg=cfg)
 
         if result["stage2_import"] == "downgrade":
             result["final_status"] = "imported"
@@ -2232,6 +2289,7 @@ def full_pipeline_decision(
 
         gate_bitrate = min_bitrate
         gate_cbr = False
+        gate_format = stage2_new_format  # "flac"
     elif is_flac:
         # FLAC path: convert first, then decide
         is_transcode = transcode_detection(converted_count, post_conversion_min_bitrate,
@@ -2239,10 +2297,20 @@ def full_pipeline_decision(
         import_br = post_conversion_min_bitrate if post_conversion_min_bitrate else min_bitrate
 
         will_be_verified = (converted_count > 0 and not is_transcode)
-        new_m = AudioQualityMeasurement(min_bitrate_kbps=import_br,
-                                        verified_lossless=will_be_verified)
+        # The V0 label is a CONTRACT for verified lossless conversions only —
+        # a transcoded FLAC→V0 is not actually "mp3 v0" quality, just a V0
+        # container wrapping transcode-grade audio. Fall back to bare codec
+        # classification for transcodes so the rank reflects measured bitrate.
+        stage2_new_format = new_format or (
+            "mp3 v0" if (converted_count > 0 and not is_transcode) else
+            "MP3" if converted_count > 0 else None)
+        new_m = AudioQualityMeasurement(
+            min_bitrate_kbps=import_br,
+            avg_bitrate_kbps=import_br,
+            format=stage2_new_format,
+            verified_lossless=will_be_verified)
         result["stage2_import"] = import_quality_decision(
-            new_m, existing_m, is_transcode)
+            new_m, existing_m, is_transcode, cfg=cfg)
 
         if result["stage2_import"] == "downgrade":
             result["final_status"] = "imported"  # keeps existing
@@ -2266,17 +2334,35 @@ def full_pipeline_decision(
                 spectral_grade in ("genuine", "marginal", None)):
             verified_lossless = True
 
-        # Target format conversion: if verified lossless + target configured
+        # Target format conversion: if verified lossless + target configured,
+        # use the target label for the quality gate (e.g. "opus 128") so the
+        # rank model classifies against the actual on-disk contract.
         if verified_lossless and verified_lossless_target:
             result["target_final_format"] = verified_lossless_target
+            gate_format = verified_lossless_target
+        else:
+            gate_format = stage2_new_format
 
         # Use post-conversion bitrate for quality gate
         gate_bitrate = post_conversion_min_bitrate or min_bitrate
         gate_cbr = False  # V0 conversion always produces VBR
     else:
-        # MP3 path: import directly
-        new_m = AudioQualityMeasurement(min_bitrate_kbps=min_bitrate)
-        result["stage2_import"] = import_quality_decision(new_m, existing_m)
+        # MP3 path: import directly. No format label for native MP3 downloads
+        # unless the caller provided one — the rank model falls back to the
+        # bare-codec bitrate classification via `new_format=None`.
+        stage2_new_format = new_format
+        if stage2_new_format is None and is_cbr:
+            # Bare-codec bitrate path; compare against existing bare MP3 CBR.
+            stage2_new_format = "MP3"
+        elif stage2_new_format is None:
+            stage2_new_format = "MP3"
+        new_m = AudioQualityMeasurement(
+            min_bitrate_kbps=min_bitrate,
+            avg_bitrate_kbps=min_bitrate,
+            format=stage2_new_format,
+            is_cbr=is_cbr)
+        result["stage2_import"] = import_quality_decision(
+            new_m, existing_m, cfg=cfg)
 
         if result["stage2_import"] == "downgrade":
             result["final_status"] = "imported"  # keeps existing
@@ -2286,6 +2372,7 @@ def full_pipeline_decision(
         result["imported"] = True
         gate_bitrate = min_bitrate
         gate_cbr = is_cbr
+        gate_format = stage2_new_format
 
     # --- Stage 3: Post-import quality gate ---
     gate_spectral_bitrate = None
@@ -2295,10 +2382,14 @@ def full_pipeline_decision(
             and effective_gate_bitrate is not None
             and effective_gate_bitrate < gate_bitrate):
         gate_spectral_bitrate = spectral_bitrate
-    gate_m = AudioQualityMeasurement(min_bitrate_kbps=gate_bitrate, is_cbr=gate_cbr,
-                                     verified_lossless=verified_lossless,
-                                     spectral_bitrate_kbps=gate_spectral_bitrate)
-    result["stage3_quality_gate"] = quality_gate_decision(gate_m)
+    gate_m = AudioQualityMeasurement(
+        min_bitrate_kbps=gate_bitrate,
+        avg_bitrate_kbps=gate_bitrate,
+        format=gate_format,
+        is_cbr=gate_cbr,
+        verified_lossless=verified_lossless,
+        spectral_bitrate_kbps=gate_spectral_bitrate)
+    result["stage3_quality_gate"] = quality_gate_decision(gate_m, cfg=cfg)
 
     if result["stage3_quality_gate"] == "accept":
         result["final_status"] = "imported"

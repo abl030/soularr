@@ -108,13 +108,17 @@ def quality_decision_stage(
     new: AudioQualityMeasurement,
     existing: AudioQualityMeasurement | None,
     is_transcode: bool,
+    cfg: QualityRankConfig | None = None,
 ) -> StageResult:
     """Run quality comparison and map to exit codes (pure wrapper).
 
     Delegates to import_quality_decision() and maps terminal decisions
     to exit codes: downgrade→5, transcode_downgrade→6.
+
+    ``cfg`` flows through to import_quality_decision for codec-aware
+    comparison. Falls back to QualityRankConfig.defaults() when omitted.
     """
-    decision = import_quality_decision(new, existing, is_transcode)
+    decision = import_quality_decision(new, existing, is_transcode, cfg=cfg)
 
     if decision == "downgrade":
         return StageResult(decision="downgrade", exit_code=5, terminal=True)
@@ -924,7 +928,8 @@ def main():
     r.existing_measurement = existing_m
 
     # --- Quality comparison (pure decision) ---
-    qd = quality_decision_stage(new_m, existing_m, is_transcode=is_transcode)
+    qd = quality_decision_stage(new_m, existing_m, is_transcode=is_transcode,
+                                cfg=_rank_cfg)
     decision = qd.decision
     r.decision = decision
 

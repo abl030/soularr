@@ -285,7 +285,9 @@ def _check_quality_gate_core(
         if not info:
             return
         min_br_kbps = info.min_bitrate_kbps
+        avg_br_kbps = info.avg_bitrate_kbps
         is_cbr = info.is_cbr
+        album_format = info.format
 
         spectral_br: int | None = None
         spectral_grade: str | None = None
@@ -310,10 +312,13 @@ def _check_quality_gate_core(
         verified_lossless = bool(req.get("verified_lossless")) if req else False
 
         current = AudioQualityMeasurement(
-            min_bitrate_kbps=min_br_kbps, is_cbr=is_cbr,
+            min_bitrate_kbps=min_br_kbps,
+            avg_bitrate_kbps=avg_br_kbps,
+            format=album_format,
+            is_cbr=is_cbr,
             verified_lossless=verified_lossless,
             spectral_bitrate_kbps=spectral_br)
-        decision = quality_gate_decision(current)
+        decision = quality_gate_decision(current, cfg=quality_ranks)
 
         spectral_note = f" (spectral={spectral_br}kbps)" if spectral_br else ""
 
@@ -604,6 +609,7 @@ def dispatch_import_core(
                     request_id=request_id,
                     files=list(file_list),
                     db=db,
+                    quality_ranks=cfg.quality_ranks if cfg is not None else None,
                 )
             if action.trigger_meelo and cfg is not None:
                 _trigger_meelo(cfg)

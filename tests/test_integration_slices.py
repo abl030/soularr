@@ -61,7 +61,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
     _check_quality_gate_core, quality_gate_decision, apply_transition.
     """
 
-    def _run_dispatch(self, ir, beets_info, request_overrides=None):
+    def _run_dispatch(self, ir, beets_info, request_overrides=None, cfg=None):
         """Dispatch an import and return the FakePipelineDB state."""
         from lib.import_dispatch import dispatch_import_core
 
@@ -71,10 +71,11 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
             **(request_overrides or {}),
         ))
 
-        cfg = SoularrConfig(
-            beets_harness_path=_HARNESS,
-            pipeline_db_enabled=True,
-        )
+        if cfg is None:
+            cfg = SoularrConfig(
+                beets_harness_path=_HARNESS,
+                pipeline_db_enabled=True,
+            )
         dl_info = DownloadInfo(username="user1")
         stdout = _make_stdout(ir)
 
@@ -109,6 +110,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
         ir = make_import_result(decision="import", new_min_bitrate=245)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=245,
+            avg_bitrate_kbps=245, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         db = self._run_dispatch(ir, beets_info)
@@ -125,6 +127,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
         ir = make_import_result(decision="import", new_min_bitrate=180)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=180,
+            avg_bitrate_kbps=180, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         db = self._run_dispatch(ir, beets_info)
@@ -143,6 +146,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
         ir = make_import_result(decision="import", new_min_bitrate=320)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=320,
+            avg_bitrate_kbps=320, format="MP3",
             is_cbr=True, album_path="/Beets/Test")
 
         db = self._run_dispatch(ir, beets_info)
@@ -157,6 +161,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
         ir = make_import_result(decision="transcode_upgrade", new_min_bitrate=227)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=227,
+            avg_bitrate_kbps=227, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         db = self._run_dispatch(ir, beets_info)
@@ -175,6 +180,7 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
                                 new_min_bitrate=128, prev_min_bitrate=320)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=128,
+            avg_bitrate_kbps=128, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         db = self._run_dispatch(ir, beets_info)
@@ -184,21 +190,64 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
         self.assertTrue(len(db.denylist) >= 1)
         db.assert_log(self, 0, outcome="rejected")
 
+    def test_custom_gate_min_rank_accepts_lower(self):
+        """Custom gate_min_rank=GOOD must flip requeue → accept end-to-end.
+
+        Locks the runtime config threading: cfg.quality_ranks → dispatch
+        → _check_quality_gate_core → quality_gate_decision. If any hop
+        drops cfg, this test fails because the gate falls back to
+        default EXCELLENT and 180kbps still requeues.
+        """
+        from lib.quality import QualityRank, QualityRankConfig
+
+        ir = make_import_result(decision="import", new_min_bitrate=180)
+        beets_info = AlbumInfo(
+            album_id=1, track_count=10, min_bitrate_kbps=180,
+            avg_bitrate_kbps=180, format="MP3",
+            is_cbr=False, album_path="/Beets/Test")
+
+        custom_cfg = SoularrConfig(
+            beets_harness_path=_HARNESS,
+            pipeline_db_enabled=True,
+            quality_ranks=QualityRankConfig(gate_min_rank=QualityRank.GOOD),
+        )
+
+        db = self._run_dispatch(ir, beets_info, cfg=custom_cfg)
+
+        row = db.request(42)
+        # Under default gate_min_rank=EXCELLENT, 180 MP3 VBR = GOOD → requeue.
+        # Under the custom cfg (gate_min_rank=GOOD), 180 passes.
+        self.assertEqual(
+            row["status"], "imported",
+            "cfg.quality_ranks.gate_min_rank=GOOD must thread through "
+            "dispatch_import_core → _check_quality_gate_core → "
+            "quality_gate_decision. If cfg is dropped at any hop, "
+            "180kbps falls back to the default EXCELLENT gate and requeues.")
+        self.assertIsNone(row["search_filetype_override"])
+
 
 class TestQualityGateVerifiedLosslessBypass(unittest.TestCase):
     """Integration slice: quality gate stays imported for verified_lossless
     even when bitrate < 210."""
 
     def test_verified_lossless_low_bitrate_accepts(self):
-        """207kbps VBR from verified FLAC → accepted despite < 210 threshold."""
+        """207kbps V0 from verified FLAC → accepted (label = TRANSPARENT)."""
         from lib.import_dispatch import _check_quality_gate_core
 
         db = FakePipelineDB()
         db.seed_request(make_request_row(
             id=42, status="imported", verified_lossless=True))
 
+        # Under the codec-aware rank model, lo-fi V0 is accepted via the
+        # "mp3 v0" label (TRANSPARENT rank regardless of bitrate), so we
+        # seed the AlbumInfo with format="MP3" and it classifies via the
+        # VBR band table (207 is still below 210 → EXCELLENT not TRANSPARENT).
+        # To accept at 207 under the new rules, the format must be the V0
+        # label contract, which is only known from import_one.py. Simulating
+        # that via format="MP3" here — 207 MP3 VBR is EXCELLENT ≥ gate.
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=207,
+            avg_bitrate_kbps=207, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         with patch("lib.beets_db.BeetsDB", _mock_beets_db(beets_info)):
@@ -233,6 +282,7 @@ class TestQualityGateSpectralOverride(unittest.TestCase):
 
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=320,
+            avg_bitrate_kbps=320, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         with patch("lib.beets_db.BeetsDB", _mock_beets_db(beets_info)):
@@ -277,6 +327,8 @@ class TestSpectralPropagationSlice(unittest.TestCase):
             album_id=1,
             track_count=10,
             min_bitrate_kbps=320,
+            avg_bitrate_kbps=320,
+            format="MP3",
             is_cbr=True,
             album_path="/Beets/Test",
         )
@@ -377,6 +429,7 @@ class TestForceImportSlice(unittest.TestCase):
         stdout = _make_stdout(ir)
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=320,
+            avg_bitrate_kbps=320, format="MP3",
             is_cbr=False, album_path="/Beets/Test")
 
         cfg = SoularrConfig(

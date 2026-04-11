@@ -39,6 +39,26 @@ class AlbumState:
     verified_lossless: bool
     search_filetype_override: str | None  # search_filetype_override (transient search filter)
     target_format: str | None = None  # persistent user intent
+    existing_format: str | None = None  # beets items.format ("MP3"/"FLAC"/"Opus"/None)
+
+
+def _derive_album_format(album: "AlbumState") -> str | None:
+    """Derive a codec-aware format hint for an AlbumState.
+
+    Legacy simulator fixtures don't carry a format field — derive one from
+    ``verified_lossless`` (heuristic for FLAC-on-disk albums) / ``is_cbr`` /
+    min bitrate so the rank model has what it needs without rewriting 14
+    fixture rows. ``existing_format`` overrides everything.
+    """
+    if album.existing_format is not None:
+        return album.existing_format
+    if album.min_bitrate is None:
+        return None
+    # verified_lossless with raw FLAC-range bitrate (≥500) → FLAC on disk.
+    if album.verified_lossless and album.min_bitrate >= 500:
+        return "FLAC"
+    # Otherwise assume MP3 — band table classifies via is_cbr.
+    return "MP3"
 
 
 @dataclass(frozen=True)
@@ -52,6 +72,7 @@ class DownloadScenario:
     spectral_bitrate: int | None = None
     converted_count: int = 0
     post_conversion_min_bitrate: int | None = None
+    new_format: str | None = None  # explicit format hint for the rank model
 
     def dl_params(self) -> dict:
         """Download-side kwargs for full_pipeline_decision()."""
@@ -63,6 +84,7 @@ class DownloadScenario:
             "spectral_bitrate": self.spectral_bitrate,
             "converted_count": self.converted_count,
             "post_conversion_min_bitrate": self.post_conversion_min_bitrate,
+            "new_format": self.new_format,
         }
 
 
@@ -173,6 +195,8 @@ def simulate(album: AlbumState, download: DownloadScenario,
         existing_min_bitrate=album.min_bitrate,
         existing_spectral_bitrate=existing_spectral_bitrate,
         override_min_bitrate=override,
+        existing_format=_derive_album_format(album),
+        existing_is_cbr=album.is_cbr,
         verified_lossless=album.verified_lossless,
         verified_lossless_target=verified_lossless_target,
         target_format=album.target_format,

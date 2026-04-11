@@ -85,29 +85,98 @@ class TestSpectralImportDecision(unittest.TestCase):
 # ============================================================================
 
 class TestImportQualityDecision(unittest.TestCase):
-    """Test import decision (FLAC conversion / bitrate comparison path).
+    """Codec-aware import decision (issue #60).
 
-    Uses AudioQualityMeasurement objects for new/existing.
-    The override concept is gone — callers construct existing with
-    the resolved bitrate.
+    Every row explicitly sets ``format`` + ``avg_bitrate_kbps`` on both
+    measurements so the rank model has what it needs. The old blanket
+    verified_lossless bypass is replaced by a tier-gated preference:
+    ``verified_lossless=True`` still imports on "better" or "equivalent",
+    but a "worse" verdict is blocked regardless — this prevents a
+    deliberately-too-low verified_lossless_target from replacing a good
+    existing album.
     """
 
     CASES = [
         # desc, new_kwargs, existing_kwargs, is_transcode, expected
-        ("verified lossless wins", dict(min_bitrate_kbps=240, verified_lossless=True), dict(min_bitrate_kbps=320), False, "import"),
-        ("verified lossless lower bitrate wins", dict(min_bitrate_kbps=207, verified_lossless=True), dict(min_bitrate_kbps=320), False, "import"),
-        ("verified lossless no existing", dict(min_bitrate_kbps=240, verified_lossless=True), None, False, "import"),
-        ("normal upgrade", dict(min_bitrate_kbps=256), dict(min_bitrate_kbps=192), False, "import"),
-        ("equal bitrate downgrade", dict(min_bitrate_kbps=320), dict(min_bitrate_kbps=320), False, "downgrade"),
-        ("lower bitrate downgrade", dict(min_bitrate_kbps=192), dict(min_bitrate_kbps=320), False, "downgrade"),
-        ("override already resolved as upgrade", dict(min_bitrate_kbps=240), dict(min_bitrate_kbps=128), False, "import"),
-        ("override already resolved as downgrade", dict(min_bitrate_kbps=100), dict(min_bitrate_kbps=128), False, "downgrade"),
-        ("transcode upgrade", dict(min_bitrate_kbps=192), dict(min_bitrate_kbps=128), True, "transcode_upgrade"),
-        ("transcode downgrade", dict(min_bitrate_kbps=128), dict(min_bitrate_kbps=192), True, "transcode_downgrade"),
-        ("transcode equal downgrade", dict(min_bitrate_kbps=128), dict(min_bitrate_kbps=128), True, "transcode_downgrade"),
-        ("transcode first import", dict(min_bitrate_kbps=150), None, True, "transcode_first"),
-        ("first import", dict(min_bitrate_kbps=240), None, False, "import"),
-        ("first import no bitrates", dict(), None, False, "import"),
+
+        # --- Same-codec mono-codec regression cases ---
+        ("V0 beats V2 (same codec family, different rank)",
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         dict(format="mp3 v2", avg_bitrate_kbps=190),
+         False, "import"),
+        ("V2 loses to V0",
+         dict(format="mp3 v2", avg_bitrate_kbps=190),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "downgrade"),
+        ("equal V0 labels → equivalent → downgrade without verified_lossless",
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "downgrade"),
+        ("equal CBR 320 → equivalent → downgrade",
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True),
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True),
+         False, "downgrade"),
+        ("CBR 192 loses to CBR 320",
+         dict(format="mp3 192", avg_bitrate_kbps=192, is_cbr=True),
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True),
+         False, "downgrade"),
+
+        # --- Cross-codec equivalence (core #60 fix) ---
+        ("Opus 128 equivalent to MP3 V0 → no verified → downgrade",
+         dict(format="opus 128", avg_bitrate_kbps=130),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "downgrade"),
+        ("Opus 128 equivalent to MP3 V0 + verified_lossless → import",
+         dict(format="opus 128", avg_bitrate_kbps=130, verified_lossless=True),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "import"),
+        ("FLAC→Opus 128 equivalent to MP3 CBR 320 + verified_lossless → import",
+         dict(format="opus 128", avg_bitrate_kbps=130, verified_lossless=True),
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True),
+         False, "import"),
+
+        # --- verified_lossless guardrail (core #60 fix) ---
+        ("Opus 64 verified CANNOT replace MP3 V0 245",
+         dict(format="opus 64", avg_bitrate_kbps=64, verified_lossless=True),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "downgrade"),
+        ("Opus 48 verified CANNOT replace MP3 CBR 320",
+         dict(format="opus 48", avg_bitrate_kbps=48, verified_lossless=True),
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True),
+         False, "downgrade"),
+
+        # --- Lo-fi genuine V0 (label semantics preserved) ---
+        ("lo-fi V0 (207) equivalent to dense V0 (245) + verified → import",
+         dict(format="mp3 v0", avg_bitrate_kbps=207, verified_lossless=True),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         False, "import"),
+
+        # --- No existing album ---
+        ("no existing → import",
+         dict(format="mp3 v0", avg_bitrate_kbps=240), None, False, "import"),
+        ("no existing transcode → transcode_first",
+         dict(format="mp3 v0", avg_bitrate_kbps=150), None, True, "transcode_first"),
+
+        # --- Transcode semantics ---
+        ("transcode upgrade (better rank)",
+         dict(format="mp3 v0", avg_bitrate_kbps=192),
+         dict(format="mp3 192", avg_bitrate_kbps=128, is_cbr=True),
+         True, "transcode_upgrade"),
+        ("transcode downgrade (worse rank)",
+         dict(format="mp3 128", avg_bitrate_kbps=128, is_cbr=True),
+         dict(format="mp3 v0", avg_bitrate_kbps=192),
+         True, "transcode_downgrade"),
+
+        # --- Legacy format-less fallback via bare-codec path ---
+        # When format is None on both sides, measurements fall to UNKNOWN rank
+        # and compare_quality() uses the bare-codec bitrate tiebreaker with
+        # tolerance. Tests here document that fallback explicitly.
+        ("legacy no-format tie → equivalent → downgrade",
+         dict(min_bitrate_kbps=320), dict(min_bitrate_kbps=320),
+         False, "downgrade"),
+        ("legacy no-format worse → downgrade",
+         dict(min_bitrate_kbps=192), dict(min_bitrate_kbps=320),
+         False, "downgrade"),
     ]
 
     def test_import_quality_decisions(self):
@@ -126,7 +195,8 @@ class TestImportQualityDecision(unittest.TestCase):
                         is_transcode=is_transcode,
                     ),
                     expected,
-                )
+                    f"{desc}: new={new_kwargs} existing={existing_kwargs} "
+                    f"is_transcode={is_transcode} expected {expected!r}")
 
 
 # ============================================================================
@@ -172,35 +242,69 @@ class TestTranscodeDetection(unittest.TestCase):
 # ============================================================================
 
 class TestQualityGateDecision(unittest.TestCase):
-    """Test post-import quality gate via subTest table."""
+    """Codec-aware post-import quality gate (issue #60).
+
+    Every row explicitly sets the ``format`` field so quality_rank()
+    classifies against the right band table. The legacy blanket
+    ``verified_lossless`` bypass is replaced by the rank model — lo-fi
+    V0 reads as TRANSPARENT from the label, so the bypass is no longer
+    needed for genuine lo-fi.
+    """
 
     CASES = [
         # (description, measurement_kwargs, expected_decision)
-        # --- accept ---
-        ("VBR above threshold", dict(min_bitrate_kbps=240, is_cbr=False), "accept"),
-        ("VBR at threshold", dict(min_bitrate_kbps=QUALITY_MIN_BITRATE_KBPS, is_cbr=False), "accept"),
-        ("verified lossless low bitrate", dict(min_bitrate_kbps=180, verified_lossless=True), "accept"),
-        ("verified lossless CBR", dict(min_bitrate_kbps=320, is_cbr=True, verified_lossless=True), "accept"),
-        ("verified lossless overrides spectral", dict(min_bitrate_kbps=180, verified_lossless=True, spectral_bitrate_kbps=150), "accept"),
-        ("opus 128 verified lossless", dict(min_bitrate_kbps=128, verified_lossless=True), "accept"),
-        # --- requeue_upgrade ---
-        ("below threshold", dict(min_bitrate_kbps=190), "requeue_upgrade"),
-        ("way below threshold", dict(min_bitrate_kbps=96), "requeue_upgrade"),
-        ("spectral override CBR", dict(min_bitrate_kbps=320, is_cbr=True, spectral_bitrate_kbps=128), "requeue_upgrade"),
-        ("spectral higher ignored", dict(min_bitrate_kbps=192, spectral_bitrate_kbps=256), "requeue_upgrade"),
-        ("CBR below threshold", dict(min_bitrate_kbps=192, is_cbr=True), "requeue_upgrade"),
-        ("opus 128 not verified", dict(min_bitrate_kbps=128), "requeue_upgrade"),
-        ("none bitrate", dict(), "requeue_upgrade"),
-        # --- requeue_lossless ---
-        ("CBR above threshold", dict(min_bitrate_kbps=320, is_cbr=True), "requeue_lossless"),
-        ("CBR 256", dict(min_bitrate_kbps=256, is_cbr=True), "requeue_lossless"),
+
+        # --- accept: labels with TRANSPARENT rank (cross-codec equivalence) ---
+        ("MP3 V0 label lo-fi accepts without bypass",
+         dict(format="mp3 v0", avg_bitrate_kbps=207), "accept"),
+        ("MP3 V0 label dense",
+         dict(format="mp3 v0", avg_bitrate_kbps=245), "accept"),
+        ("Opus 128 verified lossless",
+         dict(format="opus 128", avg_bitrate_kbps=130, verified_lossless=True), "accept"),
+        ("Opus 128 not verified (label still transparent)",
+         dict(format="opus 128", avg_bitrate_kbps=130), "accept"),
+        ("bare MP3 VBR above rank",
+         dict(format="MP3", avg_bitrate_kbps=240, is_cbr=False), "accept"),
+
+        # --- requeue_upgrade: rank below gate_min_rank (EXCELLENT) ---
+        ("bare MP3 VBR below rank",
+         dict(format="MP3", avg_bitrate_kbps=150, is_cbr=False), "requeue_upgrade"),
+        ("Opus 64 verified (target too low)",
+         dict(format="opus 64", avg_bitrate_kbps=64, verified_lossless=True), "requeue_upgrade"),
+        ("Opus 48 verified (target far too low)",
+         dict(format="opus 48", avg_bitrate_kbps=48, verified_lossless=True), "requeue_upgrade"),
+        ("spectral clamp pulls CBR 320 down",
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True,
+              spectral_bitrate_kbps=128), "requeue_upgrade"),
+        ("no format no bitrate → UNKNOWN",
+         dict(), "requeue_upgrade"),
+
+        # --- requeue_lossless: CBR at TRANSPARENT but unverified ---
+        ("CBR 320 unverified → requeue_lossless",
+         dict(format="mp3 320", avg_bitrate_kbps=320, is_cbr=True), "requeue_lossless"),
+        ("bare MP3 CBR 320 unverified → requeue_lossless",
+         dict(format="MP3", avg_bitrate_kbps=320, is_cbr=True), "requeue_lossless"),
+        ("bare MP3 CBR 256 unverified → requeue_lossless",
+         dict(format="MP3", avg_bitrate_kbps=256, is_cbr=True), "requeue_lossless"),
+
+        # --- lossless accepts regardless ---
+        ("FLAC accepts",
+         dict(format="FLAC", avg_bitrate_kbps=900), "accept"),
+        ("lossless label accepts with no bitrate",
+         dict(format="flac"), "accept"),
+
+        # --- legacy verified_lossless cases (still honoured via label if present) ---
+        ("legacy no format, verified_lossless → UNKNOWN → requeue_upgrade",
+         dict(min_bitrate_kbps=180, verified_lossless=True), "requeue_upgrade"),
     ]
 
     def test_quality_gate_decisions(self):
         for desc, kwargs, expected in self.CASES:
             with self.subTest(desc=desc):
                 m = AudioQualityMeasurement(**kwargs)
-                self.assertEqual(quality_gate_decision(m), expected)
+                self.assertEqual(
+                    quality_gate_decision(m), expected,
+                    f"{desc}: {kwargs} expected {expected!r}")
 
 
 # ============================================================================
@@ -316,9 +420,11 @@ EXPECTED_PARAMS = {
     "spectral_grade", "spectral_bitrate",
     "existing_min_bitrate", "existing_spectral_bitrate",
     "override_min_bitrate",
+    "existing_format", "existing_is_cbr",
     "post_conversion_min_bitrate", "converted_count",
     "verified_lossless", "verified_lossless_target",
     "target_format",
+    "new_format", "cfg",
 }
 
 
@@ -1044,11 +1150,16 @@ class TestQualityRank(unittest.TestCase):
         ("aac 80 label",                           "aac 80",          80, False, QualityRank.ACCEPTABLE),
 
         # --- Step 5: bare codec name + measured bitrate (beets items.format path) ---
-        ("MP3 VBR beets 240",                      "MP3",            240, False, QualityRank.TRANSPARENT),
-        ("MP3 VBR beets 200",                      "MP3",            200, False, QualityRank.EXCELLENT),
-        ("MP3 VBR beets 150",                      "MP3",            150, False, QualityRank.GOOD),
-        ("MP3 VBR beets 100",                      "MP3",            100, False, QualityRank.ACCEPTABLE),
-        ("MP3 VBR beets 80",                       "MP3",             80, False, QualityRank.POOR),
+        # Default mp3_vbr bands: transparent=245, excellent=210, good=170, acceptable=130
+        ("MP3 VBR beets 260",                      "MP3",            260, False, QualityRank.TRANSPARENT),
+        ("MP3 VBR beets 245",                      "MP3",            245, False, QualityRank.TRANSPARENT),
+        ("MP3 VBR beets 220",                      "MP3",            220, False, QualityRank.EXCELLENT),
+        ("MP3 VBR beets 210",                      "MP3",            210, False, QualityRank.EXCELLENT),
+        ("MP3 VBR beets 180",                      "MP3",            180, False, QualityRank.GOOD),
+        ("MP3 VBR beets 170",                      "MP3",            170, False, QualityRank.GOOD),
+        ("MP3 VBR beets 140",                      "MP3",            140, False, QualityRank.ACCEPTABLE),
+        ("MP3 VBR beets 130",                      "MP3",            130, False, QualityRank.ACCEPTABLE),
+        ("MP3 VBR beets 100",                      "MP3",            100, False, QualityRank.POOR),
         ("MP3 CBR beets 320",                      "MP3",            320, True,  QualityRank.TRANSPARENT),
         ("MP3 CBR beets 256",                      "MP3",            256, True,  QualityRank.EXCELLENT),
         ("MP3 CBR beets 192",                      "MP3",            192, True,  QualityRank.GOOD),
@@ -1094,8 +1205,9 @@ class TestMeasurementRank(unittest.TestCase):
 
     def test_falls_back_to_min_when_avg_is_none(self):
         m = AudioQualityMeasurement(
-            min_bitrate_kbps=240, avg_bitrate_kbps=None, format="MP3")
-        # Legacy measurement — AVG metric falls back to min
+            min_bitrate_kbps=260, avg_bitrate_kbps=None, format="MP3")
+        # Legacy measurement — AVG metric falls back to min.
+        # 260 is above default mp3_vbr.transparent=245 → TRANSPARENT.
         self.assertEqual(measurement_rank(m, CFG), QualityRank.TRANSPARENT)
 
     def test_min_metric_uses_min(self):
@@ -1161,17 +1273,18 @@ class TestCompareQuality(unittest.TestCase):
          "equivalent"),
 
         # --- Same rank, same bare codec family, measurable bitrate ---
-        ("bare MP3 245 > MP3 225 (same rank TRANSPARENT)",
-         dict(format="MP3", avg_bitrate_kbps=245),
-         dict(format="MP3", avg_bitrate_kbps=225),
+        # Default mp3_vbr bands: transparent=245, excellent=210
+        ("bare MP3 260 > MP3 250 (same rank TRANSPARENT)",
+         dict(format="MP3", avg_bitrate_kbps=260),
+         dict(format="MP3", avg_bitrate_kbps=250),
          "better"),
-        ("bare MP3 225 < MP3 245 (same rank)",
-         dict(format="MP3", avg_bitrate_kbps=225),
-         dict(format="MP3", avg_bitrate_kbps=245),
+        ("bare MP3 250 < MP3 260 (same rank)",
+         dict(format="MP3", avg_bitrate_kbps=250),
+         dict(format="MP3", avg_bitrate_kbps=260),
          "worse"),
         ("bare MP3 within tolerance → equivalent",
-         dict(format="MP3", avg_bitrate_kbps=242),
-         dict(format="MP3", avg_bitrate_kbps=245),
+         dict(format="MP3", avg_bitrate_kbps=257),
+         dict(format="MP3", avg_bitrate_kbps=260),
          "equivalent"),
         ("bare Opus 130 == Opus 128 within tolerance",
          dict(format="Opus", avg_bitrate_kbps=130),
