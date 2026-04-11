@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from lib.context import SoularrContext
     from lib.grab_list import GrabListEntry
     from lib.pipeline_db import PipelineDB
+    from lib.quality import QualityRankConfig
 
 logger = logging.getLogger("soularr")
 
@@ -256,20 +257,31 @@ def _check_quality_gate_core(
     request_id: int,
     files: Sequence[object],
     db: "PipelineDB",
+    quality_ranks: "QualityRankConfig | None" = None,
 ) -> None:
     """Post-import quality gate — standalone version taking plain params + PipelineDB.
 
     Reads beets DB for on-disk quality, runs quality_gate_decision, dispatches
     requeue/accept. Used by both auto-import (via wrapper) and core dispatch.
+
+    ``quality_ranks`` is used by ``BeetsDB.get_album_info()`` to reduce
+    mixed-format albums via ``cfg.mixed_format_precedence``. Defaults to
+    ``QualityRankConfig.defaults()`` so existing tests and callers that
+    don't care about mixed-format reduction still work. Commit 5 will thread
+    the real runtime config through from dispatch_import_core().
     """
-    from lib.quality import quality_gate_decision, AudioQualityMeasurement
+    from lib.quality import (
+        quality_gate_decision, AudioQualityMeasurement, QualityRankConfig)
     from lib.beets_db import BeetsDB
+
+    if quality_ranks is None:
+        quality_ranks = QualityRankConfig.defaults()
 
     if not mb_id:
         return
     try:
         with BeetsDB() as beets:
-            info = beets.get_album_info(mb_id)
+            info = beets.get_album_info(mb_id, quality_ranks)
         if not info:
             return
         min_br_kbps = info.min_bitrate_kbps
@@ -508,8 +520,13 @@ def dispatch_import_core(
                             current_override, dl_info)
                         if narrowed_override is None and current_override is None and req_row:
                             from lib.beets_db import BeetsDB
+                            from lib.quality import QualityRankConfig
+                            _gate_cfg = (
+                                cfg.quality_ranks if cfg is not None
+                                else QualityRankConfig.defaults())
                             with BeetsDB() as beets:
-                                beets_info = beets.get_album_info(mb_release_id)
+                                beets_info = beets.get_album_info(
+                                    mb_release_id, _gate_cfg)
                             if beets_info:
                                 narrowed_override = rejection_backfill_override(
                                     is_cbr=beets_info.is_cbr,

@@ -534,11 +534,13 @@ def cmd_quality(db, args):
     is_cbr = False
     if min_br is not None:
         from beets_db import BeetsDB
+        from quality import QualityRankConfig
         mbid = req.get("mb_release_id")
         if mbid:
             try:
                 with BeetsDB() as beets:
-                    info = beets.get_album_info(mbid)
+                    info = beets.get_album_info(
+                        mbid, QualityRankConfig.defaults())
                 if info:
                     is_cbr = info.is_cbr
             except Exception:
