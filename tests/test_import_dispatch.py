@@ -508,7 +508,7 @@ class TestQualityGateUsesIntent(unittest.TestCase):
 
         captured_measurement = {}
 
-        def capture_decision(measurement):
+        def capture_decision(measurement, cfg=None):
             captured_measurement["m"] = measurement
             return "accept"
 
@@ -548,7 +548,7 @@ class TestQualityGateUsesIntent(unittest.TestCase):
 
         captured = {}
 
-        def capture_and_decide(measurement):
+        def capture_and_decide(measurement, cfg=None):
             captured["m"] = measurement
             return quality_gate_decision(measurement)
 
@@ -559,7 +559,8 @@ class TestQualityGateUsesIntent(unittest.TestCase):
             mock_beets.__enter__ = MagicMock(return_value=mock_beets)
             mock_beets.__exit__ = MagicMock(return_value=False)
             mock_beets.get_album_info.return_value = MagicMock(
-                min_bitrate_kbps=226, is_cbr=False)
+                min_bitrate_kbps=226, avg_bitrate_kbps=226,
+                format="MP3", is_cbr=False)
             mock_beets_cls.return_value = mock_beets
             _check_quality_gate_core(
                 mb_id="test-mbid", label="Test Artist - Test Album",
@@ -588,7 +589,7 @@ class TestQualityGateUsesIntent(unittest.TestCase):
         ))
         captured = {}
 
-        def capture(measurement):
+        def capture(measurement, cfg=None):
             captured["m"] = measurement
             return "accept"
 
