@@ -346,7 +346,7 @@ def _check_quality_gate_core(
     don't care about mixed-format reduction still work. Commit 5 will thread
     the real runtime config through from dispatch_import_core().
     """
-    from lib.quality import quality_gate_decision, QualityRankConfig
+    from lib.quality import quality_gate_decision, QualityRankConfig, gate_rank
 
     if quality_ranks is None:
         quality_ranks = QualityRankConfig.defaults()
@@ -375,7 +375,6 @@ def _check_quality_gate_core(
         spectral_note = f" (spectral={spectral_br}kbps)" if spectral_br else ""
 
         if decision == "requeue_upgrade":
-            from lib.quality import gate_rank
             upgrade_override = QUALITY_UPGRADE_TIERS
             apply_transition(db, request_id, "wanted",
                              from_status="imported",

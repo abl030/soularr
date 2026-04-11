@@ -127,6 +127,11 @@ so bare-codec MP3 VBR measurements from beets keep behaving as they did
 before the rank model. 245 adds a "V0 target" band above. The V0/V2/V4/etc.
 mapping via `mp3_vbr_levels` handles labeled conversions separately.
 
+`QUALITY_MIN_BITRATE_KBPS` is now defaults-only — gate behavior is driven
+by `cfg.quality_ranks.gate_min_rank`, and every numeric threshold (including
+this 210) lives in `QualityRankConfig` and can be retuned in the
+`[Quality Ranks]` section of `config.ini`.
+
 ### MP3 CBR
 
 | Band | Threshold (kbps) |
