@@ -345,9 +345,9 @@ Every numeric threshold lives in `QualityRankConfig` (one dataclass) and can be 
 
 ### Quality Gate (`_check_quality_gate_core()` in import_dispatch.py)
 
-After every import, the quality gate runs `quality_gate_decision(current, cfg=cfg.quality_ranks)` which delegates to `measurement_rank()`:
+After every import, the quality gate runs `quality_gate_decision(current, cfg=cfg.quality_ranks)` which delegates to `gate_rank()` (the single source of truth for the rank-with-clamp computation, also called by the `pipeline-cli quality` simulator so the displayed label and the actual gate verdict can never disagree):
 
-1. Classify the current measurement into a `QualityRank` via format label or bare-codec band table.
+1. Classify the current measurement into a `QualityRank` via format label or bare-codec band table (`measurement_rank()`).
 2. If a spectral estimate is set, clamp the rank to the minimum of (rank, spectral_rank) — catches fake 320s.
 3. **Rank < `cfg.gate_min_rank`** → `requeue_upgrade`.
 4. **CBR on disk + not verified_lossless + below LOSSLESS** → `requeue_lossless` (search for a FLAC source).

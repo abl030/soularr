@@ -1786,5 +1786,88 @@ class TestReconstructGrabListEntry(unittest.TestCase):
         self.assertEqual(entry.year, "")
 
 
+# ============================================================================
+# _compute_rejection_backfill — orchestration test for cfg threading
+# ============================================================================
+#
+# Pins that ctx.cfg.quality_ranks actually reaches rejection_backfill_override.
+# Pure-function tests in test_quality_decisions.py cover the decision logic
+# itself; this test guards the wiring layer between download.py and
+# lib/quality.py so a future refactor can't silently drop the cfg argument.
+
+class TestComputeRejectionBackfillCfgThreading(unittest.TestCase):
+    """_compute_rejection_backfill must thread ctx.cfg.quality_ranks through
+    to rejection_backfill_override."""
+
+    def _setup(self, *, gate_min_rank, on_disk_min_bitrate=180):
+        """Build the fixtures: fake DB with a genuine non-lossless request,
+        a ctx with the requested gate_min_rank, and a mock BeetsDB returning
+        an MP3 VBR album at on_disk_min_bitrate."""
+        from lib.quality import QualityRankConfig
+        from lib.beets_db import AlbumInfo
+
+        fake_db = FakePipelineDB()
+        fake_db.seed_request(make_request_row(
+            id=42,
+            mb_release_id="mbid-test",
+            current_spectral_grade="genuine",
+            verified_lossless=False,
+            search_filetype_override=None,
+        ))
+
+        # Real SoularrConfig is heavy; a SimpleNamespace with quality_ranks
+        # is enough — _compute_rejection_backfill only reads ctx.cfg.quality_ranks.
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(
+            quality_ranks=QualityRankConfig(gate_min_rank=gate_min_rank),
+        )
+        ctx = make_ctx_with_fake_db(fake_db, cfg=cfg)
+
+        album_data = make_grab_list_entry(
+            db_request_id=42,
+            db_search_filetype_override=None,
+            mb_release_id="mbid-test",
+        )
+
+        beets_info = AlbumInfo(
+            album_id=1, track_count=10,
+            min_bitrate_kbps=on_disk_min_bitrate,
+            avg_bitrate_kbps=on_disk_min_bitrate,
+            format="MP3", is_cbr=False,
+            album_path="/Beets/A/B",
+        )
+        return album_data, ctx, beets_info
+
+    def _run(self, album_data, ctx, beets_info):
+        from lib.download import _compute_rejection_backfill
+        with patch("lib.beets_db.BeetsDB") as mock_beets_cls:
+            mock_beets = MagicMock()
+            mock_beets.__enter__ = MagicMock(return_value=mock_beets)
+            mock_beets.__exit__ = MagicMock(return_value=False)
+            mock_beets.get_album_info.return_value = beets_info
+            mock_beets_cls.return_value = mock_beets
+            return _compute_rejection_backfill(album_data, ctx)
+
+    def test_lenient_gate_min_rank_fires_backfill(self):
+        """gate_min_rank=GOOD: 180kbps VBR genuine → GOOD rank → backfill fires."""
+        from lib.quality import QualityRank, QUALITY_LOSSLESS
+        album_data, ctx, beets_info = self._setup(
+            gate_min_rank=QualityRank.GOOD)
+        result = self._run(album_data, ctx, beets_info)
+        self.assertEqual(result, QUALITY_LOSSLESS,
+                         "lenient cfg must reach rejection_backfill_override")
+
+    def test_default_gate_min_rank_blocks_backfill(self):
+        """Default gate_min_rank=EXCELLENT: same 180kbps blocks (GOOD < EXCELLENT)."""
+        from lib.quality import QualityRank
+        album_data, ctx, beets_info = self._setup(
+            gate_min_rank=QualityRank.EXCELLENT)
+        result = self._run(album_data, ctx, beets_info)
+        self.assertIsNone(result,
+                          "strict cfg must also reach rejection_backfill_override "
+                          "— if cfg threading were broken, both branches would "
+                          "use the same default and this assertion would silently pass")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -364,28 +364,20 @@ class TestGateRank(unittest.TestCase):
         # And quality_gate_decision agrees
         self.assertEqual(quality_gate_decision(m, cfg), "requeue_upgrade")
 
-    def test_gate_decision_uses_gate_rank(self):
-        """quality_gate_decision must consult gate_rank, not raw measurement_rank.
+    def test_gate_decision_matches_pinned_cases(self):
+        """quality_gate_decision must agree with TestQualityGateDecision.CASES.
 
-        Cross-check: every CASE in TestQualityGateDecision must produce the
-        same verdict whether we compute the rank via gate_rank() and apply
-        the gate threshold by hand, or call quality_gate_decision() directly.
+        Direct cross-check: call quality_gate_decision() (which internally
+        consults gate_rank) and compare against the pinned CASE expectation.
+        Avoids re-implementing the gate body in test code so the test can't
+        silently drift if the gate logic changes.
         """
         cfg = QualityRankConfig.defaults()
         for desc, kwargs, expected in TestQualityGateDecision.CASES:
             with self.subTest(desc=desc):
                 m = AudioQualityMeasurement(**kwargs)
-                rank = gate_rank(m, cfg)
-                expected_via_rank = (
-                    "requeue_upgrade"
-                    if rank == QualityRank.UNKNOWN or rank < cfg.gate_min_rank
-                    else "requeue_lossless"
-                    if (not m.verified_lossless and m.is_cbr
-                        and rank < QualityRank.LOSSLESS)
-                    else "accept"
-                )
-                self.assertEqual(expected_via_rank, expected,
-                                 f"{desc}: gate_rank-derived verdict diverges from CASE expectation")
+                self.assertEqual(quality_gate_decision(m, cfg), expected,
+                                 f"{desc}: quality_gate_decision diverges from CASE expectation")
 
 
 # ============================================================================
