@@ -1085,6 +1085,32 @@ def _is_explicit_label(format_hint: Optional[str]) -> bool:
     return False
 
 
+def comparison_format_hint(
+    *,
+    explicit_format: str | None = None,
+    target_format: str | None = None,
+    verified_lossless_target: str | None = None,
+    converted_count: int = 0,
+    is_transcode: bool = False,
+    native_codec_family: str | None = None,
+) -> str | None:
+    """Format hint to use for the pre-import quality comparison.
+
+    This keeps production import_one.py and the simulator on the same rules:
+    compare the quality of what would actually end up on disk, not just the
+    temporary V0 verification artifact.
+    """
+    if explicit_format is not None:
+        return explicit_format
+    if target_format in ("flac", "lossless"):
+        return "flac"
+    if converted_count > 0 and not is_transcode:
+        return verified_lossless_target or "mp3 v0"
+    if converted_count > 0:
+        return "MP3"
+    return native_codec_family
+
+
 def compare_quality(
     new: AudioQualityMeasurement,
     existing: AudioQualityMeasurement,
@@ -2086,18 +2112,18 @@ def get_decision_tree() -> dict[str, Any]:
                            "existing: AudioQualityMeasurement | None",
                            "is_transcode"],
                 "rules": [
-                    {"condition": "new.verified_lossless = true",
+                    {"condition": "new.verified_lossless = true AND compare_quality(new, existing) in {better,equivalent}",
                      "result": "import", "color": "green",
-                     "effect": "V0 from genuine FLAC always wins"},
-                    {"condition": "new > existing AND is_transcode",
+                     "effect": "verified-lossless imports only when it is not worse"},
+                    {"condition": "compare_quality(new, existing) = better AND is_transcode",
                      "result": "transcode_upgrade", "color": "amber",
                      "effect": "import + denylist + keep searching"},
-                    {"condition": "new > existing AND NOT is_transcode",
+                    {"condition": "compare_quality(new, existing) = better AND NOT is_transcode",
                      "result": "import", "color": "green"},
-                    {"condition": "new <= existing AND is_transcode",
+                    {"condition": "compare_quality(new, existing) in {worse,equivalent} AND is_transcode",
                      "result": "transcode_downgrade", "color": "red",
                      "effect": "reject + denylist"},
-                    {"condition": "new <= existing",
+                    {"condition": "compare_quality(new, existing) in {worse,equivalent}",
                      "result": "downgrade", "color": "red",
                      "effect": "reject"},
                     {"condition": "existing is None AND is_transcode",
@@ -2118,18 +2144,13 @@ def get_decision_tree() -> dict[str, Any]:
                 "when": "After successful beets import",
                 "inputs": ["current: AudioQualityMeasurement"],
                 "rules": [
-                    {"condition": "gate_br = min(container, spectral) only when spectral grade is suspect/likely_transcode",
+                    {"condition": "rank = measurement_rank(current); spectral clamp applies only when spectral grade is suspect/likely_transcode",
                      "result": "(computed)", "color": "green",
-                     "effect": "spectral overrides container if lower and grade is transcode-like"},
-                    {"condition": f"current.verified_lossless AND gate_br < "
-                                  f"{QUALITY_MIN_BITRATE_KBPS}",
-                     "result": f"gate_br = {QUALITY_MIN_BITRATE_KBPS}",
-                     "color": "green",
-                     "effect": "lo-fi pass"},
-                    {"condition": f"gate_br < {QUALITY_MIN_BITRATE_KBPS}kbps",
+                     "effect": "spectral only lowers the rank when the current on-disk file looks transcode-like"},
+                    {"condition": "rank = UNKNOWN OR rank < cfg.gate_min_rank",
                      "result": "requeue_upgrade", "color": "amber",
                      "effect": f"search {QUALITY_UPGRADE_TIERS}"},
-                    {"condition": "current.is_cbr AND NOT current.verified_lossless",
+                    {"condition": "current.is_cbr AND NOT current.verified_lossless AND rank < LOSSLESS",
                      "result": "requeue_lossless", "color": "amber",
                      "effect": "search lossless only"},
                     {"condition": "else",
@@ -2297,13 +2318,13 @@ def full_pipeline_decision(
         import_br = post_conversion_min_bitrate if post_conversion_min_bitrate else min_bitrate
 
         will_be_verified = (converted_count > 0 and not is_transcode)
-        # The V0 label is a CONTRACT for verified lossless conversions only —
-        # a transcoded FLAC→V0 is not actually "mp3 v0" quality, just a V0
-        # container wrapping transcode-grade audio. Fall back to bare codec
-        # classification for transcodes so the rank reflects measured bitrate.
-        stage2_new_format = new_format or (
-            "mp3 v0" if (converted_count > 0 and not is_transcode) else
-            "MP3" if converted_count > 0 else None)
+        stage2_new_format = comparison_format_hint(
+            explicit_format=new_format,
+            verified_lossless_target=(
+                verified_lossless_target if will_be_verified else None),
+            converted_count=converted_count,
+            is_transcode=is_transcode,
+        )
         new_m = AudioQualityMeasurement(
             min_bitrate_kbps=import_br,
             avg_bitrate_kbps=import_br,
@@ -2350,12 +2371,10 @@ def full_pipeline_decision(
         # MP3 path: import directly. No format label for native MP3 downloads
         # unless the caller provided one — the rank model falls back to the
         # bare-codec bitrate classification via `new_format=None`.
-        stage2_new_format = new_format
-        if stage2_new_format is None and is_cbr:
-            # Bare-codec bitrate path; compare against existing bare MP3 CBR.
-            stage2_new_format = "MP3"
-        elif stage2_new_format is None:
-            stage2_new_format = "MP3"
+        stage2_new_format = comparison_format_hint(
+            explicit_format=new_format,
+            native_codec_family="MP3",
+        )
         new_m = AudioQualityMeasurement(
             min_bitrate_kbps=min_bitrate,
             avg_bitrate_kbps=min_bitrate,

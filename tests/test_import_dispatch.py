@@ -482,11 +482,20 @@ class TestQualityGateUsesIntent(unittest.TestCase):
         self.assertEqual(row["status"], "wanted")
         self.assertEqual(row["search_filetype_override"], QUALITY_UPGRADE_TIERS)
 
-    def test_requeue_upgrade_verified_lossless_accepts(self):
+    def test_requeue_upgrade_verified_lossless_still_requeues(self):
         db = self._run_quality_gate("requeue_upgrade", verified_lossless=True)
         row = db.request(42)
-        self.assertEqual(row["status"], "imported")
-        self.assertEqual(len(db.denylist), 0)
+        self.assertEqual(row["status"], "wanted")
+        self.assertEqual(row["search_filetype_override"], QUALITY_UPGRADE_TIERS)
+
+    def test_requeue_upgrade_verified_lossless_denylist_reason_preserved(self):
+        db = self._run_quality_gate(
+            "requeue_upgrade",
+            verified_lossless=True,
+            current_spectral_grade=None,
+        )
+        self.assertEqual(len(db.denylist), 1)
+        self.assertIn("quality gate", db.denylist[0].reason or "")
 
     def test_requeue_lossless_uses_intent(self):
         db = self._run_quality_gate("requeue_lossless")
