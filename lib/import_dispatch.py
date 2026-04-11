@@ -310,6 +310,8 @@ def _check_quality_gate_core(
         except Exception:
             logger.debug("QUALITY GATE: DB lookup failed for spectral override")
         verified_lossless = bool(req.get("verified_lossless")) if req else False
+        if req and req.get("final_format"):
+            album_format = str(req["final_format"])
 
         current = AudioQualityMeasurement(
             min_bitrate_kbps=min_br_kbps,
@@ -323,18 +325,6 @@ def _check_quality_gate_core(
         spectral_note = f" (spectral={spectral_br}kbps)" if spectral_br else ""
 
         if decision == "requeue_upgrade":
-            if verified_lossless:
-                logger.info(
-                    f"QUALITY GATE: {label} gate_bitrate < {QUALITY_MIN_BITRATE_KBPS}kbps "
-                    f"but verified_lossless=True — accepting")
-                apply_transition(
-                    db,
-                    request_id,
-                    "imported",
-                    from_status="imported",
-                    min_bitrate=min_br_kbps,
-                )
-                return
             upgrade_override = QUALITY_UPGRADE_TIERS
             apply_transition(db, request_id, "wanted",
                              from_status="imported",

@@ -44,11 +44,12 @@ def _bootstrap_import_paths() -> None:
 
 _bootstrap_import_paths()
 
-from lib.beets_db import BeetsDB
+from lib.beets_db import AlbumInfo, BeetsDB
 from lib.quality import (AUDIO_EXTENSIONS_DOTTED as AUDIO_EXTENSIONS,
                          AudioQualityMeasurement, ImportResult,
                          PostflightInfo, QualityRankConfig,
                          TRANSCODE_MIN_BITRATE_KBPS,
+                         comparison_format_hint,
                          determine_verified_lossless,
                          import_quality_decision, transcode_detection)
 HARNESS = os.path.join(os.path.dirname(__file__), "..", "harness", "run_beets_harness.sh")
@@ -126,6 +127,42 @@ def quality_decision_stage(
         return StageResult(decision="transcode_downgrade", exit_code=6, terminal=True)
     # import, transcode_upgrade, transcode_first all proceed to import
     return StageResult(decision=decision, exit_code=0)
+
+
+def build_existing_measurement(
+    existing_info: AlbumInfo | None,
+    *,
+    override_min_bitrate: int | None,
+    existing_spectral_grade: str | None,
+    existing_spectral_bitrate: int | None,
+) -> AudioQualityMeasurement | None:
+    """Build the existing on-disk measurement for pre-import comparison.
+
+    ``override_min_bitrate`` is already the pipeline's corrected view of the
+    existing album after spectral downgrade logic. Under the default AVG rank
+    metric we must apply that override to both min and avg so the harness
+    compares against the same effective quality the caller intended.
+    """
+    if existing_info is None:
+        return None
+    effective_existing = (
+        override_min_bitrate
+        if override_min_bitrate is not None
+        else existing_info.min_bitrate_kbps
+    )
+    effective_avg = (
+        override_min_bitrate
+        if override_min_bitrate is not None
+        else existing_info.avg_bitrate_kbps
+    )
+    return AudioQualityMeasurement(
+        min_bitrate_kbps=effective_existing,
+        avg_bitrate_kbps=effective_avg,
+        format=existing_info.format,
+        is_cbr=existing_info.is_cbr,
+        spectral_grade=existing_spectral_grade,
+        spectral_bitrate_kbps=existing_spectral_bitrate,
+    )
 
 
 def conversion_target(target_format: str | None,
@@ -861,13 +898,12 @@ def main():
         _emit_and_exit(r)
 
     # --- Quality comparison ---
-    new_min_br = _get_folder_min_bitrate(args.path, ext_filter=v0_ext_filter)
-    new_avg_br = _get_folder_avg_bitrate(args.path, ext_filter=v0_ext_filter)
+    new_bitrates = _get_folder_bitrates(args.path, ext_filter=v0_ext_filter)
+    new_min_br = min(new_bitrates) if new_bitrates else None
+    new_avg_br = int(sum(new_bitrates) / len(new_bitrates)) if new_bitrates else None
+    new_is_cbr = len(set(new_bitrates)) == 1 if new_bitrates else False
     existing_info = beets.get_album_info(mbid, _rank_cfg)
     existing_min_br = existing_info.min_bitrate_kbps if existing_info else None
-    existing_avg_br = existing_info.avg_bitrate_kbps if existing_info else None
-    existing_format = existing_info.format if existing_info else None
-    existing_is_cbr = existing_info.is_cbr if existing_info else False
     if args.override_min_bitrate is not None and existing_min_br is not None:
         if args.override_min_bitrate != existing_min_br:
             _log(f"  [OVERRIDE] pipeline says {args.override_min_bitrate}kbps, "
@@ -890,40 +926,31 @@ def main():
     new_conv_target = conversion_target(
         args.target_format, will_be_verified_lossless,
         args.verified_lossless_target)
-    if args.target_format in ("flac", "lossless"):
-        new_format_label: str | None = "flac"
-    elif new_conv_target:
-        # Post-commit-4 the measurement still reflects the V0 verification
-        # state at decision time; commit 5 will use this label for rank-based
-        # comparison, and the target-conversion block below updates it once
-        # the target conversion actually runs.
-        new_format_label = V0_SPEC.label if converted > 0 else None
-    elif converted > 0:
-        new_format_label = V0_SPEC.label
-    else:
-        # Native MP3 download — we don't know the exact VBR level / CBR
-        # without extra probing. Leave as None so the rank model falls back
-        # to bare-codec classification against the measured bitrate.
-        new_format_label = None
+    new_format_label = comparison_format_hint(
+        target_format=args.target_format,
+        verified_lossless_target=new_conv_target,
+        converted_count=converted,
+        is_transcode=is_transcode,
+        native_codec_family="MP3",
+    )
 
     # --- Build measurements ---
     new_m = AudioQualityMeasurement(
         min_bitrate_kbps=new_min_br,
         avg_bitrate_kbps=new_avg_br,
         format=new_format_label,
+        is_cbr=new_is_cbr,
         spectral_grade=spectral_grade,
         spectral_bitrate_kbps=spectral_bitrate,
         verified_lossless=will_be_verified_lossless,
         was_converted_from=(original_ext or "flac") if converted > 0 else None,
     )
-    existing_m = (AudioQualityMeasurement(
-        min_bitrate_kbps=effective_existing,
-        avg_bitrate_kbps=existing_avg_br,
-        format=existing_format,
-        is_cbr=existing_is_cbr,
-        spectral_grade=existing_spectral_grade,
-        spectral_bitrate_kbps=existing_spectral_bitrate,
-    ) if existing_min_br is not None else None)
+    existing_m = build_existing_measurement(
+        existing_info,
+        override_min_bitrate=args.override_min_bitrate,
+        existing_spectral_grade=existing_spectral_grade,
+        existing_spectral_bitrate=existing_spectral_bitrate,
+    )
     r.new_measurement = new_m
     r.existing_measurement = existing_m
 
@@ -935,16 +962,19 @@ def main():
 
     if qd.is_terminal:
         r.exit_code = qd.exit_code
-        _log(f"[QUALITY DOWNGRADE] new {new_min_br}kbps <= existing "
-             f"{effective_existing}kbps — skipping import"
+        _log(f"[QUALITY DOWNGRADE] new format={new_m.format or 'unknown'} "
+             f"min={new_min_br}kbps vs existing format="
+             f"{existing_m.format if existing_m else 'none'} "
+             f"min={effective_existing}kbps — skipping import"
              f"{' (transcode)' if decision == 'transcode_downgrade' else ''}")
         _emit_and_exit(r)
 
     # Non-terminal quality decisions — log and proceed to import
     if decision == "import":
         if will_be_verified_lossless and effective_existing is not None:
-            _log(f"  [QUALITY] genuine FLAC→V0 at {new_min_br}kbps — "
-                 f"always upgrade over existing {effective_existing}kbps")
+            _log(f"  [QUALITY] verified-lossless target "
+                 f"{new_m.format or V0_SPEC.label} accepted over existing "
+                 f"{effective_existing}kbps")
         elif effective_existing is not None:
             _log(f"  [QUALITY] new {new_min_br}kbps > existing {effective_existing}kbps — upgrading")
     elif decision == "transcode_upgrade":
@@ -952,6 +982,13 @@ def main():
              f"{effective_existing}kbps — upgrading (transcode)")
     elif decision == "transcode_first":
         _log(f"  [QUALITY] no existing album in beets — importing transcode")
+
+    if (will_be_verified_lossless and converted > 0
+            and not should_run_target_conversion(new_conv_target)):
+        # Persist the V0 label for the post-import quality gate and any
+        # downstream UI/CLI consumers. Beets only stores the bare "MP3"
+        # codec family, which is not enough to recover the V0 contract later.
+        r.final_format = V0_SPEC.label
 
     # --- Target format conversion (after V0 verdict, before import) ---
     # conv_target was hoisted above for issue #60 (so new_m.format is
@@ -988,12 +1025,18 @@ def main():
         # rank model classifies against the contract (e.g. "opus 128")
         # rather than the measured VBR number (which lands 95-150 kbps
         # depending on material).
-        target_min_br = _get_folder_min_bitrate(args.path)
-        target_avg_br = _get_folder_avg_bitrate(args.path)
+        target_bitrates = _get_folder_bitrates(args.path)
+        target_min_br = min(target_bitrates) if target_bitrates else None
+        target_avg_br = (
+            int(sum(target_bitrates) / len(target_bitrates))
+            if target_bitrates else None
+        )
+        target_is_cbr = len(set(target_bitrates)) == 1 if target_bitrates else False
         r.new_measurement = AudioQualityMeasurement(
             min_bitrate_kbps=target_min_br,
             avg_bitrate_kbps=target_avg_br,
             format=target_spec.label,
+            is_cbr=target_is_cbr,
             spectral_grade=spectral_grade,
             spectral_bitrate_kbps=spectral_bitrate,
             verified_lossless=True,

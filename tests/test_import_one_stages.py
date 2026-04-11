@@ -205,6 +205,37 @@ class TestQualityDecisionStage(unittest.TestCase):
         self.assertFalse(r.is_terminal)
 
 
+class TestExistingMeasurementBuilder(unittest.TestCase):
+    """Tests for import_one's existing-measurement wiring."""
+
+    def test_override_replaces_avg_metric_too(self):
+        """Spectral override must affect the selected avg metric, not just min."""
+        from import_one import build_existing_measurement
+        from lib.beets_db import AlbumInfo
+
+        info = AlbumInfo(
+            album_id=1,
+            track_count=10,
+            min_bitrate_kbps=320,
+            avg_bitrate_kbps=320,
+            format="MP3",
+            is_cbr=True,
+            album_path="/Beets/Test",
+        )
+        m = build_existing_measurement(
+            info,
+            override_min_bitrate=128,
+            existing_spectral_grade=None,
+            existing_spectral_bitrate=None,
+        )
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.min_bitrate_kbps, 128)
+        self.assertEqual(
+            m.avg_bitrate_kbps, 128,
+            "override_min_bitrate must drive comparison under the default avg metric")
+
+
 # ============================================================================
 # final_exit_decision
 # ============================================================================

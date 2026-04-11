@@ -621,6 +621,20 @@ class TestFullPipelineContract(unittest.TestCase):
             verified_lossless_target="mp3 v2")
         self.assertIsNone(r["target_final_format"])
 
+    def test_target_conversion_guardrail_blocks_low_target_before_import(self):
+        """Low verified-lossless target must lose the import comparison itself."""
+        r = full_pipeline_decision(
+            is_flac=True, min_bitrate=0, is_cbr=False,
+            spectral_grade="genuine", converted_count=10,
+            post_conversion_min_bitrate=245,
+            existing_min_bitrate=245,
+            existing_format="mp3 v0",
+            verified_lossless_target="opus 64")
+        self.assertEqual(r["stage2_import"], "downgrade")
+        self.assertFalse(r["imported"])
+        self.assertEqual(r["final_status"], "imported")
+        self.assertTrue(r["keep_searching"])
+
 
 # ============================================================================
 # full_pipeline_decision with target_format

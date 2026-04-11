@@ -227,24 +227,17 @@ class TestDispatchThroughQualityGate(unittest.TestCase):
 
 
 class TestQualityGateVerifiedLosslessBypass(unittest.TestCase):
-    """Integration slice: quality gate stays imported for verified_lossless
-    even when bitrate < 210."""
+    """Integration slice: quality gate honors persisted final_format labels."""
 
     def test_verified_lossless_low_bitrate_accepts(self):
-        """207kbps V0 from verified FLAC → accepted (label = TRANSPARENT)."""
+        """207kbps V0 from verified FLAC → accepted via final_format='mp3 v0'."""
         from lib.import_dispatch import _check_quality_gate_core
 
         db = FakePipelineDB()
         db.seed_request(make_request_row(
-            id=42, status="imported", verified_lossless=True))
+            id=42, status="imported", verified_lossless=True,
+            final_format="mp3 v0"))
 
-        # Under the codec-aware rank model, lo-fi V0 is accepted via the
-        # "mp3 v0" label (TRANSPARENT rank regardless of bitrate), so we
-        # seed the AlbumInfo with format="MP3" and it classifies via the
-        # VBR band table (207 is still below 210 → EXCELLENT not TRANSPARENT).
-        # To accept at 207 under the new rules, the format must be the V0
-        # label contract, which is only known from import_one.py. Simulating
-        # that via format="MP3" here — 207 MP3 VBR is EXCELLENT ≥ gate.
         beets_info = AlbumInfo(
             album_id=1, track_count=10, min_bitrate_kbps=207,
             avg_bitrate_kbps=207, format="MP3",
