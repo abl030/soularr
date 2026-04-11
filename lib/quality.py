@@ -7,7 +7,8 @@ Used by soularr.py and import_one.py, tested directly against real audio fixture
 import enum
 import json
 from dataclasses import dataclass, field, asdict
-from typing import Any, Optional
+from enum import IntEnum, StrEnum
+from typing import Any, Literal, Optional
 
 QUALITY_UPGRADE_TIERS = "lossless,mp3 v0,mp3 320"
 QUALITY_LOSSLESS = "lossless"
@@ -564,7 +565,18 @@ class AudioQualityMeasurement:
     outcomes.
 
     Fields:
-        min_bitrate_kbps:      min track bitrate (kbps), None if unmeasurable
+        min_bitrate_kbps:      min per-track bitrate (kbps), None if unmeasurable
+        avg_bitrate_kbps:      mean per-track bitrate (kbps), None if unmeasured.
+                               Preferred by the rank model for VBR codecs — see
+                               RankBitrateMetric and measurement_rank(). Additive;
+                               legacy callers that only populate min_bitrate_kbps
+                               still work (measurement_rank() falls back to min).
+        format:                codec label or bare codec name that drives the
+                               quality_rank() classifier. Accepts either an
+                               explicit label from ImportResult.final_format
+                               ("opus 128", "mp3 v0", "mp3 320", "flac") or a
+                               bare codec string from beets items.format ("MP3",
+                               "Opus", "FLAC", "AAC"). None → UNKNOWN rank.
         is_cbr:                True if all tracks have the same bitrate
         spectral_grade:        spectral analysis result (genuine/marginal/suspect)
         spectral_bitrate_kbps: estimated original bitrate from spectral cliff
@@ -572,11 +584,400 @@ class AudioQualityMeasurement:
         was_converted_from:    source format before conversion (flac/m4a/wav), None if MP3
     """
     min_bitrate_kbps: Optional[int] = None
+    avg_bitrate_kbps: Optional[int] = None
+    format: Optional[str] = None
     is_cbr: bool = False
     spectral_grade: Optional[str] = None
     spectral_bitrate_kbps: Optional[int] = None
     verified_lossless: bool = False
     was_converted_from: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Codec-aware quality rank model (issue #60)
+# ---------------------------------------------------------------------------
+#
+# The pipeline needs to compare audio quality across codecs (Opus 128 ≈ MP3 V0)
+# and apply a tier floor when verified_lossless targets would otherwise bypass
+# all guardrails (e.g. a FLAC → Opus 64 target replacing a genuine MP3 V0).
+#
+# Every numeric threshold, codec set, and policy knob lives in QualityRankConfig.
+# Grep the decision path for a bare kbps value and you should find zero hits
+# outside log strings — everything routes through cfg.quality_ranks.<field>.
+#
+# Spectral cliff detection and transcode_detection() continue to use min
+# bitrate regardless of QualityRankConfig.bitrate_metric — those care about
+# the worst track, not the album average. Rank classification is different
+# because a single quiet track in a legitimately encoded VBR album should not
+# drag the whole album down a rank.
+
+
+class RankBitrateMetric(StrEnum):
+    """Which per-album bitrate statistic feeds into quality_rank() classification.
+
+    MIN  — minimum per-track bitrate. Legacy behavior. Conservative and prone to
+           VBR false negatives on albums with genuinely quiet tracks.
+    AVG  — album-mean per-track bitrate. Recommended for VBR codecs. Default.
+
+    measurement_rank() is the only function that dispatches on this enum — adding
+    MEDIAN later means one new enum value, one elif branch in measurement_rank(),
+    and one new field on AudioQualityMeasurement / AlbumInfo.
+    """
+    MIN = "min"
+    AVG = "avg"
+
+
+class QualityRank(IntEnum):
+    """Perceptual quality bands. IntEnum so > / >= comparisons work naturally.
+
+    Integer spacing leaves room for inserting new bands without reshuffling.
+    Nothing persists the integer value — rank is always recomputed from a
+    measurement + config, so a future insertion is safe.
+    """
+    UNKNOWN     = 0
+    POOR        = 20
+    ACCEPTABLE  = 30
+    GOOD        = 40
+    EXCELLENT   = 50
+    TRANSPARENT = 60
+    LOSSLESS    = 100
+
+
+_RANK_NAME_TO_VALUE: dict[str, QualityRank] = {
+    "unknown":     QualityRank.UNKNOWN,
+    "poor":        QualityRank.POOR,
+    "acceptable":  QualityRank.ACCEPTABLE,
+    "good":        QualityRank.GOOD,
+    "excellent":   QualityRank.EXCELLENT,
+    "transparent": QualityRank.TRANSPARENT,
+    "lossless":    QualityRank.LOSSLESS,
+}
+
+
+@dataclass(frozen=True)
+class CodecRankBands:
+    """Bitrate thresholds (kbps) for a single codec family.
+
+    A measurement's rank is the highest band whose threshold the configured
+    metric meets or exceeds. Thresholds must be monotonically non-increasing:
+    transparent >= excellent >= good >= acceptable >= 0.
+    Values below ``acceptable`` are classified POOR.
+    """
+    transparent: int
+    excellent: int
+    good: int
+    acceptable: int
+
+    def __post_init__(self) -> None:
+        if not (self.transparent >= self.excellent >= self.good
+                >= self.acceptable >= 0):
+            raise ValueError(
+                f"CodecRankBands must be monotonic "
+                f"(transparent >= excellent >= good >= acceptable >= 0): {self}")
+
+    def rank_for(self, bitrate_kbps: Optional[int]) -> QualityRank:
+        """Classify a bitrate against this codec's band table."""
+        if bitrate_kbps is None:
+            return QualityRank.UNKNOWN
+        if bitrate_kbps >= self.transparent:
+            return QualityRank.TRANSPARENT
+        if bitrate_kbps >= self.excellent:
+            return QualityRank.EXCELLENT
+        if bitrate_kbps >= self.good:
+            return QualityRank.GOOD
+        if bitrate_kbps >= self.acceptable:
+            return QualityRank.ACCEPTABLE
+        return QualityRank.POOR
+
+
+@dataclass(frozen=True)
+class QualityRankConfig:
+    """Every knob for the codec-aware rank model.
+
+    This is the ONLY place numeric quality thresholds live. If you grep the
+    rank decision path for a hardcoded kbps value you should find zero hits
+    outside log strings — everything routes through cfg.quality_ranks.<field>.
+
+    Defaults are documented in docs/quality-ranks.md. Summary:
+
+    - Opus ``transparent=112``: ``ffmpeg -b:a 128k`` unconstrained VBR averages
+      120-135 kbps on typical music; 112 leaves headroom for sparse material.
+      ``excellent=88`` matches Opus 96 quality (hydrogenaudio/Kamedo2 4.65/5).
+    - MP3 VBR ``transparent=210``: matches the legacy
+      ``QUALITY_MIN_BITRATE_KBPS`` constant; V2 averages ~190 → excellent at 170.
+    - MP3 CBR ``transparent=320``: unverifiable CBR is only transparent at 320.
+    - AAC ``transparent=192``: hydrogenaudio consensus ceiling for music.
+    """
+    # --- Policy ---
+    bitrate_metric: RankBitrateMetric = RankBitrateMetric.AVG
+    gate_min_rank: QualityRank = QualityRank.EXCELLENT
+    within_rank_tolerance_kbps: int = 5
+
+    # --- Per-codec band tables ---
+    opus:    CodecRankBands = field(default_factory=lambda: CodecRankBands(
+        transparent=112, excellent=88, good=64, acceptable=48))
+    mp3_vbr: CodecRankBands = field(default_factory=lambda: CodecRankBands(
+        transparent=210, excellent=170, good=130, acceptable=90))
+    mp3_cbr: CodecRankBands = field(default_factory=lambda: CodecRankBands(
+        transparent=320, excellent=256, good=192, acceptable=128))
+    aac:     CodecRankBands = field(default_factory=lambda: CodecRankBands(
+        transparent=192, excellent=144, good=112, acceptable=80))
+
+    # --- LAME VBR V-level → rank (10-tuple indexed by V0..V9) ---
+    # V-level semantics are a LAME encoder contract, but surfacing them here
+    # keeps the entire policy in one dataclass per the no-magic-numbers rule.
+    mp3_vbr_levels: tuple[QualityRank, ...] = (
+        QualityRank.TRANSPARENT,  # V0
+        QualityRank.EXCELLENT,    # V1
+        QualityRank.EXCELLENT,    # V2
+        QualityRank.GOOD,         # V3
+        QualityRank.GOOD,         # V4
+        QualityRank.ACCEPTABLE,   # V5
+        QualityRank.ACCEPTABLE,   # V6
+        QualityRank.ACCEPTABLE,   # V7
+        QualityRank.ACCEPTABLE,   # V8
+        QualityRank.ACCEPTABLE,   # V9
+    )
+
+    # --- Lossless codec identity ---
+    lossless_codecs: frozenset[str] = frozenset({"flac", "lossless", "alac", "wav"})
+
+    # --- Mixed-format album precedence (worst codec wins for classification) ---
+    # When an album has multiple formats on disk (rare), pick the lowest-rank
+    # codec as the album's "canonical" codec so the rank stays conservative.
+    mixed_format_precedence: tuple[str, ...] = ("mp3", "aac", "opus", "flac")
+
+    @classmethod
+    def defaults(cls) -> "QualityRankConfig":
+        return cls()
+
+
+# Known codec family names produced by _codec_family_of().
+_KNOWN_CODEC_FAMILIES: frozenset[str] = frozenset(
+    {"opus", "mp3", "aac", "flac", "alac", "wav", "lossless", "unknown"})
+
+
+def _codec_family_of(format_hint: Optional[str]) -> str:
+    """First token of format, lowercased — "opus 128" → "opus", "MP3" → "mp3"."""
+    if format_hint is None:
+        return "unknown"
+    first = format_hint.strip().lower().split(None, 1)
+    if not first or not first[0]:
+        return "unknown"
+    token = first[0]
+    if token in _KNOWN_CODEC_FAMILIES:
+        return token
+    return "unknown"
+
+
+def _parse_vbr_level(format_hint: str) -> Optional[int]:
+    """Parse V-level from a label like "mp3 v0" / "mp3 v9". Returns None otherwise."""
+    parts = format_hint.strip().lower().split()
+    if len(parts) < 2 or parts[0] != "mp3":
+        return None
+    quality = parts[1]
+    if len(quality) >= 2 and quality[0] == "v" and quality[1:].isdigit():
+        level = int(quality[1:])
+        if 0 <= level <= 9:
+            return level
+    return None
+
+
+def _parse_bitrate_label(format_hint: str) -> Optional[int]:
+    """Parse a numeric bitrate from a label like "opus 128" / "mp3 320"."""
+    parts = format_hint.strip().lower().split()
+    if len(parts) < 2:
+        return None
+    quality = parts[1]
+    if quality.isdigit():
+        return int(quality)
+    return None
+
+
+def quality_rank(
+    format_hint: Optional[str],
+    bitrate_kbps: Optional[int],
+    is_cbr: bool,
+    cfg: QualityRankConfig,
+) -> QualityRank:
+    """Classify a measurement into a QualityRank (pure, no I/O).
+
+    Args:
+        format_hint: Either a label like "opus 128" / "mp3 v0" / "mp3 320" /
+            "flac" (from ImportResult.final_format / album_requests.final_format)
+            OR a bare codec string like "MP3" / "Opus" / "FLAC" / "AAC" (from
+            beets items.format). None → UNKNOWN.
+        bitrate_kbps: The bitrate value to classify. The caller has already
+            selected this value per cfg.bitrate_metric — this function does
+            NOT dispatch on the metric. Use measurement_rank() as the entry
+            point for measurements.
+        is_cbr: True if all tracks share the same bitrate. Affects MP3 family
+            routing (VBR vs CBR bands).
+        cfg: Rank bands and policy.
+
+    Resolution order:
+        1. format_hint is None and bitrate_kbps is None → UNKNOWN.
+        2. First token of format_hint in cfg.lossless_codecs → LOSSLESS.
+        3. Explicit VBR label ("mp3 v0"): index into cfg.mp3_vbr_levels.
+           Label is self-certifying — bitrate is irrelevant here.
+        4. Explicit bitrate label ("opus 128"): classify declared bitrate
+           against the matching codec's CodecRankBands. The label is a
+           contract — we converted to this target, so the declaration wins
+           over any measured bitrate.
+        5. Bare codec name ("MP3" / "Opus" / "AAC"): classify the measured
+           bitrate_kbps against the matching band table. "MP3" + is_cbr=True
+           → cfg.mp3_cbr, otherwise cfg.mp3_vbr. Opus and AAC always use
+           their own VBR-ish bands.
+        6. Unknown codec → UNKNOWN (never promote garbage).
+    """
+    if format_hint is None and bitrate_kbps is None:
+        return QualityRank.UNKNOWN
+
+    family = _codec_family_of(format_hint)
+
+    # Step 2 — lossless
+    if family in cfg.lossless_codecs:
+        return QualityRank.LOSSLESS
+
+    # Step 3 — explicit VBR V-level label
+    if format_hint is not None:
+        vbr_level = _parse_vbr_level(format_hint)
+        if vbr_level is not None:
+            return cfg.mp3_vbr_levels[vbr_level]
+
+    # Step 4 — explicit bitrate label ("opus 128" / "mp3 320" / "aac 192")
+    if format_hint is not None:
+        declared = _parse_bitrate_label(format_hint)
+        if declared is not None:
+            if family == "opus":
+                return cfg.opus.rank_for(declared)
+            if family == "mp3":
+                # A "mp3 320"-style label is by convention CBR.
+                return cfg.mp3_cbr.rank_for(declared)
+            if family == "aac":
+                return cfg.aac.rank_for(declared)
+            return QualityRank.UNKNOWN
+
+    # Step 5 — bare codec name + measured bitrate
+    if family == "opus":
+        return cfg.opus.rank_for(bitrate_kbps)
+    if family == "aac":
+        return cfg.aac.rank_for(bitrate_kbps)
+    if family == "mp3":
+        if is_cbr:
+            return cfg.mp3_cbr.rank_for(bitrate_kbps)
+        return cfg.mp3_vbr.rank_for(bitrate_kbps)
+
+    # Step 6 — unknown codec, refuse to promote
+    return QualityRank.UNKNOWN
+
+
+def measurement_rank(
+    m: AudioQualityMeasurement,
+    cfg: QualityRankConfig,
+) -> QualityRank:
+    """Pick the configured bitrate metric from m and classify it.
+
+    This is the ONLY function that dispatches on cfg.bitrate_metric.
+    Adding MEDIAN later is a one-line change here + one new field on
+    AudioQualityMeasurement / AlbumInfo.
+
+    Falls back to min_bitrate_kbps when the configured metric's value is
+    None — so legacy measurements (which only populate min) continue to
+    classify correctly under the default AVG policy.
+    """
+    chosen: Optional[int]
+    if cfg.bitrate_metric is RankBitrateMetric.AVG and m.avg_bitrate_kbps is not None:
+        chosen = m.avg_bitrate_kbps
+    else:
+        chosen = m.min_bitrate_kbps
+    return quality_rank(m.format, chosen, m.is_cbr, cfg)
+
+
+def _selected_bitrate(m: AudioQualityMeasurement,
+                      cfg: QualityRankConfig) -> Optional[int]:
+    """Return the bitrate value measurement_rank() would classify for m.
+
+    Used by compare_quality() for the same-rank, same-codec tiebreaker.
+    Keeps the metric dispatch in one place — compare_quality does not
+    peek into m.avg / m.min directly.
+    """
+    if cfg.bitrate_metric is RankBitrateMetric.AVG and m.avg_bitrate_kbps is not None:
+        return m.avg_bitrate_kbps
+    return m.min_bitrate_kbps
+
+
+def _is_explicit_label(format_hint: Optional[str]) -> bool:
+    """True if format_hint carries an explicit quality contract (VBR or bitrate).
+
+    "mp3 v0" / "opus 128" / "mp3 320" are contracts. "MP3" / "Opus" / "FLAC"
+    are bare codec names from beets items.format. Within the same rank tier,
+    a contract + anything is equivalent — only bare-vs-bare compares on bitrate.
+    """
+    if format_hint is None:
+        return False
+    if _parse_vbr_level(format_hint) is not None:
+        return True
+    if _parse_bitrate_label(format_hint) is not None:
+        return True
+    return False
+
+
+def compare_quality(
+    new: AudioQualityMeasurement,
+    existing: AudioQualityMeasurement,
+    cfg: QualityRankConfig,
+) -> Literal["better", "worse", "equivalent"]:
+    """Codec-aware quality comparison.
+
+    Primary key is the QualityRank. Within the same rank:
+    - LOSSLESS → always "equivalent" (bitrate variance has no quality meaning).
+    - Different codec families → "equivalent" (Opus 128 vs MP3 V0 are
+      perceptually indistinguishable at the TRANSPARENT band).
+    - Same codec family, either side carries an explicit label ("mp3 v0" /
+      "opus 128" / "mp3 320") → "equivalent". Labels are quality contracts
+      and within the same rank tier are perceptually equivalent regardless of
+      bitrate deltas (a 207 kbps V0 on lo-fi and a 245 kbps V0 on dense material
+      are both TRANSPARENT — this is the lo-fi genuine V0 case).
+    - Same codec family, both bare codec names → compare the configured metric
+      with cfg.within_rank_tolerance_kbps tolerance.
+
+    Pure function. No I/O, no hardcoded numbers — every threshold comes from cfg.
+    """
+    new_rank = measurement_rank(new, cfg)
+    existing_rank = measurement_rank(existing, cfg)
+
+    if new_rank > existing_rank:
+        return "better"
+    if new_rank < existing_rank:
+        return "worse"
+
+    # Same rank. LOSSLESS is always equivalent — FLAC bitrates vary with sample
+    # rate and bit depth, not quality.
+    if new_rank == QualityRank.LOSSLESS:
+        return "equivalent"
+
+    new_family = _codec_family_of(new.format)
+    existing_family = _codec_family_of(existing.format)
+
+    # Different codec families at the same rank: perceptually equivalent.
+    if new_family != existing_family:
+        return "equivalent"
+
+    # Same codec family. If either side has an explicit label, the label is
+    # authoritative — within the same rank tier they are equivalent.
+    if _is_explicit_label(new.format) or _is_explicit_label(existing.format):
+        return "equivalent"
+
+    # Both bare codec names — compare the chosen metric with tolerance.
+    new_br = _selected_bitrate(new, cfg)
+    existing_br = _selected_bitrate(existing, cfg)
+    if new_br is None or existing_br is None:
+        return "equivalent"
+    delta = new_br - existing_br
+    if abs(delta) <= cfg.within_rank_tolerance_kbps:
+        return "equivalent"
+    return "better" if delta > 0 else "worse"
 
 
 # ---------------------------------------------------------------------------
