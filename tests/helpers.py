@@ -14,10 +14,14 @@ from unittest.mock import MagicMock, patch
 from lib.grab_list import DownloadFile, GrabListEntry
 from lib.quality import (
     AudioQualityMeasurement,
+    CodecRankBands,
     ConversionInfo,
     DownloadInfo,
     ImportResult,
     PostflightInfo,
+    QualityRank,
+    QualityRankConfig,
+    RankBitrateMetric,
     SpectralContext,
     SpectralMeasurement,
     ValidationResult,
@@ -112,6 +116,42 @@ def make_import_result(
             disambiguated=disambiguated,
         ),
         final_format=final_format,
+    )
+
+
+def make_quality_rank_config(
+    *,
+    bitrate_metric: RankBitrateMetric | None = None,
+    gate_min_rank: QualityRank | None = None,
+    within_rank_tolerance_kbps: int | None = None,
+    opus: CodecRankBands | None = None,
+    mp3_vbr: CodecRankBands | None = None,
+    mp3_cbr: CodecRankBands | None = None,
+    aac: CodecRankBands | None = None,
+) -> QualityRankConfig:
+    """Build a QualityRankConfig with test-friendly overrides.
+
+    Defaults match QualityRankConfig.defaults() — override individual fields
+    to test metric swaps, alternate gate floors, or custom codec bands. Use
+    this instead of constructing QualityRankConfig directly so tests stay
+    stable when the dataclass grows new fields.
+    """
+    base = QualityRankConfig.defaults()
+    return QualityRankConfig(
+        bitrate_metric=bitrate_metric if bitrate_metric is not None else base.bitrate_metric,
+        gate_min_rank=gate_min_rank if gate_min_rank is not None else base.gate_min_rank,
+        within_rank_tolerance_kbps=(
+            within_rank_tolerance_kbps
+            if within_rank_tolerance_kbps is not None
+            else base.within_rank_tolerance_kbps
+        ),
+        opus=opus if opus is not None else base.opus,
+        mp3_vbr=mp3_vbr if mp3_vbr is not None else base.mp3_vbr,
+        mp3_cbr=mp3_cbr if mp3_cbr is not None else base.mp3_cbr,
+        aac=aac if aac is not None else base.aac,
+        mp3_vbr_levels=base.mp3_vbr_levels,
+        lossless_codecs=base.lossless_codecs,
+        mixed_format_precedence=base.mixed_format_precedence,
     )
 
 

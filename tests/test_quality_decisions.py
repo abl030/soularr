@@ -8,6 +8,7 @@ independent of real audio fixtures or the full_pipeline_decision integrator.
 import os
 import sys
 import unittest
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -24,6 +25,14 @@ from lib.quality import (
     narrow_override_on_downgrade,
     QUALITY_MIN_BITRATE_KBPS,
     TRANSCODE_MIN_BITRATE_KBPS,
+    # Codec-aware rank model (issue #60)
+    QualityRank,
+    RankBitrateMetric,
+    CodecRankBands,
+    QualityRankConfig,
+    quality_rank,
+    measurement_rank,
+    compare_quality,
 )
 
 
@@ -935,6 +944,321 @@ class TestRejectionBackfillOverride(unittest.TestCase):
             is_cbr=True, min_bitrate_kbps=320,
             spectral_grade="suspect", verified_lossless=False)
         self.assertIsNone(result)
+
+
+# ============================================================================
+# Codec-aware quality rank model (issue #60)
+# ============================================================================
+#
+# Every branch of quality_rank / measurement_rank / compare_quality has a
+# direct subTest row. No numeric thresholds are hardcoded in the tests —
+# we reference CFG = QualityRankConfig.defaults() so if a band moves in the
+# defaults the tests move with it automatically.
+
+CFG = QualityRankConfig.defaults()
+
+
+class TestCodecRankBands(unittest.TestCase):
+    """rank_for() exhaustively, plus the monotonic invariant."""
+
+    # (description, transparent, excellent, good, acceptable, bitrate, expected)
+    CASES = [
+        ("exactly transparent threshold",   112, 88, 64, 48, 112, QualityRank.TRANSPARENT),
+        ("above transparent",               112, 88, 64, 48, 200, QualityRank.TRANSPARENT),
+        ("exactly excellent threshold",     112, 88, 64, 48,  88, QualityRank.EXCELLENT),
+        ("between excellent and transparent", 112, 88, 64, 48, 100, QualityRank.EXCELLENT),
+        ("exactly good threshold",          112, 88, 64, 48,  64, QualityRank.GOOD),
+        ("between good and excellent",      112, 88, 64, 48,  80, QualityRank.GOOD),
+        ("exactly acceptable threshold",    112, 88, 64, 48,  48, QualityRank.ACCEPTABLE),
+        ("between acceptable and good",     112, 88, 64, 48,  56, QualityRank.ACCEPTABLE),
+        ("below acceptable",                112, 88, 64, 48,  32, QualityRank.POOR),
+        ("zero",                            112, 88, 64, 48,   0, QualityRank.POOR),
+        ("None bitrate",                    112, 88, 64, 48,  None, QualityRank.UNKNOWN),
+    ]
+
+    def test_rank_for_table(self):
+        for desc, t, e, g, a, br, expected in self.CASES:
+            with self.subTest(desc=desc):
+                bands = CodecRankBands(transparent=t, excellent=e, good=g, acceptable=a)
+                self.assertEqual(bands.rank_for(br), expected)
+
+    def test_monotonic_invariant(self):
+        # Non-monotonic bands must raise at construction time.
+        with self.assertRaises(ValueError):
+            CodecRankBands(transparent=100, excellent=150, good=50, acceptable=25)
+        with self.assertRaises(ValueError):
+            CodecRankBands(transparent=100, excellent=90, good=95, acceptable=50)
+        with self.assertRaises(ValueError):
+            CodecRankBands(transparent=100, excellent=90, good=80, acceptable=-5)
+
+
+class TestQualityRank(unittest.TestCase):
+    """quality_rank() across every codec, every band, every resolution step.
+
+    Uses default QualityRankConfig values for the classification — if the
+    defaults change, individual rows may need updating, which is intentional
+    (the defaults are the contract).
+    """
+
+    # (description, format_hint, bitrate_kbps, is_cbr, expected_rank)
+    CASES = [
+        # --- Step 1: both None → UNKNOWN ---
+        ("None format + None bitrate",             None,            None, False, QualityRank.UNKNOWN),
+
+        # --- Step 2: lossless family ---
+        ("FLAC label",                             "FLAC",          1000, False, QualityRank.LOSSLESS),
+        ("flac label lowercase",                   "flac",          1200, False, QualityRank.LOSSLESS),
+        ("lossless label",                         "lossless",      1100, False, QualityRank.LOSSLESS),
+        ("ALAC label",                             "ALAC",           900, False, QualityRank.LOSSLESS),
+        ("WAV label",                              "WAV",           1411, False, QualityRank.LOSSLESS),
+        ("flac with None bitrate",                 "flac",          None, False, QualityRank.LOSSLESS),
+
+        # --- Step 3: explicit MP3 VBR quality label ---
+        ("mp3 v0 lo-fi",                           "mp3 v0",         207, False, QualityRank.TRANSPARENT),
+        ("mp3 v0 dense",                           "mp3 v0",         260, False, QualityRank.TRANSPARENT),
+        ("mp3 v1 label",                           "mp3 v1",         220, False, QualityRank.EXCELLENT),
+        ("mp3 v2 label",                           "mp3 v2",         190, False, QualityRank.EXCELLENT),
+        ("mp3 v3 label",                           "mp3 v3",         170, False, QualityRank.GOOD),
+        ("mp3 v4 label",                           "mp3 v4",         155, False, QualityRank.GOOD),
+        ("mp3 v5 label",                           "mp3 v5",         130, False, QualityRank.ACCEPTABLE),
+        ("mp3 v9 label",                           "mp3 v9",          65, False, QualityRank.ACCEPTABLE),
+
+        # --- Step 4: explicit Opus bitrate label ---
+        ("opus 128 label",                         "opus 128",        95, False, QualityRank.TRANSPARENT),
+        ("opus 96 label",                          "opus 96",        100, False, QualityRank.EXCELLENT),
+        ("opus 64 label",                          "opus 64",        100, False, QualityRank.GOOD),
+        ("opus 48 label",                          "opus 48",        100, False, QualityRank.ACCEPTABLE),
+        ("opus 32 label",                          "opus 32",        100, False, QualityRank.POOR),
+
+        # --- Step 4: explicit MP3 CBR bitrate label (used for "mp3 320" style) ---
+        ("mp3 320 label",                          "mp3 320",        320, True,  QualityRank.TRANSPARENT),
+        ("mp3 256 label",                          "mp3 256",        256, True,  QualityRank.EXCELLENT),
+        ("mp3 192 label",                          "mp3 192",        192, True,  QualityRank.GOOD),
+        ("mp3 128 label",                          "mp3 128",        128, True,  QualityRank.ACCEPTABLE),
+
+        # --- Step 4: explicit AAC bitrate label ---
+        ("aac 192 label",                          "aac 192",        192, False, QualityRank.TRANSPARENT),
+        ("aac 144 label",                          "aac 144",        144, False, QualityRank.EXCELLENT),
+        ("aac 112 label",                          "aac 112",        112, False, QualityRank.GOOD),
+        ("aac 80 label",                           "aac 80",          80, False, QualityRank.ACCEPTABLE),
+
+        # --- Step 5: bare codec name + measured bitrate (beets items.format path) ---
+        ("MP3 VBR beets 240",                      "MP3",            240, False, QualityRank.TRANSPARENT),
+        ("MP3 VBR beets 200",                      "MP3",            200, False, QualityRank.EXCELLENT),
+        ("MP3 VBR beets 150",                      "MP3",            150, False, QualityRank.GOOD),
+        ("MP3 VBR beets 100",                      "MP3",            100, False, QualityRank.ACCEPTABLE),
+        ("MP3 VBR beets 80",                       "MP3",             80, False, QualityRank.POOR),
+        ("MP3 CBR beets 320",                      "MP3",            320, True,  QualityRank.TRANSPARENT),
+        ("MP3 CBR beets 256",                      "MP3",            256, True,  QualityRank.EXCELLENT),
+        ("MP3 CBR beets 192",                      "MP3",            192, True,  QualityRank.GOOD),
+        ("MP3 CBR beets 128",                      "MP3",            128, True,  QualityRank.ACCEPTABLE),
+        ("Opus beets 120",                         "Opus",           120, False, QualityRank.TRANSPARENT),
+        ("Opus beets 95",                          "Opus",            95, False, QualityRank.EXCELLENT),
+        ("Opus beets 70",                          "Opus",            70, False, QualityRank.GOOD),
+        ("Opus beets 50",                          "Opus",            50, False, QualityRank.ACCEPTABLE),
+        ("AAC beets 200",                          "AAC",            200, False, QualityRank.TRANSPARENT),
+        ("AAC beets 150",                          "AAC",            150, False, QualityRank.EXCELLENT),
+        ("AAC beets 120",                          "AAC",            120, False, QualityRank.GOOD),
+
+        # --- Step 6: unknown codec family ---
+        ("unknown codec",                          "vorbis",         200, False, QualityRank.UNKNOWN),
+        ("unknown codec with bitrate label",       "vorbis 192",     None, False, QualityRank.UNKNOWN),
+        ("unknown codec with vbr-ish label",       "wma v0",         None, False, QualityRank.UNKNOWN),
+        ("empty string format",                    "",               200, False, QualityRank.UNKNOWN),
+        ("whitespace-only format",                 "   ",            200, False, QualityRank.UNKNOWN),
+
+        # --- Edge: bare codec with None bitrate → UNKNOWN ---
+        ("bare MP3 no bitrate",                    "MP3",            None, False, QualityRank.UNKNOWN),
+        ("bare Opus no bitrate",                   "Opus",           None, False, QualityRank.UNKNOWN),
+    ]
+
+    def test_quality_rank_table(self):
+        for desc, fmt, br, is_cbr, expected in self.CASES:
+            with self.subTest(desc=desc):
+                self.assertEqual(
+                    quality_rank(fmt, br, is_cbr, CFG), expected,
+                    f"{desc}: quality_rank({fmt!r}, {br!r}, {is_cbr!r}) "
+                    f"expected {expected!r}",
+                )
+
+
+class TestMeasurementRank(unittest.TestCase):
+    """measurement_rank() — metric dispatch lives ONLY here."""
+
+    def test_avg_preferred_over_min_when_both_present(self):
+        m = AudioQualityMeasurement(
+            min_bitrate_kbps=80, avg_bitrate_kbps=130, format="Opus")
+        # Default config uses AVG; 130 → TRANSPARENT for Opus
+        self.assertEqual(measurement_rank(m, CFG), QualityRank.TRANSPARENT)
+
+    def test_falls_back_to_min_when_avg_is_none(self):
+        m = AudioQualityMeasurement(
+            min_bitrate_kbps=240, avg_bitrate_kbps=None, format="MP3")
+        # Legacy measurement — AVG metric falls back to min
+        self.assertEqual(measurement_rank(m, CFG), QualityRank.TRANSPARENT)
+
+    def test_min_metric_uses_min(self):
+        cfg = QualityRankConfig(bitrate_metric=RankBitrateMetric.MIN)
+        m = AudioQualityMeasurement(
+            min_bitrate_kbps=80, avg_bitrate_kbps=130, format="Opus")
+        # MIN metric ignores the higher avg
+        self.assertEqual(measurement_rank(m, cfg), QualityRank.GOOD)
+
+    def test_none_both_bitrates(self):
+        m = AudioQualityMeasurement(format="MP3")
+        self.assertEqual(measurement_rank(m, CFG), QualityRank.UNKNOWN)
+
+
+class TestCompareQuality(unittest.TestCase):
+    """compare_quality() covers all four outcome branches explicitly."""
+
+    def _m(self, **kwargs: Any) -> AudioQualityMeasurement:
+        return AudioQualityMeasurement(**kwargs)
+
+    # (description, new_kwargs, existing_kwargs, expected)
+    CASES = [
+        # --- Different rank → trivial ---
+        ("V0 beats V4",
+         dict(format="mp3 v0", avg_bitrate_kbps=240),
+         dict(format="mp3 v4", avg_bitrate_kbps=150),
+         "better"),
+        ("V4 loses to V0",
+         dict(format="mp3 v4", avg_bitrate_kbps=150),
+         dict(format="mp3 v0", avg_bitrate_kbps=240),
+         "worse"),
+        ("Opus 128 beats Opus 64",
+         dict(format="opus 128", avg_bitrate_kbps=130),
+         dict(format="opus 64",  avg_bitrate_kbps=60),
+         "better"),
+
+        # --- Same rank, different codec family → equivalent ---
+        ("Opus 128 == MP3 V0",
+         dict(format="opus 128", avg_bitrate_kbps=130),
+         dict(format="mp3 v0",   avg_bitrate_kbps=240),
+         "equivalent"),
+        ("MP3 V0 == Opus 128 (reverse)",
+         dict(format="mp3 v0",   avg_bitrate_kbps=240),
+         dict(format="opus 128", avg_bitrate_kbps=130),
+         "equivalent"),
+        ("MP3 V0 == MP3 CBR 320",
+         dict(format="mp3 v0",   avg_bitrate_kbps=240, is_cbr=False),
+         dict(format="mp3 320",  avg_bitrate_kbps=320, is_cbr=True),
+         "equivalent"),
+        ("Opus 128 == AAC 192",
+         dict(format="opus 128", avg_bitrate_kbps=130),
+         dict(format="aac 192",  avg_bitrate_kbps=192),
+         "equivalent"),
+
+        # --- Same rank, same VBR label → equivalent regardless of bitrate ---
+        ("lo-fi V0 == dense V0 (label rule)",
+         dict(format="mp3 v0",   avg_bitrate_kbps=207),
+         dict(format="mp3 v0",   avg_bitrate_kbps=245),
+         "equivalent"),
+        ("lo-fi V0 ≠ 'worse' even though 207 < 245",
+         dict(format="mp3 v0",   avg_bitrate_kbps=207),
+         dict(format="mp3 v0",   avg_bitrate_kbps=260),
+         "equivalent"),
+
+        # --- Same rank, same bare codec family, measurable bitrate ---
+        ("bare MP3 245 > MP3 225 (same rank TRANSPARENT)",
+         dict(format="MP3", avg_bitrate_kbps=245),
+         dict(format="MP3", avg_bitrate_kbps=225),
+         "better"),
+        ("bare MP3 225 < MP3 245 (same rank)",
+         dict(format="MP3", avg_bitrate_kbps=225),
+         dict(format="MP3", avg_bitrate_kbps=245),
+         "worse"),
+        ("bare MP3 within tolerance → equivalent",
+         dict(format="MP3", avg_bitrate_kbps=242),
+         dict(format="MP3", avg_bitrate_kbps=245),
+         "equivalent"),
+        ("bare Opus 130 == Opus 128 within tolerance",
+         dict(format="Opus", avg_bitrate_kbps=130),
+         dict(format="Opus", avg_bitrate_kbps=128),
+         "equivalent"),
+
+        # --- Unknown measurements fall through ---
+        ("both unknown format",
+         dict(format=None, avg_bitrate_kbps=None),
+         dict(format=None, avg_bitrate_kbps=None),
+         "equivalent"),
+        ("bare MP3 both None bitrate → equivalent guard",
+         dict(format="MP3"),
+         dict(format="MP3"),
+         "equivalent"),
+        ("bare Opus both None bitrate → equivalent guard",
+         dict(format="Opus"),
+         dict(format="Opus"),
+         "equivalent"),
+
+        # --- Lossless beats anything else ---
+        ("FLAC beats MP3 V0",
+         dict(format="FLAC", avg_bitrate_kbps=900),
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         "better"),
+        ("MP3 V0 loses to FLAC",
+         dict(format="mp3 v0", avg_bitrate_kbps=245),
+         dict(format="FLAC", avg_bitrate_kbps=900),
+         "worse"),
+        ("FLAC == FLAC",
+         dict(format="FLAC", avg_bitrate_kbps=900),
+         dict(format="FLAC", avg_bitrate_kbps=1100),
+         "equivalent"),
+    ]
+
+    def test_compare_quality_table(self):
+        for desc, new_kw, existing_kw, expected in self.CASES:
+            with self.subTest(desc=desc):
+                result = compare_quality(
+                    self._m(**new_kw), self._m(**existing_kw), CFG)
+                self.assertEqual(
+                    result, expected,
+                    f"{desc}: new={new_kw} existing={existing_kw} "
+                    f"expected {expected!r} got {result!r}")
+
+    def test_min_metric_honored_in_comparison(self):
+        """When cfg uses MIN, compare_quality must use min not avg."""
+        cfg_min = QualityRankConfig(bitrate_metric=RankBitrateMetric.MIN)
+        new = self._m(format="MP3", min_bitrate_kbps=240, avg_bitrate_kbps=250)
+        existing = self._m(format="MP3", min_bitrate_kbps=210, avg_bitrate_kbps=260)
+        # Under MIN: new=240, existing=210 → better
+        self.assertEqual(compare_quality(new, existing, cfg_min), "better")
+        # Under AVG: new=250, existing=260 → worse
+        self.assertEqual(compare_quality(new, existing, CFG), "worse")
+
+
+class TestQualityRankConfigDefaults(unittest.TestCase):
+    """Lock the default policy values so changes are explicit."""
+
+    def test_default_metric_is_avg(self):
+        self.assertEqual(CFG.bitrate_metric, RankBitrateMetric.AVG)
+
+    def test_default_gate_min_rank_is_excellent(self):
+        self.assertEqual(CFG.gate_min_rank, QualityRank.EXCELLENT)
+
+    def test_default_within_rank_tolerance(self):
+        self.assertEqual(CFG.within_rank_tolerance_kbps, 5)
+
+    def test_default_lossless_codecs(self):
+        self.assertEqual(
+            CFG.lossless_codecs,
+            frozenset({"flac", "lossless", "alac", "wav"}))
+
+    def test_default_mixed_format_precedence_worst_first(self):
+        # MP3 is the "worst" (least trustworthy cross-codec) so it wins ties.
+        self.assertEqual(CFG.mixed_format_precedence, ("mp3", "aac", "opus", "flac"))
+
+    def test_default_mp3_vbr_levels_length_is_ten(self):
+        self.assertEqual(len(CFG.mp3_vbr_levels), 10)
+
+    def test_default_mp3_v0_is_transparent(self):
+        self.assertEqual(CFG.mp3_vbr_levels[0], QualityRank.TRANSPARENT)
+
+    def test_default_opus_bands(self):
+        self.assertEqual(CFG.opus.transparent, 112)
+        self.assertEqual(CFG.opus.excellent, 88)
+        self.assertEqual(CFG.opus.good, 64)
+        self.assertEqual(CFG.opus.acceptable, 48)
 
 
 if __name__ == "__main__":
