@@ -369,17 +369,17 @@ Lo-fi V0 at 207kbps now passes the gate via the `"mp3 v0"` label contract (`cfg.
 4. Compare new V0 bitrate against existing on disk (override = `min(pipeline DB min_bitrate, current_spectral_bitrate)` — catches fake 320s)
 5. If verified lossless AND `verified_lossless_target` configured (e.g. "opus 128"): convert original FLAC → target format, discard V0 (ephemeral verification artifact)
 6. If upgrade → import to beets. `verified_lossless` set by import_one.py's verdict (not re-derived). When verified lossless, `current_spectral_bitrate` = actual min bitrate (not spectral cliff estimate).
-7. Quality gate accepts regardless of bitrate if verified_lossless
+7. Quality gate ranks the imported measurement; the `verified_lossless=True` bypass is **tier-gated** — it imports on rank-comparison verdict `better`/`equivalent` but blocks on `worse` (so a too-low `verified_lossless_target` like Opus 64 cannot replace a good existing album). See `docs/quality-ranks.md`.
 
 **MP3 VBR downloads** (V0/V2):
 1. No spectral check needed — VBR bitrate IS the quality signal
-2. Import directly, quality gate checks min_bitrate against 210kbps threshold
+2. Import directly, quality gate classifies the measurement into a `QualityRank` (mp3_vbr band table) and accepts if the rank is at or above `cfg.quality_ranks.gate_min_rank` (default `EXCELLENT` ≈ 210kbps)
 
 **MP3 CBR downloads** (320, 256, etc.):
 1. Spectral check runs in `process_completed_album()` (soularr.py) — detects upsampled garbage via cliff detection
 2. If spectral says SUSPECT → reject, denylist user
 3. If spectral says genuine or marginal → import (something is better than nothing)
-4. Quality gate sees CBR + not verified_lossless → re-queues with `search_filetype_override="lossless"` to find lossless source
+4. Quality gate: even when CBR rank is TRANSPARENT, the `is_cbr && !verified_lossless && rank < LOSSLESS` branch fires → re-queues with `search_filetype_override="lossless"` to find a verifiable lossless source
 
 ### Spectral Analysis (`lib/spectral_check.py`)
 
@@ -437,8 +437,8 @@ Uses `sox` bandpass filtering to detect transcodes. Measures RMS energy in 16 x 
 
 ### Edge Cases
 
-- **Lo-fi recordings** (Mountain Goats boombox era): Genuine V0 from verified FLAC can produce ~207kbps. `verified_lossless=TRUE` lets this pass the quality gate.
-- **Mixed-source CBR** (e.g. 13 tracks at 320 + 1 track at 192): Looks like VBR to `COUNT(DISTINCT bitrate)` but isn't genuine V0. Quality gate uses min_bitrate (192 < 210) → re-queues.
+- **Lo-fi recordings** (Mountain Goats boombox era): Genuine V0 from verified FLAC can produce ~207kbps. The `"mp3 v0"` label classifies as `TRANSPARENT` via `cfg.mp3_vbr_levels[0]` regardless of bitrate, so the gate accepts without needing a `verified_lossless` blanket bypass.
+- **Mixed-source CBR** (e.g. 13 tracks at 320 + 1 track at 192): Looks like VBR to `COUNT(DISTINCT bitrate)` but isn't genuine V0. Quality gate ranks against the bare-codec band table — 192 lands in `GOOD` (< default `EXCELLENT`) → re-queues for upgrade.
 - **Fake FLACs**: MP3 wrapped in FLAC container. Spectral detects cliff pre-conversion, V0 bitrate confirms post-conversion. Source denylisted, but file imported if better than existing.
 - **Discogs-sourced albums**: Numeric IDs instead of MB UUIDs. Cannot use upgrade pipeline. See `TODO.md`.
 
