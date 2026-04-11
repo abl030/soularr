@@ -77,8 +77,6 @@ Every threshold, enum, and per-codec band in the rank model is tunable via Nix o
 
 All options live under `homelab.services.soularr.qualityRanks.*` in `nixosconfig/modules/nixos/services/soularr.nix` (separate repo). Edit on doc1 (has git push credentials), commit, push, `nixos-rebuild switch` on doc2. The `[Quality Ranks]` section of `config.ini` is regenerated from these options; Soularr picks up the new values on its next 5-min timer fire.
 
-> **Cross-repo status**: the Nix options are tracked in issue #67. The pin tests and reference values in this README are authoritative on the soularr side; the nixosconfig PR mirrors them verbatim. If you are reading this between the two PRs landing, the options block may not yet exist in `soularr.nix` — in that case, retuning means editing `QualityRankConfig.defaults()` in `lib/quality.py` directly until the Nix side ships.
-
 **Source of truth**: `QualityRankConfig.defaults()` in `lib/quality.py`, pinned by `TestQualityRankConfigDefaults` in `tests/test_quality_decisions.py`. The Nix options mirror those defaults for declarative visibility -- you should be able to open `soularr.nix` and read your current policy without grepping Python. Drift between Python and Nix is caught at soularr test time: bump a default in either repo, the pin test fails and reminds you to update the other.
 
 ### Nix-exposed options
@@ -143,12 +141,50 @@ ssh doc2 'sudo nixos-rebuild switch --flake github:abl030/nixosconfig#doc2 --ref
 
 3. **Visual confirmation** -- open the [Decisions tab at music.ablz.au](https://music.ablz.au). The top of the tab renders three pills (**Gate min rank** / **Bitrate metric** / **Within-rank tolerance**) pulled from the same `_runtime_rank_config()` snapshot. If your tuning is live, the pills show the new values (#68). The transcode stage rule threshold also reflects `bands.mp3Vbr.excellent` live, since `get_decision_tree()` threads `cfg` through (#75).
 
+### The search filter is deliberately permissive
+
+The `[Search Settings] allowed_filetypes` list in `config.ini` (set via the `configTemplate` string in `soularr.nix`, not yet a Nix option) is a **priority-ordered preference list**, not a quality gate. It decides which codecs Soularr prefers when multiple options exist for the same album and drives peer selection within each tier; it does NOT decide whether a file is "good enough". That call belongs to the rank model.
+
+**Current production list** (top-to-bottom priority):
+
+```
+mp3 v0,mp3 320,flac 24/192,flac 24/96,flac 24/48,flac 16/44.1,flac,alac,aac,opus,ogg,mp3,wav
+```
+
+**How it actually works** (in `soularr.py:_build_search_cache` → `lib/enqueue.py:_try_filetype`):
+
+1. slskd returns every peer that has a file matching the raw text query "artist album". No filetype restriction on the wire — the codec preference is applied locally.
+2. `_build_search_cache()` walks each file and buckets it into the **first tier it matches**. Files that match zero tiers are dropped.
+3. `_try_filetype()` walks tiers in list order. For each tier, it sorts peers by upload speed (descending) and enqueues the first peer with a complete album directory.
+4. If no tier has a complete album, the fallback catch-all unions all tiers the peer already matched — it does NOT rescue files that matched no tier at all.
+
+**Why the high-quality tiers lead**: `mp3 v0` and `mp3 320` sit at the top because the curation philosophy in `CLAUDE.md` says "MP3 V0 is efficient TRANSPARENT MP3; take it if available". FLAC sample-rate tiers follow so hi-res FLAC beats CD-quality FLAC. ALAC comes before the lossy codecs because it's lossless. AAC/Opus/OGG get specific tiers before the bare-codec fallbacks so preferred lossy codecs have priority.
+
+**Why the bare-codec tiers at the end**: `aac`, `opus`, `ogg`, `mp3`, `wav` with no quality qualifier match any bitrate/bitdepth for that codec. They exist so that **any audio file the rank model understands reaches the rank model**. The rank model then handles the real decision via:
+
+- `quality_rank()` → codec-specific band classification from `cfg.{opus,aac,mp3_vbr,mp3_cbr}.{transparent,excellent,good,acceptable}`
+- `import_quality_decision()` → accepts imports unconditionally when there's no existing album, rejects downgrades against existing albums
+- `quality_gate_decision()` → accepts or `requeue_upgrade` based on rank vs `cfg.gate_min_rank`
+- Spectral verification via `spectral_import_decision()` for MP3/CBR
+- Transcode detection via `transcode_detection()` for FLAC→V0 conversions
+
+**The design intent**: low-quality placeholder imports for new requests that have nothing else, followed by automatic upgrade cycles as better sources appear on Soulseek. An obscure album that only exists as MP3 V4 gets imported at V4, then upgrades to FLAC if/when a lossless seeder shows up. No silent "no match found" blind spots.
+
+**When to tune this list**:
+
+- **Reorder the preferred tiers** if you want a different curation philosophy. E.g. moving `flac 16/44.1` above `mp3 v0` means "always prefer FLAC even though it's 5x bigger". Current order prefers space-efficient transparent MP3.
+- **Remove a bare-codec fallback tier** if you want the search filter to enforce a codec floor. E.g. removing `opus` means Opus 128 is invisible again, matching the pre-2026-04-11 behavior.
+- **Add format/bitrate-specific tiers** if you want to promote or demote specific subsets. E.g. inserting `opus 128+` between `alac` and the bare-codec fallbacks would prefer Opus 128 before falling through to AAC/OGG.
+
+**Not currently a Nix option** -- it's hardcoded in `soularr.nix`'s `configTemplate` string. Making it a `homelab.services.soularr.searchFiletypes` option is a trivial follow-up if you find yourself retuning it.
+
 ### Where the docs live
 
 - [`docs/quality-ranks.md`](docs/quality-ranks.md) -- the full rank model rationale: rank ladder, codec resolution order, band table justification, bitrate metric tradeoffs, when to prefer median.
 - [`docs/quality-verification.md`](docs/quality-verification.md) -- spectral cliff detection methodology and tuning history.
 - `lib/quality.py:QualityRankConfig` -- the dataclass, with docstrings next to each default.
 - `tests/test_quality_decisions.py:TestQualityRankConfigDefaults` -- pin tests that fail loudly on any drift.
+- `lib/quality.py:file_identity()` / `filetype_matches()` / `parse_filetype_config()` -- the search-side filetype spec model that backs `allowed_filetypes`.
 
 ## Audit trail
 
