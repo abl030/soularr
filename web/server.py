@@ -243,6 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         "/api/artist": cache.TTL_MB,
         "/api/release-group": cache.TTL_MB,
         "/api/release": cache.TTL_MB,
+        "/api/discogs": cache.TTL_MB,
         "/api/library": cache.TTL_LIBRARY,
         "/api/beets": cache.TTL_LIBRARY,
         "/api/pipeline/status": cache.TTL_LIBRARY,
@@ -253,16 +254,16 @@ class Handler(BaseHTTPRequestHandler):
 
     # POST routes and which cache groups they invalidate.
     _POST_INVALIDATIONS: dict[str, tuple[str, ...]] = {
-        "/api/pipeline/add": ("pipeline", "mb"),
-        "/api/pipeline/update": ("pipeline", "mb"),
-        "/api/pipeline/upgrade": ("pipeline", "library", "mb"),
+        "/api/pipeline/add": ("pipeline", "mb", "discogs"),
+        "/api/pipeline/update": ("pipeline", "mb", "discogs"),
+        "/api/pipeline/upgrade": ("pipeline", "library", "mb", "discogs"),
         "/api/pipeline/set-quality": ("pipeline",),
         "/api/pipeline/set-intent": ("pipeline",),
-        "/api/pipeline/ban-source": ("pipeline", "library", "mb"),
-        "/api/pipeline/force-import": ("pipeline", "library", "mb"),
-        "/api/pipeline/delete": ("pipeline", "mb"),
-        "/api/beets/delete": ("library", "mb"),
-        "/api/manual-import/import": ("pipeline", "library", "mb"),
+        "/api/pipeline/ban-source": ("pipeline", "library", "mb", "discogs"),
+        "/api/pipeline/force-import": ("pipeline", "library", "mb", "discogs"),
+        "/api/pipeline/delete": ("pipeline", "mb", "discogs"),
+        "/api/beets/delete": ("library", "mb", "discogs"),
+        "/api/manual-import/import": ("pipeline", "library", "mb", "discogs"),
         "/api/wrong-matches/delete": ("pipeline",),
     }
 

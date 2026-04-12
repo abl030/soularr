@@ -23,6 +23,7 @@ _GROUP_PATTERNS: dict[str, list[str]] = {
     "pipeline": ["web:/api/pipeline*"],
     "library": ["web:/api/beets*", "web:/api/library*"],
     "mb": ["web:/api/search*", "web:/api/artist*", "web:/api/release*"],
+    "discogs": ["web:/api/discogs*"],
 }
 
 _redis: object | None = None
