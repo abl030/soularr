@@ -15,7 +15,10 @@ from dataclasses import dataclass
 logger = logging.getLogger("soularr")
 
 
+from lib.quality import detect_release_source
+
 MB_API_BASE = "http://192.168.1.35:5200/ws/2"
+DISCOGS_API_BASE = "https://discogs.ablz.au"
 
 
 @dataclass
@@ -292,11 +295,18 @@ class DatabaseSource:
         return {e["username"] for e in entries}
 
     def _populate_tracks(self, row):
-        """Fetch tracks from MB API and store in DB."""
-        mb_id = row.get("mb_release_id")
-        if not mb_id:
+        """Fetch tracks from MB or Discogs API and store in DB."""
+        release_id = row.get("mb_release_id")
+        if not release_id:
             return []
 
+        source = detect_release_source(release_id)
+        if source == "discogs":
+            return self._populate_tracks_discogs(row, release_id)
+        return self._populate_tracks_mb(row, release_id)
+
+    def _populate_tracks_mb(self, row, mb_id):
+        """Fetch tracks from the MusicBrainz API."""
         try:
             url = f"{MB_API_BASE}/release/{mb_id}?inc=recordings&fmt=json"
             req = urllib.request.Request(url)
@@ -318,6 +328,52 @@ class DatabaseSource:
                     "title": track.get("title", ""),
                     "length_seconds": round(length_ms / 1000, 1) if length_ms else None,
                 })
+
+        if tracks:
+            db = self._get_db()
+            db.set_tracks(row["id"], tracks)
+
+        return tracks
+
+    def _populate_tracks_discogs(self, row, discogs_id):
+        """Fetch tracks from the Discogs mirror API."""
+        import re
+        try:
+            url = f"{DISCOGS_API_BASE}/api/releases/{discogs_id}"
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "soularr-db/1.0")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+        except Exception:
+            logger.warning(f"Failed to fetch tracks from Discogs API for {discogs_id}")
+            return []
+
+        tracks = []
+        for track in data.get("tracks", []):
+            pos = track.get("position", "")
+            disc, track_num = 1, 0
+            m = re.match(r"^(\d+)-(\d+)$", pos)
+            if m:
+                disc, track_num = int(m.group(1)), int(m.group(2))
+            elif re.match(r"^\d+$", pos):
+                track_num = int(pos)
+
+            duration_str = track.get("duration", "")
+            length_seconds = None
+            if duration_str:
+                parts = duration_str.split(":")
+                try:
+                    if len(parts) == 2:
+                        length_seconds = round(int(parts[0]) * 60 + int(parts[1]), 1)
+                except ValueError:
+                    pass
+
+            tracks.append({
+                "disc_number": disc,
+                "track_number": track_num,
+                "title": track.get("title", ""),
+                "length_seconds": length_seconds,
+            })
 
         if tracks:
             db = self._get_db()
