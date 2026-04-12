@@ -36,6 +36,7 @@ import psycopg2
 REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "lib"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "web"))
 from pipeline_db import PipelineDB, DEFAULT_DSN
 from util import resolve_failed_path as _shared_resolve_failed_path
 
@@ -143,16 +144,23 @@ def cmd_list(db, args):
 
 
 def cmd_add(db, args):
-    mbid = args.mbid
+    from quality import detect_release_source
+    release_id = args.mbid
     source = args.source
+    id_source = detect_release_source(release_id)
 
-    # Check if already exists
+    if id_source == "discogs":
+        return _cmd_add_discogs(db, release_id, source)
+    return _cmd_add_mb(db, release_id, source)
+
+
+def _cmd_add_mb(db, mbid, source):
+    """Add a MusicBrainz release to the pipeline."""
     existing = db.get_request_by_mb_release_id(mbid)
     if existing:
         print(f"  Already in DB: id={existing['id']} status={existing['status']}")
         return
 
-    # Fetch from MB API
     print(f"  Fetching MB release {mbid}...")
     release = fetch_mb_release(mbid)
     if not release:
@@ -179,12 +187,46 @@ def cmd_add(db, args):
         source=source,
     )
 
-    # Populate tracks
     tracks = tracks_from_mb_release(release)
     if tracks:
         db.set_tracks(req_id, tracks)
 
     print(f"  Added: id={req_id} {artist_name} - {release.get('title')} ({len(tracks)} tracks)")
+
+
+def _cmd_add_discogs(db, discogs_id, source):
+    """Add a Discogs release to the pipeline."""
+    existing = db.get_request_by_discogs_release_id(discogs_id)
+    if not existing:
+        existing = db.get_request_by_mb_release_id(discogs_id)
+    if existing:
+        print(f"  Already in DB: id={existing['id']} status={existing['status']}")
+        return
+
+    print(f"  Fetching Discogs release {discogs_id}...")
+    try:
+        import discogs as discogs_api  # type: ignore[import-not-found]
+        release = discogs_api.get_release(int(discogs_id))
+    except Exception as e:
+        print(f"  Failed to fetch release from Discogs API: {e}")
+        return
+
+    req_id = db.add_request(
+        mb_release_id=discogs_id,
+        discogs_release_id=discogs_id,
+        mb_artist_id=str(release.get("artist_id") or ""),
+        artist_name=release["artist_name"],
+        album_title=release["title"],
+        year=release.get("year"),
+        country=release.get("country"),
+        source=source,
+    )
+
+    tracks = release.get("tracks", [])
+    if tracks:
+        db.set_tracks(req_id, tracks)
+
+    print(f"  Added: id={req_id} {release['artist_name']} - {release['title']} ({len(tracks)} tracks)")
 
 
 def cmd_status(db, args):
@@ -986,8 +1028,8 @@ def main():
     p_list.add_argument("filter_status", nargs="?", help="Filter by status")
 
     # add
-    p_add = sub.add_parser("add", help="Add a new request by MBID")
-    p_add.add_argument("mbid", help="MusicBrainz release ID")
+    p_add = sub.add_parser("add", help="Add a new request by MBID or Discogs ID")
+    p_add.add_argument("mbid", help="MusicBrainz release UUID or Discogs numeric release ID")
     p_add.add_argument("--source", default="request", choices=["request", "redownload", "manual"],
                        help="Source type (default: request)")
 
