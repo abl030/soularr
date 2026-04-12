@@ -1246,7 +1246,7 @@ class TestDiscogsBrowseRouteContracts(_WebServerCase):
     def test_discogs_artist_contract(self):
         with patch("web.routes.browse.discogs_api") as mock_dg:
             mock_dg.get_artist_name.return_value = "Radiohead"
-            mock_dg.get_artist_masters.return_value = [
+            mock_dg.get_artist_releases.return_value = [
                 {
                     "id": "21491",
                     "title": "OK Computer",
